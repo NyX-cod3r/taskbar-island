@@ -44,3 +44,27 @@
   49.5 MB (RAM pass is deliberately last). 7/7 unit tests, clippy --all-targets clean.
   Synthetic repro (SetCursorPos + mouse_event, DPI-aware ctx): hover enter -> expand -> leave
   -> collapse -> click pause -> click resume; zero panics, log 237 lines clean.
+- **Phase 4 COMPLETE**: file shelf (activities/shelf.rs).
+  - OLE drop target (`#[implement(IDropTarget)]` + `RegisterDragDrop`) installed on the pill
+    HWND; `OleInitialize(None)` once on the UI thread. Copy semantics; the callback only
+    fills a shared `Arc<Mutex<Vec<String>>>` slot and posts `WM_APP_SHELF` (drop / hover
+    enter / hover leave) — mirroring the media bridge so COM callbacks can never re-enter
+    `App`. CF_HDROP enumeration via `DragQueryFileW` with `ReleaseStgMedium` on all paths.
+  - Arbitration now uses `ActivityQueue` (state.rs): `Priority::Shelf` sits ABOVE `Media`
+    (a drop is a direct user action on the pill); queue entries update only on events.
+    `App.refresh_content()` pushes the winner into the renderer (media / shelf / idle) and
+    draws; renderer recreation paths push the same resolved state.
+  - Click behavior branches: shelf -> open all parked files (`ShellExecuteW`, fire-and-forget)
+    and clear; media -> play/pause toggle as before.
+  - Rendering: `Indicator::Files(count)` draws a staggered thin-line stack (max 4);
+    one file shows name + parent folder, a batch shows first file + "N files shelved"; an
+    empty pill under a drag shows the "Drop to shelve" hint; drop-hover brightens fill/border
+    like mouse hover.
+  - Feature gates added: Win32_System_Com, Win32_System_Com_StructuredStorage,
+    Win32_System_Ole, Win32_System_SystemServices; windows-core 0.62 as an explicit dep
+    (the `implement` macro emits `windows_core::` paths).
+- Phase 4 measurements (release): idle CPU **0 ms / 5 s**; working set **59.6 MB**, private
+  49.3 MB. 11/11 unit tests (4 new shelf + priority-order update), clippy --all-targets
+  clean. Regression synthetic pass (hover expand/leave/toggle) reproduced media pill under
+  the new refresh_content flow; process alive, no panics. Real drag-drop from Explorer is
+  the remaining user-eye verification (DoDragDrop cannot be scripted reliably).

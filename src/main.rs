@@ -26,19 +26,21 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
 use render::Renderer;
+use state::{Activity, ActivityId, ActivityQueue, Priority};
 use windows::core::{w, Error, HRESULT, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, SetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT,
     WIN32_ERROR, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Ole::OleInitialize;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
-use windows::Win32::UI::Shell::ABN_POSCHANGED;
+use windows::Win32::UI::Shell::{ABN_POSCHANGED, ShellExecuteW};
 use windows::Win32::UI::Controls::WM_MOUSELEAVE; // verified empirically: leave arrives as 0x2A3 (675)
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -46,7 +48,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
     SetWindowPos, SetTimer, GetParent, SetParent, ShowWindow, TranslateMessage, CS_HREDRAW,
     CS_VREDRAW, HWND_TOP, EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_CAPTURESTART,
-    IDC_ARROW, MB_ICONERROR, MB_OK, MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOMOVE,
+    IDC_ARROW, MB_ICONERROR, MB_OK, MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE,
+    SW_SHOWNORMAL, SWP_NOMOVE,
     SWP_NOSIZE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_SETTINGCHANGE,
     WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
@@ -193,11 +196,24 @@ fn run() -> windows::core::Result<()> {
         if let Err(error) = activities::media::subscribe(media_tx, toggle_rx) {
             log::log_err("media.subscribe", &error);
         }
+        // OLE apartment + drag-drop target for the file shelf. The
+        // registration COM object is held for the whole window lifetime by
+        // this binding (OLE keeps its own reference; RevokeDragDrop is not
+        // worth wiring — the process is single-instance and exits cleanly).
+        if let Err(error) = OleInitialize(None) {
+            log::log_err("ole.init", &error);
+        }
+        let shelf_slot: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        match activities::shelf::register_drop_target(hwnd, Arc::clone(&shelf_slot)) {
+            Ok(target) => std::mem::forget(target), // RegisterDragDrop owns a ref
+            Err(error) => log::log_err("shelf.register", &error),
+        }
         APP.with(|a| {
             let mut app = a.borrow_mut();
             let app = app.as_mut().expect("app initialized");
             app.media_snapshot = media_snapshot;
             app.media_toggle = toggle_tx;
+            app.shelf_slot = shelf_slot;
         });
 
         // Event sources (no polling): foreground changes → fullscreen recheck,
@@ -269,6 +285,16 @@ struct App {
     media_state: Option<activities::media::MediaUpdate>,
     /// UI → media-worker play/pause toggle requests.
     media_toggle: mpsc::Sender<()>,
+    /// Files dropped on the pill (full paths), parked until the click opens
+    /// them. Backed by the shelf slot shared with the OLE drop target.
+    shelf_slot: Arc<Mutex<Vec<String>>>,
+    shelf_paths: Vec<String>,
+    /// Activity-arbitration state (state.rs): the shelf replaces media while
+    /// files are parked; every entry updates only on events.
+    queue: ActivityQueue,
+    shelf: activities::shelf::ShelfActivity,
+    shelf_view: Option<activities::shelf::ShelfView>,
+    drop_hover: bool,
     /// Hover-expansion animation state (compact → expanded pill). Only the
     /// WM_TIMER ticks advance it; there is no polling when idle.
     expand: f32,
@@ -321,6 +347,12 @@ impl App {
             animate_started: None,
             // Placeholder replaced right after App::constructs (see main()).
             media_toggle: mpsc::channel().0,
+            shelf_slot: Arc::new(Mutex::new(Vec::new())),
+            shelf_paths: Vec::new(),
+            queue: ActivityQueue::default(),
+            shelf: activities::shelf::ShelfActivity::default(),
+            shelf_view: None,
+            drop_hover: false,
         })
     }
 
@@ -436,8 +468,10 @@ impl App {
                     match unsafe { Renderer::create(self.hwnd, size, scale, self.theme) } {
                         Ok(mut renderer) => {
                             // Don't lose the activity state across a hide
-                            // cycle: the fresh renderer starts empty.
-                            renderer.set_media(self.media_state.clone());
+                            // cycle: the fresh renderer starts empty, so
+                            // push the arbitration winner (shelf may have
+                            // taken over while hidden).
+                            self.push_activity(&mut renderer);
                             self.renderer = Some(renderer);
                         }
                         Err(e) => {
@@ -479,6 +513,100 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// Push the arbitration winner's content into a (possibly fresh)
+    /// renderer without drawing — used on renderer (re)creation too.
+    fn push_activity(&mut self, renderer: &mut Renderer) {
+        match self.queue.current() {
+            Some(ActivityId::Shelf) => {
+                let _ = renderer.set_media(None);
+                let _ = renderer.set_shelf(self.shelf_view.clone());
+            }
+            Some(ActivityId::Media) => {
+                let _ = renderer.set_shelf(None);
+                let _ = renderer.set_media(self.media_state.clone());
+            }
+            _ => {
+                let _ = renderer.set_media(None);
+                let _ = renderer.set_shelf(None);
+            }
+        }
+    }
+
+    /// Push the current activity and redraw if visible. Event-driven: runs
+    /// on media updates, drops, and clicks — never on a loop.
+    fn refresh_content(&mut self) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        match self.queue.current() {
+            Some(ActivityId::Shelf) => {
+                let _ = renderer.set_media(None);
+                let _ = renderer.set_shelf(self.shelf_view.clone());
+            }
+            Some(ActivityId::Media) => {
+                let _ = renderer.set_shelf(None);
+                let _ = renderer.set_media(self.media_state.clone());
+            }
+            _ => {
+                let _ = renderer.set_media(None);
+                let _ = renderer.set_shelf(None);
+            }
+        }
+        if self.visible {
+            if let Err(error) = unsafe { renderer.draw() } {
+                log::log_err("content.draw", &error);
+            }
+        }
+    }
+
+    /// Brighten the pill while an OLE drag is over it (and show the drop
+    /// hint on an empty pill). Mirrors set_hover's event-only redraws.
+    fn set_drop_hover(&mut self, on: bool) {
+        if self.drop_hover == on {
+            return;
+        }
+        self.drop_hover = on;
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        let _ = renderer.set_drop_hover(on);
+        if self.visible {
+            if let Err(error) = unsafe { renderer.draw() } {
+                log::log_err("drop_hover.draw", &error);
+            }
+        }
+    }
+
+    /// Open everything parked on the shelf through the shell, then hand the
+    /// pill back to the next activity in line. `ShellExecuteW` spawns and
+    /// returns immediately — the UI thread never blocks.
+    fn open_shelf(&mut self) {
+        let paths = std::mem::take(&mut self.shelf_paths);
+        for path in &paths {
+            // The wide buffer must outlive the call; it lives in this scope.
+            let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+            unsafe {
+                ShellExecuteW(
+                    None,
+                    w!("open"),
+                    PCWSTR::from_raw(wide.as_ptr()),
+                    PCWSTR::null(),
+                    PCWSTR::null(),
+                    SW_SHOWNORMAL,
+                );
+            }
+        }
+        log::log(&format!("shelf.open: {} file(s)", paths.len()));
+        self.shelf.count = 0;
+        self.shelf_view = None;
+        self.queue.update(
+            self.shelf.id(),
+            self.shelf.priority(),
+            self.shelf.active(),
+        );
+        self.refresh_content();
     }
 
     /// Start (or re-target) the hover-expansion animation. Purely event
@@ -614,13 +742,43 @@ impl App {
                 } else if self.media_state.is_some() {
                     log::log("media: stopped");
                 }
-                self.media_state = media.clone();
-                if let Some(renderer) = self.renderer.as_mut() {
-                    if renderer.set_media(media) {
-                        if let Err(error) = unsafe { renderer.draw() } {
-                            log::log_err("media.draw", &error);
+                self.media_state = media;
+                // Arbitrate: the shelf keeps the pill while files are parked.
+                self.queue
+                    .update(ActivityId::Media, Priority::Media, self.media_state.is_some());
+                self.refresh_content();
+                Some(LRESULT(0))
+            }
+            activities::shelf::WM_APP_SHELF => {
+                match wparam.0 as u32 {
+                    activities::shelf::SHELF_DROP => {
+                        let paths = std::mem::take(&mut *self
+                            .shelf_slot
+                            .lock()
+                            .expect("shelf slot mutex poisoned"));
+                        // A new drop replaces the batch (the pill always
+                        // shows exactly one shelf).
+                        self.shelf_paths = paths;
+                        self.shelf.count = self.shelf_paths.len();
+                        self.shelf_view = activities::shelf::view(&self.shelf_paths);
+                        log::log(&format!(
+                            "shelf.drop: {} file(s) → {:?}",
+                            self.shelf.count,
+                            self.shelf_view.as_ref().map(|v| &v.title)
+                        ));
+                        self.queue.update(
+                            self.shelf.id(),
+                            self.shelf.priority(),
+                            self.shelf.active(),
+                        );
+                        if self.shelf_view.is_some() {
+                            self.set_expansion(true); // a drop deserves the wide view
                         }
+                        self.refresh_content();
                     }
+                    activities::shelf::SHELF_HOVER_ENTER => self.set_drop_hover(true),
+                    activities::shelf::SHELF_HOVER_LEAVE => self.set_drop_hover(false),
+                    _ => {}
                 }
                 Some(LRESULT(0))
             }
@@ -657,9 +815,17 @@ impl App {
                 Some(LRESULT(0))
             }
             WM_LBUTTONUP => {
-                // Toggle the current session's play state; the media worker's
-                // PlaybackInfoChanged event republishes the new state to us.
-                let _ = self.media_toggle.send(());
+                // Activity decides the click: shelved files open (and clear),
+                // otherwise the current media session toggles play/pause.
+                match self.queue.current() {
+                    Some(ActivityId::Shelf) => self.open_shelf(),
+                    Some(ActivityId::Media) => {
+                        // The media worker's PlaybackInfoChanged event
+                        // republishes the new state to us.
+                        let _ = self.media_toggle.send(());
+                    }
+                    _ => {}
+                }
                 Some(LRESULT(0))
             }
             WM_TIMER if wparam.0 == EXPAND_TIMER_ID => {

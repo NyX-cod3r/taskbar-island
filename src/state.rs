@@ -4,8 +4,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
     Idle,
-    Shelf,
     Media,
+    /// Files dropped on the pill take it over until opened: a drop is a direct
+    /// user action aimed at the pill, so it outranks the in-progress media.
+    Shelf,
     VolumeHud,
     TimerEnding,
     Call,
@@ -63,6 +65,11 @@ mod tests {
         let mut queue = ActivityQueue::default();
         queue.update(ActivityId::Media, Priority::Media, true);
         queue.update(ActivityId::Shelf, Priority::Shelf, true);
+        // A drop is a user action on the pill itself → the shelf takes over
+        // from the in-progress media run.
+        assert_eq!(queue.current(), Some(ActivityId::Shelf));
+
+        queue.update(ActivityId::Shelf, Priority::Shelf, false);
         assert_eq!(queue.current(), Some(ActivityId::Media));
 
         queue.update(ActivityId::Volume, Priority::VolumeHud, true);

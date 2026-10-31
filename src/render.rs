@@ -10,6 +10,7 @@
 //! while an animation is active. There is no frame loop.
 
 use crate::activities::media::MediaUpdate;
+use crate::activities::shelf::ShelfView;
 use crate::log::{log, log_err};
 use crate::theme::Theme;
 use core::mem::ManuallyDrop;
@@ -63,6 +64,13 @@ const TEXT_SIZE_DIP: f32 = 12.0;
 const ARTIST_SIZE_DIP: f32 = 11.0;
 const TEXT_LEFT_DIP: f32 = 34.0;
 const TEXT_RIGHT_PAD_DIP: f32 = 6.0;
+/// Shelf stack (Files indicator): one thin line per parked file, capped.
+const SHELF_LINES_MAX: usize = 4;
+const SHELF_LINE_W_DIP: f32 = 16.0;
+const SHELF_LINE_STEP_DIP: f32 = 4.0;
+const SHELF_LINE_H_DIP: f32 = 2.5;
+/// Shown only on an empty pill while a drag is over it.
+const DROP_HINT: &str = "Drop to shelve";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Indicator {
@@ -71,6 +79,21 @@ pub enum Indicator {
     /// Wired up when timer activities render (later phase).
     #[allow(dead_code)]
     Timer,
+    /// Shelved-file stack; carries the count (draw caps the lines).
+    Files(usize),
+}
+
+/// The indicator follows the resolved activity (state.rs priorities): media
+/// while it owns the pill, else the shelf while files are parked, else idle.
+fn derive_indicator(
+    media: Option<&MediaUpdate>,
+    shelf: Option<&ShelfView>,
+) -> Indicator {
+    match (media, shelf) {
+        (_, Some(shelf)) => Indicator::Files(shelf.count.min(SHELF_LINES_MAX)),
+        (Some(_), None) => Indicator::Media,
+        (None, None) => Indicator::Idle,
+    }
 }
 
 pub struct Renderer {
@@ -104,6 +127,11 @@ pub struct Renderer {
     /// Hover-expansion progress (0 compact — 1 expanded), driven by the UI's
     /// animation timer; pure render input, no timing logic here.
     expand: f32,
+    /// Shelved files display strings (built by activities::shelf::view at
+    /// event time). Set only when the shelf is the resolved activity.
+    shelf: Option<ShelfView>,
+    /// An OLE drag is currently over the pill (brighten + empty-pill hint).
+    drop_hover: bool,
     /// Backbuffer size in physical pixels.
     size: (u32, u32),
     /// DIPs → physical pixels (dpi / 96).
@@ -270,6 +298,8 @@ impl Renderer {
             hover: false,
             media: None,
             expand: 0.0,
+            shelf: None,
+            drop_hover: false,
         })
     }
 
@@ -346,12 +376,32 @@ impl Renderer {
         if self.media == media {
             return false;
         }
-        self.indicator = if media.is_some() {
-            Indicator::Media
-        } else {
-            Indicator::Idle
-        };
+        // The media slot is only a mirror of `App.media_state`; the shelf
+        // below keeps operating independently when media disappears.
+        self.indicator = derive_indicator(media.as_ref(), self.shelf.as_ref());
         self.media = media;
+        true
+    }
+
+    /// Replace the shelf snapshot (`None` = nothing parked). Same contract
+    /// as set_media: deduped + derives the indicator so the bars match the
+    /// displayed content.
+    pub fn set_shelf(&mut self, shelf: Option<ShelfView>) -> bool {
+        if self.shelf == shelf {
+            return false;
+        }
+        self.indicator = derive_indicator(self.media.as_ref(), shelf.as_ref());
+        self.shelf = shelf;
+        true
+    }
+
+    /// An OLE drag is over the pill: brighten like hover; on an empty pill
+    /// also shows the drop hint.
+    pub fn set_drop_hover(&mut self, on: bool) -> bool {
+        if self.drop_hover == on {
+            return false;
+        }
+        self.drop_hover = on;
         true
     }
 
@@ -440,14 +490,15 @@ impl Renderer {
             radiusX: radius,
             radiusY: radius,
         };
-        // Appearance per event: hover bumps the highlight, pause dims the
-        // content, expansion fades the artist line in. All re-color the
-        // existing brushes — no allocations on the draw path.
+        // Appearance per event: hover or an OLE drop over the pill bumps the
+        // highlight, pause dims the content, expansion fades the artist line
+        // in. All re-color the existing brushes — no allocations on the draw
+        // path.
         let playing = self.media.as_ref().is_none_or(|media| media.playing);
         let dim = if playing { 1.0 } else { 0.55 };
         let mut fill = self.theme.fill();
         let mut border = self.theme.border();
-        if self.hover {
+        if self.hover || self.drop_hover {
             fill.3 = (fill.3 * HOVER_FILL_MULT).min(1.0);
             border.3 = (border.3 * HOVER_BORDER_MULT).min(1.0);
         }
@@ -479,13 +530,21 @@ impl Renderer {
             self.d2d_context.Clear(None); // fully transparent — taskbar shows through
             self.d2d_context
                 .FillRoundedRectangle(&shape, &self.fill_brush);
-            if self.indicator != Indicator::Idle {
-                // Playing: uneven bars; paused: flat bars, still dimmed text.
-                let heights: &[f32] = if playing {
-                    &[7.0, 13.0, 9.0, 16.0]
-                } else {
-                    &[11.0, 11.0, 11.0, 11.0]
-                };
+            // Vertical bars for media/timer, a staggered horizontal stack for
+            // the shelf — all drawn with the border brush, no allocations.
+            let bars: Option<&[f32]> = match self.indicator {
+                Indicator::Media => {
+                    // Playing: uneven bars; paused: flat bars, still dimmed text.
+                    Some(if playing {
+                        &[7.0, 13.0, 9.0, 16.0]
+                    } else {
+                        &[11.0, 11.0, 11.0, 11.0]
+                    })
+                }
+                Indicator::Timer => Some(&[16.0, 16.0, 16.0]),
+                Indicator::Idle | Indicator::Files(_) => None,
+            };
+            if let Some(heights) = bars {
                 for (index, height) in heights.iter().enumerate() {
                     let x = 12.0 + index as f32 * 4.0;
                     self.d2d_context.FillRectangle(
@@ -499,58 +558,86 @@ impl Renderer {
                     );
                 }
             }
-            // Track title, single-line ellipsized; while expanded the title
-            // rides up and the artist line fades in underneath. Layouts are
+            if let Indicator::Files(count) = self.indicator {
+                // The shelf: one thin line per parked file (up to the cap),
+                // widths stepping down so the top line reads as "next".
+                for index in 0..count {
+                    let y = h / 2.0
+                        + (count as f32 - 1.0) * SHELF_LINE_STEP_DIP / 2.0
+                        - index as f32 * SHELF_LINE_STEP_DIP;
+                    let width = SHELF_LINE_W_DIP - index as f32 * 3.0;
+                    self.d2d_context.FillRectangle(
+                        &D2D_RECT_F {
+                            left: 12.0,
+                            top: y - SHELF_LINE_H_DIP / 2.0,
+                            right: 12.0 + width,
+                            bottom: y + SHELF_LINE_H_DIP / 2.0,
+                        },
+                        &self.border_brush,
+                    );
+                }
+            }
+            // Content line(s): the shelf while it holds files, else the media
+            // track, else (only the empty pill under a drag) the drop hint.
+            // Strings are prebuilt at event time; the layouts below are
             // cached by (text, max width) and rebuilt only on change.
-            if let Some(media) = &self.media {
-                let title = &media.title;
-                if !title.is_empty() {
-                    let max_width = w - TEXT_LEFT_DIP - TEXT_RIGHT_PAD_DIP;
-                    let artist_line = self.expand > 0.05 && !media.artist.is_empty();
-                    let (title_top, artist_top) = if artist_line {
-                        let block = TEXT_SIZE_DIP + 2.0 + ARTIST_SIZE_DIP;
-                        ((h - block) / 2.0, (h - block) / 2.0 + TEXT_SIZE_DIP + 2.0)
-                    } else {
-                        ((h - TEXT_SIZE_DIP) / 2.0, 0.0)
-                    };
-                    let title_layout = Self::ensure_layout(
+            let shelf = self.shelf.as_ref();
+            let media = self.media.as_ref().filter(|_| shelf.is_none());
+            let (title, artist): (&str, &str) = if let Some(shelf) = shelf {
+                (&shelf.title, &shelf.artist)
+            } else if let Some(media) = media {
+                (&media.title, &media.artist)
+            } else if self.drop_hover {
+                (DROP_HINT, "")
+            } else {
+                ("", "")
+            };
+            if !title.is_empty() {
+                let max_width = w - TEXT_LEFT_DIP - TEXT_RIGHT_PAD_DIP;
+                let artist_line = self.expand > 0.05 && !artist.is_empty();
+                let (title_top, artist_top) = if artist_line {
+                    let block = TEXT_SIZE_DIP + 2.0 + ARTIST_SIZE_DIP;
+                    ((h - block) / 2.0, (h - block) / 2.0 + TEXT_SIZE_DIP + 2.0)
+                } else {
+                    ((h - TEXT_SIZE_DIP) / 2.0, 0.0)
+                };
+                let title_layout = Self::ensure_layout(
+                    &self.dwrite_factory,
+                    &self.text_format,
+                    &mut self.text_layout,
+                    &mut self.text_layout_key,
+                    title,
+                    max_width,
+                    TEXT_SIZE_DIP * 1.4,
+                )?;
+                self.d2d_context.DrawTextLayout(
+                    Vector2 {
+                        X: TEXT_LEFT_DIP,
+                        Y: title_top,
+                    },
+                    title_layout,
+                    &self.text_brush,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
+                if artist_line {
+                    let artist_layout = Self::ensure_layout(
                         &self.dwrite_factory,
-                        &self.text_format,
-                        &mut self.text_layout,
-                        &mut self.text_layout_key,
-                        title,
+                        &self.artist_format,
+                        &mut self.artist_layout,
+                        &mut self.artist_layout_key,
+                        artist,
                         max_width,
-                        TEXT_SIZE_DIP * 1.4,
+                        ARTIST_SIZE_DIP * 1.4,
                     )?;
                     self.d2d_context.DrawTextLayout(
                         Vector2 {
                             X: TEXT_LEFT_DIP,
-                            Y: title_top,
+                            Y: artist_top,
                         },
-                        title_layout,
-                        &self.text_brush,
+                        artist_layout,
+                        &self.artist_brush,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
-                    if artist_line {
-                        let artist_layout = Self::ensure_layout(
-                            &self.dwrite_factory,
-                            &self.artist_format,
-                            &mut self.artist_layout,
-                            &mut self.artist_layout_key,
-                            &media.artist,
-                            max_width,
-                            ARTIST_SIZE_DIP * 1.4,
-                        )?;
-                        self.d2d_context.DrawTextLayout(
-                            Vector2 {
-                                X: TEXT_LEFT_DIP,
-                                Y: artist_top,
-                            },
-                            artist_layout,
-                            &self.artist_brush,
-                            D2D1_DRAW_TEXT_OPTIONS_NONE,
-                        );
-                    }
                 }
             }
             self.d2d_context.EndDraw(None, None).inspect_err(|e| {

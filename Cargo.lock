@@ -36,6 +36,7 @@ name = "taskbar-island"
 version = "0.1.0"
 dependencies = [
  "windows",
+ "windows-core",
  "windows-future",
  "windows-numerics",
 ]
