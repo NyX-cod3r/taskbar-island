@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Instant;
 
 use render::Renderer;
 use windows::core::{w, Error, HRESULT, HSTRING, PCWSTR};
@@ -41,14 +42,14 @@ use windows::Win32::UI::Shell::ABN_POSCHANGED;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE; // verified empirically: leave arrives as 0x2A3 (675)
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, MessageBoxW,
-    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetWindowPos,
-    GetParent, SetParent, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HWND_TOP,
-    EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_CAPTURESTART, IDC_ARROW,
-    MB_ICONERROR, MB_OK, MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    WINEVENT_OUTOFCONTEXT, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_MOUSEMOVE, WM_NCCREATE,
-    WM_NCDESTROY, WM_SETTINGCHANGE, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE,
-    WS_EX_NOREDIRECTIONBITMAP,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, LoadCursorW,
+    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
+    SetWindowPos, SetTimer, GetParent, SetParent, ShowWindow, TranslateMessage, CS_HREDRAW,
+    CS_VREDRAW, HWND_TOP, EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_CAPTURESTART,
+    IDC_ARROW, MB_ICONERROR, MB_OK, MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_SETTINGCHANGE,
+    WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
 };
 
 const PILL_CLASS: PCWSTR = w!("TaskbarIslandPillClass");
@@ -60,6 +61,11 @@ const WM_APP_RECHECK: u32 = WM_APP + 1;
 /// Our appbar callback message; `wparam == ABN_POSCHANGED` → taskbar geometry changed.
 const APPBAR_MSG: u32 = WM_APP + 2;
 const WM_APP_MEDIA: u32 = WM_APP + 3;
+/// Hover-expansion animation (see AGENTS.md: the only polling allowed is
+/// while animating). Timer-driven ~60 fps ticks for the ~180 ms transition.
+const EXPAND_TIMER_ID: usize = 1;
+const EXPAND_TICK_MS: u32 = 16;
+const EXPAND_SECONDS: f32 = 0.18;
 
 static G_HWND: AtomicIsize = AtomicIsize::new(0);
 static G_TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
@@ -150,6 +156,7 @@ fn run() -> windows::core::Result<()> {
                     right: 120,
                     bottom: 32,
                 },
+                anchor::PILL_WIDTH_DIP,
             );
             let w = (placement.rect.right - placement.rect.left).max(1);
             let h = (placement.rect.bottom - placement.rect.top).max(1);
@@ -166,6 +173,7 @@ fn run() -> windows::core::Result<()> {
         APP.with(|a| *a.borrow_mut() = Some(app));
 
         let (media_tx, media_rx) = mpsc::channel();
+        let (toggle_tx, toggle_rx) = mpsc::channel::<()>();
         let media_snapshot = Arc::new(Mutex::new(None));
         let bridge_snapshot = Arc::clone(&media_snapshot);
         let hwnd_value = hwnd.0 as isize;
@@ -182,14 +190,14 @@ fn run() -> windows::core::Result<()> {
                 );
             }
         });
-        if let Err(error) = activities::media::subscribe(media_tx) {
+        if let Err(error) = activities::media::subscribe(media_tx, toggle_rx) {
             log::log_err("media.subscribe", &error);
         }
         APP.with(|a| {
-            a.borrow_mut()
-                .as_mut()
-                .expect("app initialized")
-                .media_snapshot = media_snapshot
+            let mut app = a.borrow_mut();
+            let app = app.as_mut().expect("app initialized");
+            app.media_snapshot = media_snapshot;
+            app.media_toggle = toggle_tx;
         });
 
         // Event sources (no polling): foreground changes → fullscreen recheck,
@@ -259,6 +267,14 @@ struct App {
     /// App-owned media source of truth: the renderer is recreated on device
     /// loss or when re-showing, and is pushed fresh state from here.
     media_state: Option<activities::media::MediaUpdate>,
+    /// UI → media-worker play/pause toggle requests.
+    media_toggle: mpsc::Sender<()>,
+    /// Hover-expansion animation state (compact → expanded pill). Only the
+    /// WM_TIMER ticks advance it; there is no polling when idle.
+    expand: f32,
+    expand_target: f32,
+    expanding: bool,
+    animate_started: Option<Instant>,
 }
 
 impl App {
@@ -299,6 +315,12 @@ impl App {
             hover: false,
             tracking: false,
             media_state: None,
+            expand: 0.0,
+            expand_target: 0.0,
+            expanding: false,
+            animate_started: None,
+            // Placeholder replaced right after App::constructs (see main()).
+            media_toggle: mpsc::channel().0,
         })
     }
 
@@ -337,7 +359,12 @@ impl App {
             );
         }
         let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
-        let placement = anchor::compute(taskbar, dpi, current);
+        // Hover expansion changes the pill's width; the animation ticks own
+        // the progress, and every other placement source respects it. All
+        // geometry math stays inside anchor.rs.
+        let width = anchor::PILL_WIDTH_DIP
+            + (anchor::EXPANDED_WIDTH_DIP - anchor::PILL_WIDTH_DIP) * self.expand;
+        let placement = anchor::compute(taskbar, dpi, current, width);
         log::log(&format!(
             "apply: placement={:?} visible={} (taskbar dpi={dpi})",
             placement.rect, placement.visible
@@ -437,16 +464,106 @@ impl App {
 
     /// Hover-status transition. The renderer dedupes no-op transitions; the
     /// draw only happens for real changes while visible.
-    fn set_hover(&mut self, hover: bool) {
+    fn set_hover(&mut self, hover: bool) -> bool {
         self.hover = hover;
         let Some(renderer) = self.renderer.as_mut() else {
-            return;
+            return false;
         };
         if renderer.set_hover(hover) {
             log::log(&format!("hover: {hover}"));
             if self.visible {
                 if let Err(error) = unsafe { renderer.draw() } {
                     log::log_err("hover.draw", &error);
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Start (or re-target) the hover-expansion animation. Purely event
+    /// triggered: runs a short WM_TIMER-driven tween while active, then kills
+    /// the timer — no periodic work while idle.
+    fn set_expansion(&mut self, expanded: bool) {
+        let target = if expanded { 1.0 } else { 0.0 };
+        if self.expanding && (self.expand_target - target).abs() < f32::EPSILON {
+            return; // already animating toward this target
+        }
+        self.expand_target = target;
+        if !self.expanding {
+            self.animate_started = Some(Instant::now());
+            self.expanding = true;
+            unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    EXPAND_TIMER_ID,
+                    EXPAND_TICK_MS,
+                    None::<unsafe extern "system" fn(HWND, u32, usize, u32)>,
+                );
+            }
+        }
+    }
+
+    /// Advance the expansion tween one tick; resize + redraw if anything
+    /// changed. Renders only while the transition runs.
+    fn on_anim_tick(&mut self) {
+        let Some(started) = self.animate_started else {
+            self.stop_expansion();
+            return;
+        };
+        let t = (started.elapsed().as_secs_f32() / EXPAND_SECONDS).min(1.0);
+        let eased = t * t * (3.0 - 2.0 * t); // smoothstep
+        self.expand = if self.expand_target >= 0.5 {
+            eased
+        } else {
+            1.0 - eased
+        };
+        if t >= 1.0 {
+            self.expand = self.expand_target;
+            self.stop_expansion();
+        }
+        self.apply_expansion();
+    }
+
+    fn stop_expansion(&mut self) {
+        if self.expanding {
+            self.expanding = false;
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), EXPAND_TIMER_ID);
+            }
+        }
+    }
+
+    /// Sync the window to the animated width and draw at the eased progress.
+    fn apply_expansion(&mut self) {
+        let taskbar = match anchor::taskbar_window() {
+            Some(taskbar) => taskbar,
+            None => return, // explorer restarting; apply() will recover
+        };
+        let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
+        let width = anchor::PILL_WIDTH_DIP
+            + (anchor::EXPANDED_WIDTH_DIP - anchor::PILL_WIDTH_DIP) * self.expand;
+        let placement = anchor::compute(taskbar, dpi, self.pill, width);
+        let w = (placement.rect.right - placement.rect.left).max(1);
+        let h = (placement.rect.bottom - placement.rect.top).max(1);
+        let resized = placement.rect != self.pill;
+        if resized {
+            if set_window_rect(self.hwnd, placement.rect, w, h).is_err() {
+                self.stop_expansion();
+                return; // window gone; WM_NCDESTROY follows
+            }
+            self.pill = placement.rect;
+        }
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.set_expand(self.expand);
+            if resized {
+                if let Err(error) = unsafe { renderer.resize((w as u32, h as u32), dpi as f32 / 96.0) } {
+                    log::log_err("anim.resize", &error);
+                }
+            }
+            if self.visible {
+                if let Err(error) = unsafe { renderer.draw() } {
+                    log::log_err("anim.draw", &error);
                 }
             }
         }
@@ -523,11 +640,30 @@ impl App {
                     }
                 }
                 self.set_hover(true);
+                if self.hover && self.visible {
+                    self.set_expansion(true);
+                }
                 Some(LRESULT(0))
             }
             WM_MOUSELEAVE => {
                 self.tracking = false;
-                self.set_hover(false);
+                if self.set_hover(false) {
+                    self.set_expansion(false);
+                }
+                Some(LRESULT(0))
+            }
+            WM_LBUTTONDOWN => {
+                // Swallow so the taskbar doesn't react underneath the pill.
+                Some(LRESULT(0))
+            }
+            WM_LBUTTONUP => {
+                // Toggle the current session's play state; the media worker's
+                // PlaybackInfoChanged event republishes the new state to us.
+                let _ = self.media_toggle.send(());
+                Some(LRESULT(0))
+            }
+            WM_TIMER if wparam.0 == EXPAND_TIMER_ID => {
+                self.on_anim_tick();
                 Some(LRESULT(0))
             }
             _ => None,
@@ -546,20 +682,41 @@ unsafe extern "system" fn wnd_proc(
     match msg {
         WM_NCCREATE => return DefWindowProcW(hwnd, msg, wparam, lparam),
         WM_NCDESTROY => {
-            APP.with(|a| *a.borrow_mut() = None);
+            // try_borrow: WM_NCDESTROY can itself arrive nested (see the
+            // reentrancy note below) while an outer handler holds the APP
+            // borrow; clearing the slot is then best-effort and harmless.
+            let _ = APP.try_with(|a| {
+                if let Ok(mut app) = a.try_borrow_mut() {
+                    *app = None;
+                }
+            });
             PostQuitMessage(0);
             return LRESULT(0);
         }
         _ => {}
     }
 
-    // Reentrancy note: on_message only calls SetWindowPos/ShowWindow, whose
-    // resulting messages (WM_WINDOWPOS*, WM_PAINT) fall through to DefWindowProc
-    // and never re-borrow APP, so a RefCell borrow here cannot panic.
-    let handled = APP.with(|a| match a.borrow_mut().as_mut() {
-        Some(app) => app.on_message(msg, wparam),
-        None => None,
-    });
+    // Reentrancy: on_message calls SetWindowPos (apply()/apply_expansion()
+    // raise the pill above the taskbar's full-strip content bridge), and
+    // SetWindowPos synchronously dispatches WM_WINDOWPOSCHANGING,
+    // WM_NCCALCSIZE and WM_WINDOWPOSCHANGED into wnd_proc *inside that call*,
+    // while the outer message handler still holds the APP borrow. None of
+    // those nested messages read App state (the dispatcher below never
+    // handled them), and DefWindowProc processes them exactly as before, so
+    // on a borrow conflict we defer to the default proc instead of panicking.
+    // Empirically confirmed: nested 0x46 WM_WINDOWPOSCHANGING, 0x83
+    // WM_NCCALCSIZE, 0x85 WM_NCPAINT, 0x14 WM_ERASEBKGND, 0x47
+    // WM_WINDOWPOSCHANGED (+0x3/0x5 WM_MOVE/WM_SIZE from DSProcW of 0x47) on
+    // every width-changing SetWindowPos of the expand animation.
+    let handled = APP
+        .try_with(|a| match a.try_borrow_mut() {
+            Ok(mut app) => app.as_mut().and_then(|app| app.on_message(msg, wparam)),
+            // Borrow conflict ⇒ an outer handler that called SetWindowPos is
+            // still on the stack; the nested cluster needs no App state and
+            // DSProcW handles it exactly as before, so just defer there.
+            Err(_) => None,
+        })
+        .unwrap_or(None);
     match handled {
         Some(result) => result,
         None => DefWindowProcW(hwnd, msg, wparam, lparam),

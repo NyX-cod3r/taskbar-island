@@ -3,12 +3,15 @@
 //! Event chain: session-manager request → publish current session, subscribe
 //! `CurrentSessionChanged` + per-session `PlaybackInfoChanged`. Everything the
 //! UI ends up drawing arrives as a `MediaUpdate` on the channel; nothing is
-//! ever polled here. Updates are gated by `PlaybackStatus == Playing`: a
-//! paused/stopped/missing session publishes the empty-title *sentinel*
-//! (`MediaUpdate` with empty strings), which the UI path maps to "nothing
-//! playing" and dedupes.
+//! ever polled here.
+//!
+//! Updates carry a `playing` flag: while any session exists the pill keeps
+//! showing the track (dimmed when paused); the empty-title sentinel appears
+//! only when there is no session at all. The same worker services play/pause
+//! toggle requests from the UI via a blocking `recv()` on a channel — no
+//! polling, the WinRT events do the rest.
 
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 
 use windows::Foundation::TypedEventHandler;
 use windows::Media::Control::{
@@ -21,21 +24,30 @@ use windows::Media::Control::{
 pub struct MediaUpdate {
     pub title: String,
     pub artist: String,
+    pub playing: bool,
 }
 
 impl MediaUpdate {
-    /// The "nothing playing" sentinel.
+    /// The "no session" sentinel: the pill has nothing to show.
     fn none() -> Self {
         Self {
             title: String::new(),
             artist: String::new(),
+            playing: false,
         }
     }
 }
 
+fn update(title: String, artist: String, playing: bool) -> MediaUpdate {
+    MediaUpdate { title, artist, playing }
+}
+
 /// Starts the GSMTC listener without polling. The callback posts a compact
 /// snapshot to the caller's channel, which can then post a UI message.
-pub fn subscribe(sender: Sender<MediaUpdate>) -> windows::core::Result<()> {
+pub fn subscribe(
+    sender: Sender<MediaUpdate>,
+    toggle_rx: Receiver<()>,
+) -> windows::core::Result<()> {
     std::thread::Builder::new()
         .name("taskbar-island-media".into())
         .spawn(move || {
@@ -67,7 +79,7 @@ pub fn subscribe(sender: Sender<MediaUpdate>) -> windows::core::Result<()> {
                                     publish_session(&session, &session_sender);
                                     hook_playback_info(session, &session_sender);
                                 }
-                                // No current session at all → nothing playing.
+                                // No current session at all → nothing to show.
                                 Err(_) => {
                                     let _ = session_sender.send(MediaUpdate::none());
                                 }
@@ -77,7 +89,21 @@ pub fn subscribe(sender: Sender<MediaUpdate>) -> windows::core::Result<()> {
                     },
                 );
                 let _ = manager.CurrentSessionChanged(&handler);
-                // Keep the manager and callback alive for the process.
+
+                // Blocked recv = event-driven by construction. Each UI click
+                // toggles the current session's play state; the resulting
+                // PlaybackInfoChanged event republishes the state for us.
+                while let Ok(()) = toggle_rx.recv() {
+                    if let Ok(session) = manager.GetCurrentSession() {
+                        // Fire and forget: the op keeps itself alive via leak;
+                        // its completion drives no further work (the changed
+                        // playback event does).
+                        if let Ok(op) = session.TryTogglePlayPauseAsync() {
+                            Box::leak(Box::new(op));
+                        }
+                    }
+                }
+                // Channel closed (app exiting): stop the thread pool callback.
                 std::thread::park();
             });
         })
@@ -87,9 +113,9 @@ pub fn subscribe(sender: Sender<MediaUpdate>) -> windows::core::Result<()> {
         })
 }
 
-/// Registers the per-session `PlaybackInfoChanged` event (play/pause/track
-/// changes) so pausing and stopping reach the UI without polling, and keeps
-/// the session object alive for the process.
+/// Registers the per-session `PlaybackInfoChanged` event so pausing and
+/// stopping reach the UI without polling, and keeps the session object alive
+/// for the process.
 fn hook_playback_info(
     session: GlobalSystemMediaTransportControlsSession,
     sender: &Sender<MediaUpdate>,
@@ -112,9 +138,10 @@ fn hook_playback_info(
     Box::leak(Box::new(session));
 }
 
-/// Publishes the *visible* media state: the track only while the session is
-/// actually playing, otherwise the nothing-playing sentinel. The status is
-/// re-read inside the async callback so pause events race no track updates.
+/// Publishes the visible media state: the track stays up while the session
+/// exists (dimmed when paused), the sentinel appears only with no session.
+/// The status is re-read inside the async callback so pause events race no
+/// track updates.
 fn publish_session(
     session: &GlobalSystemMediaTransportControlsSession,
     sender: &Sender<MediaUpdate>,
@@ -139,11 +166,11 @@ fn publish_session(
             .Artist()
             .map(|value| value.to_string())
             .unwrap_or_default();
-        if playing && !title.is_empty() {
-            // Playing but empty title is transient (metadata not ready yet);
-            // let the next event supply it instead of clearing the pill.
-            let _ = sender.send(MediaUpdate { title, artist });
-        } else if !playing {
+        if !title.is_empty() {
+            // Playing but empty artist is fine; empty title is transient
+            // (metadata not ready) — wait for the next event instead.
+            let _ = sender.send(update(title, artist, playing));
+        } else {
             let _ = sender.send(MediaUpdate::none());
         }
     });
@@ -155,17 +182,22 @@ mod tests {
 
     #[test]
     fn update_keeps_track_metadata() {
-        let update = MediaUpdate {
-            title: "Track".into(),
-            artist: "Artist".into(),
-        };
+        let update = update("Track".into(), "Artist".into(), true);
         assert_eq!(update.title, "Track");
         assert_eq!(update.artist, "Artist");
+        assert!(update.playing);
     }
 
     #[test]
     fn sentinel_is_the_empty_title() {
         let none = MediaUpdate::none();
-        assert!(none.title.is_empty() && none.artist.is_empty());
+        assert!(none.title.is_empty() && none.artist.is_empty() && !none.playing);
+    }
+
+    #[test]
+    fn paused_track_keeps_its_title() {
+        let paused = update("Track".into(), "Artist".into(), false);
+        assert!(!paused.playing);
+        assert_eq!(paused.title, "Track");
     }
 }

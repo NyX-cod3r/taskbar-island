@@ -17,7 +17,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, FindWindowW, GetWindowRect, IsWindowVisible,
 };
 
-/// Logical (96-DPI) pill metrics — the visual spec from the design doc.
+/// Logical (96-DPI) pill metrics — the visual spec.
+/// Hover expands from `PILL_WIDTH_DIP` to `EXPANDED_WIDTH_DIP` (artist line
+/// reveals). The right edge stays pinned next to the tray regardless of width.
+pub const PILL_WIDTH_DIP: f32 = 120.0;
+pub const EXPANDED_WIDTH_DIP: f32 = 220.0;
 const GAP_LEFT_OF_TRAY_DIP: f32 = 8.0; // breathing room between tray icons and pill
 const PILL_Y_OFFSET_DIP: f32 = 4.0;
 /// Where (and whether) the pill should be right now.
@@ -45,7 +49,7 @@ pub fn taskbar_window() -> Option<HWND> {
 /// Event-driven callers re-invoke this on: ABN_POSCHANGED, TaskbarCreated,
 /// WM_DISPLAYCHANGE, WM_DPICHANGED, and foreground-window changes
 /// (EVENT_SYSTEM_FOREGROUND hook, for fullscreen detection).
-pub fn compute(taskbar: HWND, dpi: u32, fallback: RECT) -> Placement {
+pub fn compute(taskbar: HWND, dpi: u32, fallback: RECT, width_dip: f32) -> Placement {
     // 1. Fullscreen 3D app / game / presentation mode / fullscreen store app → hide.
     if is_suppressed() {
         return Placement {
@@ -93,8 +97,9 @@ pub fn compute(taskbar: HWND, dpi: u32, fallback: RECT) -> Placement {
     // the host's inner padding.
     let h = (tray.bottom - tray.top + 2).max(1);
     // Keep the island wide horizontally; only its vertical extent follows
-    // the tray-arrow button.
-    let w = (120.0 * scale).round() as i32;
+    // the tray-arrow button. `width_dip` drives hover expansion (the right
+    // edge is derived below, so the pill always grows leftward).
+    let w = (width_dip * scale).round() as i32;
 
     let mut x = tray.left - (GAP_LEFT_OF_TRAY_DIP * scale).round() as i32 - w;
     let min_x = tb.left + edge_margin;

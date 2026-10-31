@@ -9,7 +9,7 @@
 - Each activity is a module implementing the Activity trait: id, priority, poll/subscribe, render(compact|expanded), on_click.
 - Add unit tests for state.rs priority logic. Keep unsafe blocks small and commented.
 
-## Status (updated 2026-10-31)
+## Status (updated 2026-11-01)
 - **Phase 1 COMPLETE** (commit a8f4744): empty anchored pill, `WS_CHILD` inside `Shell_TrayWnd`
   (no topmost/z-order fight), geometry only in anchor.rs. Rendering: D3D11 ->
   `CreateSwapChainForComposition` (premultiplied alpha) -> DComp visual on the pill HWND -> D2D
@@ -24,3 +24,23 @@
   ActivityQueue), activities/media.rs (GSMTC worker -> mpsc -> WM_APP_MEDIA),
   activities/timer.rs, Indicator bars in render.rs. Next: hover/click input, animation engine,
   media pill polish.
+- **Phase 3 COMPLETE**: media pill interaction.
+  - Hover expand: 120 -> 220 DIP via `anchor::compute(width_dip)`, right edge stays pinned
+    next to the tray. 16 ms WM_TIMER smoothstep tween (~180 ms, EXPAND_SECONDS 0.18); timer is
+    killed after the tween — the only "polling" that ever runs is during animation.
+  - Expanded layout: title + ellipsized dimmed artist line via
+    `Renderer::ensure_layout` (cached by (text, max width)).
+  - Click = play/pause toggle: WM_LBUTTONUP -> mpsc -> media worker
+    `TryTogglePlayPauseAsync`; `PlaybackInfoChanged` republishes. Paused: flat bars +
+    0.55-dimmed text; playing: uneven bars.
+  - **Reentrancy crash found & fixed**: `SetWindowPos` (called under the APP RefCell borrow,
+    e.g. first expand tick) synchronously dispatches WM_WINDOWPOSCHANGING/NCCALCSIZE/NCPAINT/
+    ERASEBKGND/WINDOWPOSCHANGED/MOVE/SIZE into wnd_proc -> nested `borrow_mut()` panicked
+    ("RefCell already borrowed"). wnd_proc now `try_borrow_mut()` and defers nested messages
+    to DefWindowProcW; empirically verified pair set. WM_NCDESTROY clears the slot
+    best-effort too. Phases 1-2 never hit this only because apply() skipped SetWindowPos
+    when the rect was unchanged.
+- Phase 3 measurements (release): idle CPU **0 ms / 5 s**; working set **59.4 MB**, private
+  49.5 MB (RAM pass is deliberately last). 7/7 unit tests, clippy --all-targets clean.
+  Synthetic repro (SetCursorPos + mouse_event, DPI-aware ctx): hover enter -> expand -> leave
+  -> collapse -> click pause -> click resume; zero panics, log 237 lines clean.

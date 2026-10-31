@@ -57,8 +57,10 @@ const CORNER_RADIUS_DIP: f32 = 8.0;
 const HOVER_FILL_MULT: f32 = 2.6;
 const HOVER_BORDER_MULT: f32 = 2.0;
 /// Media row layout (DIP): the bars column sits on the left, the track title
-/// starts right of it and is clipped at the right padding.
+/// starts right of it and is clipped at the right padding. The artist line is
+/// a touch smaller and appears only while expanded.
 const TEXT_SIZE_DIP: f32 = 12.0;
+const ARTIST_SIZE_DIP: f32 = 11.0;
 const TEXT_LEFT_DIP: f32 = 34.0;
 const TEXT_RIGHT_PAD_DIP: f32 = 6.0;
 
@@ -86,13 +88,22 @@ pub struct Renderer {
     fill_brush: ID2D1SolidColorBrush,
     border_brush: ID2D1SolidColorBrush,
     text_format: IDWriteTextFormat,
+    /// Artist line format (slightly smaller) for the expanded pill.
+    artist_format: IDWriteTextFormat,
     /// Retained: the ellipsis trimming sign is created from this at draw time.
     dwrite_factory: IDWriteFactory,
     text_brush: ID2D1SolidColorBrush,
+    /// Artist line brush; recolored per draw with the expansion fade.
+    artist_brush: ID2D1SolidColorBrush,
     /// Single-line, ellipsis-trimmed title layout — rebuilt only when the
     /// title or available width changes (keyed cache below).
     text_layout: Option<IDWriteTextLayout>,
     text_layout_key: (String, f32),
+    artist_layout: Option<IDWriteTextLayout>,
+    artist_layout_key: (String, f32),
+    /// Hover-expansion progress (0 compact — 1 expanded), driven by the UI's
+    /// animation timer; pure render input, no timing logic here.
+    expand: f32,
     /// Backbuffer size in physical pixels.
     size: (u32, u32),
     /// DIPs → physical pixels (dpi / 96).
@@ -220,7 +231,19 @@ impl Renderer {
         )?;
         text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        let artist_format = text_factory.CreateTextFormat(
+            w!("Segoe UI"),
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            ARTIST_SIZE_DIP,
+            w!("en-US"),
+        )?;
+        artist_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        artist_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
         let text_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.text()), None)?;
+        let artist_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.text()), None)?;
 
         log(&format!("create ok: size={:?} scale={scale}", size));
         Ok(Self {
@@ -232,16 +255,21 @@ impl Renderer {
             fill_brush,
             border_brush,
             text_format,
+            artist_format,
             dwrite_factory: text_factory,
             text_brush,
+            artist_brush,
             text_layout: None,
             text_layout_key: (String::new(), 0.0),
+            artist_layout: None,
+            artist_layout_key: (String::new(), 0.0),
             size,
             scale,
             indicator: Indicator::Idle,
             theme,
             hover: false,
             media: None,
+            expand: 0.0,
         })
     }
 
@@ -327,6 +355,47 @@ impl Renderer {
         true
     }
 
+    /// Hover-expansion progress (0..1), set by the animation timer ticks.
+    pub fn set_expand(&mut self, expand: f32) {
+        self.expand = expand;
+    }
+
+    /// Single-line ellipsized layout, cached by (text, max width); rebuilt
+    /// only when either changes. Shared by the title and artist lines.
+    ///
+    /// # Safety
+    /// DirectWrite factory/format COM calls; callers draw on the UI thread
+    /// inside existing unsafe blocks.
+    unsafe fn ensure_layout<'a>(
+        factory: &IDWriteFactory,
+        format: &IDWriteTextFormat,
+        cache: &'a mut Option<IDWriteTextLayout>,
+        cache_key: &mut (String, f32),
+        text: &str,
+        max_width: f32,
+        max_height: f32,
+    ) -> Result<&'a IDWriteTextLayout> {
+        if cache_key.0 != text || (cache_key.1 - max_width).abs() > f32::EPSILON {
+            let chars: Vec<u16> = text.encode_utf16().collect();
+            let layout =
+                factory.CreateTextLayout(&chars, format, max_width, max_height)?;
+            layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            // A plain "…" is attached through the sign object.
+            let sign = factory.CreateEllipsisTrimmingSign(&layout)?;
+            layout.SetTrimming(
+                &DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    delimiter: 0,
+                    delimiterCount: 0,
+                },
+                &sign,
+            )?;
+            *cache = Some(layout);
+            *cache_key = (text.to_owned(), max_width);
+        }
+        Ok(cache.as_ref().expect("layout cached"))
+    }
+
     /// Resize the backbuffer for a new physical-pixel size. No-op if unchanged.
     pub unsafe fn resize(&mut self, size: (u32, u32), scale: f32) -> Result<()> {
         if size == self.size && scale == self.scale {
@@ -371,16 +440,32 @@ impl Renderer {
             radiusX: radius,
             radiusY: radius,
         };
-        // Hover recolors the existing brushes — no new allocation, applied only
-        // on the transition events that led to this draw.
+        // Appearance per event: hover bumps the highlight, pause dims the
+        // content, expansion fades the artist line in. All re-color the
+        // existing brushes — no allocations on the draw path.
+        let playing = self.media.as_ref().is_none_or(|media| media.playing);
+        let dim = if playing { 1.0 } else { 0.55 };
         let mut fill = self.theme.fill();
         let mut border = self.theme.border();
         if self.hover {
             fill.3 = (fill.3 * HOVER_FILL_MULT).min(1.0);
             border.3 = (border.3 * HOVER_BORDER_MULT).min(1.0);
         }
+        let text_base = self.theme.text();
         self.fill_brush.SetColor(&Self::color(fill));
         self.border_brush.SetColor(&Self::color(border));
+        self.text_brush.SetColor(&Self::color((
+            text_base.0,
+            text_base.1,
+            text_base.2,
+            text_base.3 * dim,
+        )));
+        self.artist_brush.SetColor(&Self::color((
+            text_base.0,
+            text_base.1,
+            text_base.2,
+            text_base.3 * 0.8 * self.expand.clamp(0.0, 1.0) * dim,
+        )));
         // Wrap the *current* back buffer for this draw only. The bitmap (and
         // the buffer reference it holds) MUST be dropped before Present: with
         // CreateSwapChainForComposition, DWM cannot scan out a frame while any
@@ -395,10 +480,11 @@ impl Renderer {
             self.d2d_context
                 .FillRoundedRectangle(&shape, &self.fill_brush);
             if self.indicator != Indicator::Idle {
-                let heights: &[f32] = if self.indicator == Indicator::Media {
+                // Playing: uneven bars; paused: flat bars, still dimmed text.
+                let heights: &[f32] = if playing {
                     &[7.0, 13.0, 9.0, 16.0]
                 } else {
-                    &[16.0, 16.0, 16.0]
+                    &[11.0, 11.0, 11.0, 11.0]
                 };
                 for (index, height) in heights.iter().enumerate() {
                     let x = 12.0 + index as f32 * 4.0;
@@ -413,45 +499,58 @@ impl Renderer {
                     );
                 }
             }
-            // Active track title: single line, ellipsis-trimmed at the right
-            // padding, vertically centered. The layout is rebuilt only when
-            // the title or the available width changes.
+            // Track title, single-line ellipsized; while expanded the title
+            // rides up and the artist line fades in underneath. Layouts are
+            // cached by (text, max width) and rebuilt only on change.
             if let Some(media) = &self.media {
                 let title = &media.title;
                 if !title.is_empty() {
                     let max_width = w - TEXT_LEFT_DIP - TEXT_RIGHT_PAD_DIP;
-                    let key = (title.clone(), max_width);
-                    let layout = if self.text_layout_key == key {
-                        self.text_layout.as_ref().expect("layout cached with key")
+                    let artist_line = self.expand > 0.05 && !media.artist.is_empty();
+                    let (title_top, artist_top) = if artist_line {
+                        let block = TEXT_SIZE_DIP + 2.0 + ARTIST_SIZE_DIP;
+                        ((h - block) / 2.0, (h - block) / 2.0 + TEXT_SIZE_DIP + 2.0)
                     } else {
-                        let chars: Vec<u16> = title.encode_utf16().collect();
-                        let layout = self.dwrite_factory.CreateTextLayout(
-                            &chars,
-                            &self.text_format,
-                            max_width,
-                            h,
-                        )?;
-                        layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-                        // A plain "…" needs the sign object attached via the factory.
-                        let sign = self.dwrite_factory.CreateEllipsisTrimmingSign(&layout)?;
-                        layout.SetTrimming(
-                            &DWRITE_TRIMMING {
-                                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                                delimiter: 0,
-                                delimiterCount: 0,
-                            },
-                            &sign,
-                        )?;
-                        self.text_layout = Some(layout);
-                        self.text_layout_key = key;
-                        self.text_layout.as_ref().expect("layout was just set")
+                        ((h - TEXT_SIZE_DIP) / 2.0, 0.0)
                     };
+                    let title_layout = Self::ensure_layout(
+                        &self.dwrite_factory,
+                        &self.text_format,
+                        &mut self.text_layout,
+                        &mut self.text_layout_key,
+                        title,
+                        max_width,
+                        TEXT_SIZE_DIP * 1.4,
+                    )?;
                     self.d2d_context.DrawTextLayout(
-                        Vector2 { X: TEXT_LEFT_DIP, Y: 0.0 },
-                        layout,
+                        Vector2 {
+                            X: TEXT_LEFT_DIP,
+                            Y: title_top,
+                        },
+                        title_layout,
                         &self.text_brush,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
+                    if artist_line {
+                        let artist_layout = Self::ensure_layout(
+                            &self.dwrite_factory,
+                            &self.artist_format,
+                            &mut self.artist_layout,
+                            &mut self.artist_layout_key,
+                            &media.artist,
+                            max_width,
+                            ARTIST_SIZE_DIP * 1.4,
+                        )?;
+                        self.d2d_context.DrawTextLayout(
+                            Vector2 {
+                                X: TEXT_LEFT_DIP,
+                                Y: artist_top,
+                            },
+                            artist_layout,
+                            &self.artist_brush,
+                            D2D1_DRAW_TEXT_OPTIONS_NONE,
+                        );
+                    }
                 }
             }
             self.d2d_context.EndDraw(None, None).inspect_err(|e| {
