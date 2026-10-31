@@ -1,13 +1,14 @@
 //! TaskbarIsland — a Dynamic-Island-style pill anchored to the Windows 11 taskbar.
 //!
 //! Phase 1: an anchored, empty pill that matches the taskbar's active-item
-//! highlight and disappears when a fullscreen app owns the screen. Input
-//! handling, theme following, and activities arrive in later phases.
+//! highlight and disappears when a fullscreen app owns the screen.
+//! Phase 2: the pill lives directly inside the taskbar (`WS_CHILD` of
+//! `Shell_TrayWnd` — no topmost/z-order fight), answers hover, and renders the
+//! active GSMTC media session's track title.
 //!
-//! The window is borderless, topmost, non-activating and click-through; it
-//! never hosts a taskbar button (WS_EX_TOOLWINDOW) and gets its per-pixel
-//! alpha from a DirectComposition swapchain (WS_EX_NOREDIRECTIONBITMAP),
-//! not from WS_EX_LAYERED.
+//! The window is borderless and non-activating; it never hosts a taskbar
+//! button and gets its per-pixel alpha from a DirectComposition swapchain
+//! (`WS_EX_NOREDIRECTIONBITMAP`), not from `WS_EX_LAYERED`.
 
 #![windows_subsystem = "windows"]
 
@@ -37,15 +38,17 @@ use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Shell::ABN_POSCHANGED;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE; // verified empirically: leave arrives as 0x2A3 (675)
+use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, MessageBoxW,
     PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetWindowPos,
-    GetParent, SetParent, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-    EVENT_SYSTEM_FOREGROUND,
-    EVENT_OBJECT_FOCUS, EVENT_SYSTEM_CAPTURESTART, IDC_ARROW, MB_ICONERROR, MB_OK, MSG,
-    SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_DISPLAYCHANGE,
-    WM_DPICHANGED, WM_NCCREATE, WM_NCDESTROY, WM_SETTINGCHANGE, WNDCLASSEXW, WS_CHILD,
-    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TRANSPARENT,
+    GetParent, SetParent, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HWND_TOP,
+    EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_CAPTURESTART, IDC_ARROW,
+    MB_ICONERROR, MB_OK, MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    WINEVENT_OUTOFCONTEXT, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_MOUSEMOVE, WM_NCCREATE,
+    WM_NCDESTROY, WM_SETTINGCHANGE, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE,
+    WS_EX_NOREDIRECTIONBITMAP,
 };
 
 const PILL_CLASS: PCWSTR = w!("TaskbarIslandPillClass");
@@ -62,6 +65,14 @@ static G_HWND: AtomicIsize = AtomicIsize::new(0);
 static G_TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
 
 fn main() {
+    // panic = "abort" release profiles print nothing anywhere — hook panics
+    // into the TBI log so a crash leaves evidence behind.
+    std::panic::set_hook(Box::new(|info| {
+        log::log(&format!(
+            "PANIC: {info} at {}",
+            info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default()
+        ));
+    }));
     if let Err(e) = run() {
         // windows-subsystem binary: surface fatal startup errors in a message box.
         let text = HSTRING::from(format!("TaskbarIsland failed to start:\n{e}"));
@@ -110,7 +121,6 @@ fn run() -> windows::core::Result<()> {
         // The window is created hidden (no WS_VISIBLE); App decides when to show.
         let hwnd = CreateWindowExW(
             WS_EX_NOACTIVATE // never steal focus
-                | WS_EX_TRANSPARENT // Phase 1: clicks pass through (Phase 2 adds input)
                 | WS_EX_NOREDIRECTIONBITMAP, // required for DirectComposition hosting
             PILL_CLASS,
             PILL_TITLE,
@@ -242,6 +252,13 @@ struct App {
     visible: bool,
     media_snapshot: Arc<Mutex<Option<activities::media::MediaUpdate>>>,
     theme: theme::Theme,
+    /// Mouse-hover feedback (mirrors the renderer's; they resync on redraws).
+    hover: bool,
+    /// `TrackMouseEvent` registered exactly once per hover episode.
+    tracking: bool,
+    /// App-owned media source of truth: the renderer is recreated on device
+    /// loss or when re-showing, and is pushed fresh state from here.
+    media_state: Option<activities::media::MediaUpdate>,
 }
 
 impl App {
@@ -279,6 +296,9 @@ impl App {
             visible,
             media_snapshot: Arc::new(Mutex::new(None)),
             theme,
+            hover: false,
+            tracking: false,
+            media_state: None,
         })
     }
 
@@ -297,6 +317,24 @@ impl App {
             unsafe {
                 let _ = SetParent(self.hwnd, Some(taskbar));
             }
+        }
+        // The taskbar's own composition content bridge
+        // (Windows.UI.Composition.DesktopWindowContentBridge) covers the whole
+        // tray strip and sits ABOVE us in the child z-order — it eats every
+        // mouse message aimed at the pill while its transparent regions still
+        // let the pill's frames show through ("renders but no hover").
+        // Assert our z above it on every re-apply: explorer re-raises its
+        // bridge content over time.
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
         let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
         let placement = anchor::compute(taskbar, dpi, current);
@@ -369,7 +407,12 @@ impl App {
                     );
                     let scale = unsafe { GetDpiForWindow(self.hwnd) }.max(96) as f32 / 96.0;
                     match unsafe { Renderer::create(self.hwnd, size, scale, self.theme) } {
-                        Ok(renderer) => self.renderer = Some(renderer),
+                        Ok(mut renderer) => {
+                            // Don't lose the activity state across a hide
+                            // cycle: the fresh renderer starts empty.
+                            renderer.set_media(self.media_state.clone());
+                            self.renderer = Some(renderer);
+                        }
                         Err(e) => {
                             log::log_err("set_visible.create", &e);
                             return;
@@ -382,6 +425,28 @@ impl App {
                     unsafe { self.renderer.as_mut().expect("renderer initialized").draw() }
                 {
                     log::log_err("set_visible.draw", &e);
+                }
+            } else {
+                // Hovering can't continue in a hidden window; reset so the
+                // next show starts the episode cleanly.
+                self.tracking = false;
+                self.set_hover(false);
+            }
+        }
+    }
+
+    /// Hover-status transition. The renderer dedupes no-op transitions; the
+    /// draw only happens for real changes while visible.
+    fn set_hover(&mut self, hover: bool) {
+        self.hover = hover;
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
+        if renderer.set_hover(hover) {
+            log::log(&format!("hover: {hover}"));
+            if self.visible {
+                if let Err(error) = unsafe { renderer.draw() } {
+                    log::log_err("hover.draw", &error);
                 }
             }
         }
@@ -419,20 +484,50 @@ impl App {
                 Some(LRESULT(0))
             }
             WM_APP_MEDIA => {
-                if let Some(update) = self
+                let locked = self
                     .media_snapshot
                     .lock()
                     .expect("media snapshot mutex poisoned")
-                    .as_ref()
-                {
+                    .clone();
+                // An empty title is the "nothing playing" sentinel from
+                // media.rs (only sent on playback-status changes, never polled).
+                let media = locked.filter(|update| !update.title.is_empty());
+                if let Some(update) = &media {
                     log::log(&format!("media: {} — {}", update.title, update.artist));
+                } else if self.media_state.is_some() {
+                    log::log("media: stopped");
                 }
+                self.media_state = media.clone();
                 if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.set_indicator(render::Indicator::Media);
-                    if let Err(error) = unsafe { renderer.draw() } {
-                        log::log_err("media.draw", &error);
+                    if renderer.set_media(media) {
+                        if let Err(error) = unsafe { renderer.draw() } {
+                            log::log_err("media.draw", &error);
+                        }
                     }
                 }
+                Some(LRESULT(0))
+            }
+            WM_MOUSEMOVE => {
+                // First move of an episode: ask for the leave notification
+                // once, then pin the highlight state. The hover timeout event
+                // would lag the visual, so the move itself drives it.
+                if !self.tracking {
+                    let mut tme = TRACKMOUSEEVENT {
+                        cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: self.hwnd,
+                        dwHoverTime: 0,
+                    };
+                    if unsafe { TrackMouseEvent(&mut tme) }.is_ok() {
+                        self.tracking = true;
+                    }
+                }
+                self.set_hover(true);
+                Some(LRESULT(0))
+            }
+            WM_MOUSELEAVE => {
+                self.tracking = false;
+                self.set_hover(false);
                 Some(LRESULT(0))
             }
             _ => None,

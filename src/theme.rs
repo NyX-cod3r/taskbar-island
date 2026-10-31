@@ -37,6 +37,15 @@ impl Theme {
             (1.0, 1.0, 1.0, 0.10)
         }
     }
+
+    /// Active-content text (media track title, later timer digits).
+    pub fn text(self) -> (f32, f32, f32, f32) {
+        if self.light {
+            (0.0, 0.0, 0.0, 0.85)
+        } else {
+            (1.0, 1.0, 1.0, 0.85)
+        }
+    }
 }
 
 fn read_dword(path: windows::core::PCWSTR, value: windows::core::PCWSTR) -> Result<u32> {

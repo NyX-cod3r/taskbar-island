@@ -9,10 +9,11 @@
 //! Renders on demand only: once at startup, on resize, and (later phases)
 //! while an animation is active. There is no frame loop.
 
+use crate::activities::media::MediaUpdate;
 use crate::log::{log, log_err};
 use crate::theme::Theme;
 use core::mem::ManuallyDrop;
-use windows::core::{Interface, Result};
+use windows::core::{w, Interface, Result};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
@@ -21,8 +22,15 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Image,
     ID2D1SolidColorBrush, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
     D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_ROUNDED_RECT,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT,
 };
+use windows::Win32::Graphics::DirectWrite::{
+    DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+    DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+};
+use windows_numerics::Vector2;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11Texture2D, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
@@ -42,8 +50,17 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 
-/// Taskbar-highlight colors (dark theme). Phase 2's theme.rs will make these dynamic.
+/// Taskbar-highlight colors come from theme.rs; the radius is the design spec.
 const CORNER_RADIUS_DIP: f32 = 8.0;
+/// Hover feedback: highlight-alpha multipliers. Applied only on the
+/// mouse-enter/leave transition events, never per frame.
+const HOVER_FILL_MULT: f32 = 2.6;
+const HOVER_BORDER_MULT: f32 = 2.0;
+/// Media row layout (DIP): the bars column sits on the left, the track title
+/// starts right of it and is clipped at the right padding.
+const TEXT_SIZE_DIP: f32 = 12.0;
+const TEXT_LEFT_DIP: f32 = 34.0;
+const TEXT_RIGHT_PAD_DIP: f32 = 6.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Indicator {
@@ -68,12 +85,24 @@ pub struct Renderer {
     d2d_context: ID2D1DeviceContext,
     fill_brush: ID2D1SolidColorBrush,
     border_brush: ID2D1SolidColorBrush,
+    text_format: IDWriteTextFormat,
+    /// Retained: the ellipsis trimming sign is created from this at draw time.
+    dwrite_factory: IDWriteFactory,
+    text_brush: ID2D1SolidColorBrush,
+    /// Single-line, ellipsis-trimmed title layout — rebuilt only when the
+    /// title or available width changes (keyed cache below).
+    text_layout: Option<IDWriteTextLayout>,
+    text_layout_key: (String, f32),
     /// Backbuffer size in physical pixels.
     size: (u32, u32),
     /// DIPs → physical pixels (dpi / 96).
     scale: f32,
     indicator: Indicator,
     theme: Theme,
+    /// Mouse-hover feedback state (WM_MOUSEMOVE/LEAVE transitions).
+    hover: bool,
+    /// Current media snapshot; `None` = nothing playing.
+    media: Option<MediaUpdate>,
 }
 
 impl Renderer {
@@ -176,6 +205,23 @@ impl Renderer {
         let fill_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.fill()), None)?;
         let border_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.border()), None)?;
 
+        // Track-title text format via DirectWrite (windows-rs routes D2D text
+        // through IDWriteTextFormat). Sizes are DIPs — the context works in
+        // DIPs because the backbuffer bitmap carries the scaled DPI.
+        let text_factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+        let text_format = text_factory.CreateTextFormat(
+            w!("Segoe UI"),
+            None,
+            DWRITE_FONT_WEIGHT_NORMAL,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            TEXT_SIZE_DIP,
+            w!("en-US"),
+        )?;
+        text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        let text_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.text()), None)?;
+
         log(&format!("create ok: size={:?} scale={scale}", size));
         Ok(Self {
             swapchain,
@@ -185,10 +231,17 @@ impl Renderer {
             d2d_context,
             fill_brush,
             border_brush,
+            text_format,
+            dwrite_factory: text_factory,
+            text_brush,
+            text_layout: None,
+            text_layout_key: (String::new(), 0.0),
             size,
             scale,
             indicator: Indicator::Idle,
             theme,
+            hover: false,
+            media: None,
         })
     }
 
@@ -240,8 +293,38 @@ impl Renderer {
         self.size
     }
 
+    /// Kept for later phases (timer bars); media state now flows through
+    /// `set_media`, which derives the indicator itself.
+    #[allow(dead_code)]
     pub fn set_indicator(&mut self, indicator: Indicator) {
         self.indicator = indicator;
+    }
+
+    /// Hover feedback. Returns `true` on a transition so callers redraw only
+    /// on enter/leave events.
+    pub fn set_hover(&mut self, hover: bool) -> bool {
+        if self.hover == hover {
+            return false;
+        }
+        self.hover = hover;
+        true
+    }
+
+    /// Replace the media snapshot (`None` = nothing playing). Kept deduped:
+    /// returns `true` when the visible state changed, so callers can skip
+    /// no-op redraws. Derives the indicator internally so the two states can
+    /// never disagree.
+    pub fn set_media(&mut self, media: Option<MediaUpdate>) -> bool {
+        if self.media == media {
+            return false;
+        }
+        self.indicator = if media.is_some() {
+            Indicator::Media
+        } else {
+            Indicator::Idle
+        };
+        self.media = media;
+        true
     }
 
     /// Resize the backbuffer for a new physical-pixel size. No-op if unchanged.
@@ -288,6 +371,16 @@ impl Renderer {
             radiusX: radius,
             radiusY: radius,
         };
+        // Hover recolors the existing brushes — no new allocation, applied only
+        // on the transition events that led to this draw.
+        let mut fill = self.theme.fill();
+        let mut border = self.theme.border();
+        if self.hover {
+            fill.3 = (fill.3 * HOVER_FILL_MULT).min(1.0);
+            border.3 = (border.3 * HOVER_BORDER_MULT).min(1.0);
+        }
+        self.fill_brush.SetColor(&Self::color(fill));
+        self.border_brush.SetColor(&Self::color(border));
         // Wrap the *current* back buffer for this draw only. The bitmap (and
         // the buffer reference it holds) MUST be dropped before Present: with
         // CreateSwapChainForComposition, DWM cannot scan out a frame while any
@@ -317,6 +410,47 @@ impl Renderer {
                             bottom: (h + height) / 2.0,
                         },
                         &self.border_brush,
+                    );
+                }
+            }
+            // Active track title: single line, ellipsis-trimmed at the right
+            // padding, vertically centered. The layout is rebuilt only when
+            // the title or the available width changes.
+            if let Some(media) = &self.media {
+                let title = &media.title;
+                if !title.is_empty() {
+                    let max_width = w - TEXT_LEFT_DIP - TEXT_RIGHT_PAD_DIP;
+                    let key = (title.clone(), max_width);
+                    let layout = if self.text_layout_key == key {
+                        self.text_layout.as_ref().expect("layout cached with key")
+                    } else {
+                        let chars: Vec<u16> = title.encode_utf16().collect();
+                        let layout = self.dwrite_factory.CreateTextLayout(
+                            &chars,
+                            &self.text_format,
+                            max_width,
+                            h,
+                        )?;
+                        layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+                        // A plain "…" needs the sign object attached via the factory.
+                        let sign = self.dwrite_factory.CreateEllipsisTrimmingSign(&layout)?;
+                        layout.SetTrimming(
+                            &DWRITE_TRIMMING {
+                                granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                                delimiter: 0,
+                                delimiterCount: 0,
+                            },
+                            &sign,
+                        )?;
+                        self.text_layout = Some(layout);
+                        self.text_layout_key = key;
+                        self.text_layout.as_ref().expect("layout was just set")
+                    };
+                    self.d2d_context.DrawTextLayout(
+                        Vector2 { X: TEXT_LEFT_DIP, Y: 0.0 },
+                        layout,
+                        &self.text_brush,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
                 }
             }
