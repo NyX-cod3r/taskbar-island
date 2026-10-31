@@ -133,3 +133,28 @@
     uses a demo level (no volume-key hook yet); Call is a demo activity; music prev/next only change the
     demo title; compact icons use text placeholders; the pill's bottom 7 px sit below the screen edge,
     exactly as in the first build (owner-approved thickness).
+
+- **RAM pass (deliberately last) — practical floor reached, <15 MB is not reachable with this stack**:
+  - **Lazy flyout**: `FlyoutWindow::register_class()` runs at startup; the flyout HWND and its GPU
+    resources are created on first open (`FlyoutWindow::ensure`) and are skipped entirely for Idle and
+    the Volume HUD, which never expand. Idle dropped **82.9 → 55.7 MB** WS (82.1 → 45.3 MB private).
+  - **One shared GPU stack** (`src/gpu.rs`): one D3D11 device + DXGI factory + DComp device + D2D device
+    + DWrite factory for the whole process, created on first use. Each window keeps its own swapchain,
+    composition target/visual and D2D device context. The flyout's incremental cost fell from ~27 MB to
+    **~5.6 MB** (63.4 MB WS / 52.5 MB private with a card open).
+  - **Final measurements (release, 125 % DPI, Intel iGPU)**:
+    - Fresh idle: **0 ms CPU / 10 s**, WS **57.6 MB**, private **47.3 MB**, 11 threads, 282 handles.
+    - First flyout open: visible ~100 ms after the click (one-time device + swapchain creation), then the
+      normal 180/220 ms open animation.
+    - Repeated open/close ×20: plateaus at 67.0 MB WS / 56.2 MB private (+3.5 MB D2D/DWrite cache, no
+      linear leak). 16/16 tests, clippy clean.
+  - **Where the memory is** (measured by temporarily gating subsystems, both flags removed afterwards):
+    - App + OLE + media listener, no renderer: **17.4 MB WS / 2.4 MB private**.
+    - Media listener alone: **+5.3 MB WS**, private unchanged (+0.3 MB) — WinRT/shared pages.
+    - D3D11 + DXGI + DComp + D2D + DWrite + Intel UMD: **~+40 MB WS / ~+45 MB private**.
+  - Lowering the requested D3D feature level to 10.0 changed nothing; `SetProcessWorkingSetSize(-1,-1)`
+    can force WS to ~0 but private commit stays at 47 MB, so it is not used (cosmetic only).
+  - **Conclusion**: the <15 MB target cannot be met while the mandated Win32 + DirectComposition +
+    Direct2D rendering stack is in use on this GPU; ~47 MB private / ~57 MB WS is the honest floor.
+    The remaining lever would be replacing the renderer (layered-window GDI or D3D9Ex), which contradicts
+    the architecture rules. Idle CPU (0 %) and event-driven behavior are unaffected.

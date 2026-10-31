@@ -22,35 +22,30 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Image,
+    ID2D1Bitmap1, ID2D1DeviceContext, ID2D1Image,
     ID2D1SolidColorBrush, ID2D1StrokeStyle,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DASH_STYLE_DASH, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
     D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
+    DWRITE_FONT_STRETCH_NORMAL,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat,
 };
 use windows_numerics::Vector2;
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11Texture2D, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_SDK_VERSION,
-};
-use windows::Win32::Graphics::DirectComposition::DCompositionCreateDevice;
+use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::DirectComposition::{
-    IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+    IDCompositionTarget, IDCompositionVisual,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED as DXGI_ALPHA_PREMULTIPLIED, DXGI_FORMAT_R8G8B8A8_UNORM,
     DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1, DXGI_PRESENT, DXGI_SCALING_STRETCH,
+    IDXGISurface, IDXGISwapChain1, DXGI_PRESENT, DXGI_SCALING_STRETCH,
     DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
     DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
@@ -70,8 +65,6 @@ pub enum Indicator {
 
 pub struct Renderer {
     swapchain: IDXGISwapChain1,
-    #[allow(dead_code)]
-    comp_device: IDCompositionDevice,
     #[allow(dead_code)]
     comp_target: IDCompositionTarget,
     #[allow(dead_code)]
@@ -124,24 +117,7 @@ fn lerp_rgba(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32), t: f32) -> (f32, 
 
 impl Renderer {
     pub unsafe fn create(hwnd: HWND, size: (u32, u32), scale: f32, theme: Theme) -> Result<Self> {
-        let mut d3d_device: Option<ID3D11Device> = None;
-        let mut feature_level = core::mem::MaybeUninit::uninit();
-        D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
-            Default::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            None,
-            D3D11_SDK_VERSION,
-            Some(&mut d3d_device),
-            Some(feature_level.as_mut_ptr()),
-            None,
-        )?;
-        let d3d_device = d3d_device.expect("d3d device");
-
-        let dxgi_device: IDXGIDevice = d3d_device.cast()?;
-        let adapter = dxgi_device.GetAdapter()?;
-        let factory: IDXGIFactory2 = adapter.GetParent()?;
+        let gpu = crate::gpu::shared()?;
 
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: size.0.max(1),
@@ -156,17 +132,15 @@ impl Renderer {
             ..Default::default()
         };
 
-        let swapchain = factory.CreateSwapChainForComposition(&d3d_device, &desc, None)?;
+        let swapchain = gpu.dxgi_factory.CreateSwapChainForComposition(&gpu.d3d, &desc, None)?;
 
-        let comp_device: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
-        let comp_target = comp_device.CreateTargetForHwnd(hwnd, true)?;
-        let comp_visual = comp_device.CreateVisual()?;
+        let comp_target = gpu.comp.CreateTargetForHwnd(hwnd, true)?;
+        let comp_visual = gpu.comp.CreateVisual()?;
         comp_visual.SetContent(&swapchain)?;
         comp_target.SetRoot(&comp_visual)?;
-        comp_device.Commit()?;
+        gpu.comp.Commit()?;
 
-        let d2d_device: ID2D1Device = D2D1CreateDevice(&dxgi_device, None)?;
-        let d2d_context = d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+        let d2d_context = gpu.d2d.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
 
         // Dashed 1 px stroke used only for the drag-over drop target.
         let dash_style = d2d_context.GetFactory()?.CreateStrokeStyle(
@@ -177,7 +151,7 @@ impl Renderer {
             None,
         )?;
 
-        let text_factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+        let text_factory = gpu.dwrite.clone();
 
         let text_format = text_factory.CreateTextFormat(
             w!("Segoe UI Variable Text"),
@@ -220,7 +194,6 @@ impl Renderer {
 
         Ok(Self {
             swapchain,
-            comp_device,
             comp_target,
             comp_visual,
             d2d_context,

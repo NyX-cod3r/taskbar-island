@@ -21,6 +21,7 @@
 mod activities;
 mod anchor;
 mod flyout;
+mod gpu;
 mod log;
 mod prototype;
 mod render;
@@ -164,7 +165,7 @@ fn run() -> windows::core::Result<()> {
         G_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
 
         // Flyout window
-        let _ = FlyoutWindow::init(hwnd);
+        let _ = FlyoutWindow::register_class();
 
         let initial_visible = {
             let tb = taskbar;
@@ -594,6 +595,11 @@ impl App {
             Some(t) => t,
             None => return,
         };
+        // The flyout renderer is built on first open (RAM: idle costs nothing).
+        // Idle and the volume HUD never expand, so don't pay for a renderer.
+        if !matches!(self.current_activity, ActivityId::Idle | ActivityId::Volume) {
+            let _ = FlyoutWindow::ensure(self.hwnd);
+        }
         get_flyout().with(|f| {
             if let Ok(mut borrow) = f.try_borrow_mut() {
                 if let Some(flyout) = borrow.as_mut() {

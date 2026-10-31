@@ -21,13 +21,13 @@ use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_RECT_F,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1CreateDevice, ID2D1Device, ID2D1DeviceContext, ID2D1Image, ID2D1SolidColorBrush,
+    ID2D1DeviceContext, ID2D1Image, ID2D1SolidColorBrush,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, D2D1_DRAW_TEXT_OPTIONS_NONE,
     D2D1_ELLIPSE, D2D1_ROUNDED_RECT,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
+    DWRITE_FONT_STRETCH_NORMAL,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
@@ -35,20 +35,16 @@ use windows::Win32::Graphics::DirectWrite::{
     IDWriteFactory, IDWriteTextFormat,
 };
 use windows_numerics::Vector2;
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
-use windows::Win32::Graphics::Direct3D11::{
-    D3D11CreateDevice, ID3D11Device, ID3D11Texture2D, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-    D3D11_SDK_VERSION,
-};
+use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
 use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice, IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
+    IDCompositionDevice, IDCompositionTarget, IDCompositionVisual,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED as DXGI_ALPHA_PREMULTIPLIED, DXGI_FORMAT_R8G8B8A8_UNORM,
     DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1, DXGI_PRESENT, DXGI_SCALING_STRETCH,
+    IDXGISurface, IDXGISwapChain1, DXGI_PRESENT, DXGI_SCALING_STRETCH,
     DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
     DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
@@ -208,7 +204,10 @@ pub struct FlyoutWindow {
 }
 
 impl FlyoutWindow {
-    pub fn init(parent_hwnd: HWND) -> Result<()> {
+    /// Registers the flyout window class without creating the window or any
+    /// GPU resources. The renderer (D3D11 + DComp + D2D + DWrite) is only
+    /// built on first open so an unused flyout costs no RAM at startup.
+    pub fn register_class() -> Result<()> {
         let hinstance = unsafe { GetModuleHandleW(None)?.into() };
         let class = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -220,6 +219,20 @@ impl FlyoutWindow {
             ..Default::default()
         };
         unsafe { RegisterClassExW(&class) };
+        Ok(())
+    }
+
+    /// Creates the flyout window + renderer on first use.
+    pub fn ensure(parent_hwnd: HWND) -> Result<()> {
+        let exists = FLYOUT.with(|f| f.borrow().is_some());
+        if exists {
+            return Ok(());
+        }
+        Self::init(parent_hwnd)
+    }
+
+    pub fn init(parent_hwnd: HWND) -> Result<()> {
+        let hinstance = unsafe { GetModuleHandleW(None)?.into() };
 
         let hwnd = unsafe {
             CreateWindowExW(
@@ -261,23 +274,7 @@ impl FlyoutWindow {
         scale: f32,
         theme: Theme,
     ) -> Result<Self> {
-        let mut d3d_device: Option<ID3D11Device> = None;
-        let mut feature_level = core::mem::MaybeUninit::uninit();
-        D3D11CreateDevice(
-            None,
-            D3D_DRIVER_TYPE_HARDWARE,
-            Default::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-            None,
-            D3D11_SDK_VERSION,
-            Some(&mut d3d_device),
-            Some(feature_level.as_mut_ptr()),
-            None,
-        )?;
-        let d3d_device = d3d_device.expect("d3d device");
-        let dxgi_device: IDXGIDevice = d3d_device.cast()?;
-        let adapter = dxgi_device.GetAdapter()?;
-        let factory: IDXGIFactory2 = adapter.GetParent()?;
+        let gpu = crate::gpu::shared()?;
 
         let desc = DXGI_SWAP_CHAIN_DESC1 {
             Width: size_px.0.max(1),
@@ -292,19 +289,18 @@ impl FlyoutWindow {
             ..Default::default()
         };
 
-        let swapchain = factory.CreateSwapChainForComposition(&d3d_device, &desc, None)?;
+        let swapchain = gpu.dxgi_factory.CreateSwapChainForComposition(&gpu.d3d, &desc, None)?;
 
-        let comp_device: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
+        let comp_device: IDCompositionDevice = gpu.comp.clone();
         let comp_target = comp_device.CreateTargetForHwnd(hwnd, true)?;
         let comp_visual = comp_device.CreateVisual()?;
         comp_visual.SetContent(&swapchain)?;
         comp_target.SetRoot(&comp_visual)?;
         comp_device.Commit()?;
 
-        let d2d_device: ID2D1Device = D2D1CreateDevice(&dxgi_device, None)?;
-        let d2d_context = d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+        let d2d_context = gpu.d2d.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
 
-        let dwrite_factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+        let dwrite_factory = gpu.dwrite.clone();
 
         let title_format = dwrite_factory.CreateTextFormat(
             w!("Segoe UI Variable Text"),
