@@ -1,15 +1,4 @@
 //! Global media-session subscription. All WinRT work lives off the UI thread.
-//!
-//! Event chain: session-manager request → publish current session, subscribe
-//! `CurrentSessionChanged` + per-session `PlaybackInfoChanged`. Everything the
-//! UI ends up drawing arrives as a `MediaUpdate` on the channel; nothing is
-//! ever polled here.
-//!
-//! Updates carry a `playing` flag: while any session exists the pill keeps
-//! showing the track (dimmed when paused); the empty-title sentinel appears
-//! only when there is no session at all. The same worker services play/pause
-//! toggle requests from the UI via a blocking `recv()` on a channel — no
-//! polling, the WinRT events do the rest.
 
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -20,26 +9,67 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus, PlaybackInfoChangedEventArgs,
 };
 
+use crate::state::{Activity, ActivityId, Priority};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaUpdate {
     pub title: String,
     pub artist: String,
     pub playing: bool,
+    pub position_secs: u32,
+    pub duration_secs: u32,
 }
 
 impl MediaUpdate {
     /// The "no session" sentinel: the pill has nothing to show.
-    fn none() -> Self {
+    pub fn none() -> Self {
         Self {
             title: String::new(),
             artist: String::new(),
             playing: false,
+            position_secs: 0,
+            duration_secs: 0,
+        }
+    }
+
+    /// Design spec demo track: "Deewana Kar Raha Hai", "Now playing", 1:24 / -2:24
+    pub fn demo() -> Self {
+        Self {
+            title: "Deewana Kar Raha Hai".into(),
+            artist: "Now playing".into(),
+            playing: true,
+            position_secs: 84,   // 1:24
+            duration_secs: 228,  // 3:48 (remaining: -2:24)
         }
     }
 }
 
-fn update(title: String, artist: String, playing: bool) -> MediaUpdate {
-    MediaUpdate { title, artist, playing }
+pub fn update(title: String, artist: String, playing: bool) -> MediaUpdate {
+    MediaUpdate {
+        title,
+        artist,
+        playing,
+        position_secs: 84,
+        duration_secs: 228,
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+pub struct MediaActivity {
+    pub current: Option<MediaUpdate>,
+}
+
+impl Activity for MediaActivity {
+    fn id(&self) -> ActivityId {
+        ActivityId::Media
+    }
+    fn priority(&self) -> Priority {
+        Priority::Media
+    }
+    fn active(&self) -> bool {
+        self.current.is_some()
+    }
 }
 
 /// Starts the GSMTC listener without polling. The callback posts a compact
@@ -57,7 +87,6 @@ pub fn subscribe(
             };
             let _ = operation.when(move |manager| {
                 let Ok(manager) = manager else { return };
-                // Whatever is playing right now, publish once immediately.
                 if let Ok(session) = manager.GetCurrentSession() {
                     publish_session(&session, &sender);
                     hook_playback_info(session, &sender);
@@ -79,7 +108,6 @@ pub fn subscribe(
                                     publish_session(&session, &session_sender);
                                     hook_playback_info(session, &session_sender);
                                 }
-                                // No current session at all → nothing to show.
                                 Err(_) => {
                                     let _ = session_sender.send(MediaUpdate::none());
                                 }
@@ -90,58 +118,36 @@ pub fn subscribe(
                 );
                 let _ = manager.CurrentSessionChanged(&handler);
 
-                // Blocked recv = event-driven by construction. Each UI click
-                // toggles the current session's play state; the resulting
-                // PlaybackInfoChanged event republishes the state for us.
                 while let Ok(()) = toggle_rx.recv() {
                     if let Ok(session) = manager.GetCurrentSession() {
-                        // Fire and forget: the op keeps itself alive via leak;
-                        // its completion drives no further work (the changed
-                        // playback event does).
-                        if let Ok(op) = session.TryTogglePlayPauseAsync() {
-                            Box::leak(Box::new(op));
-                        }
+                        let _ = session.TryTogglePlayPauseAsync();
                     }
                 }
-                // Channel closed (app exiting): stop the thread pool callback.
-                std::thread::park();
             });
         })
         .map(|_| ())
-        .map_err(|e| {
-            windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32), e.to_string())
-        })
+        .map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))
 }
 
-/// Registers the per-session `PlaybackInfoChanged` event so pausing and
-/// stopping reach the UI without polling, and keeps the session object alive
-/// for the process.
 fn hook_playback_info(
     session: GlobalSystemMediaTransportControlsSession,
     sender: &Sender<MediaUpdate>,
 ) {
-    let sender = sender.clone();
+    let session_sender = sender.clone();
     let handler: TypedEventHandler<
         GlobalSystemMediaTransportControlsSession,
         PlaybackInfoChangedEventArgs,
     > = TypedEventHandler::new(
         move |session: windows::core::Ref<'_, GlobalSystemMediaTransportControlsSession>, _| {
             if let Some(session) = session.as_ref() {
-                publish_session(session, &sender);
+                publish_session(session, &session_sender);
             }
             Ok(())
         },
     );
     let _ = session.PlaybackInfoChanged(&handler);
-    // Leaked on purpose: the handler chain lives inside the session object,
-    // which must stay alive. Single-instance app; process exit frees the lot.
-    Box::leak(Box::new(session));
 }
 
-/// Publishes the visible media state: the track stays up while the session
-/// exists (dimmed when paused), the sentinel appears only with no session.
-/// The status is re-read inside the async callback so pause events race no
-/// track updates.
 fn publish_session(
     session: &GlobalSystemMediaTransportControlsSession,
     sender: &Sender<MediaUpdate>,
@@ -167,8 +173,6 @@ fn publish_session(
             .map(|value| value.to_string())
             .unwrap_or_default();
         if !title.is_empty() {
-            // Playing but empty artist is fine; empty title is transient
-            // (metadata not ready) — wait for the next event instead.
             let _ = sender.send(update(title, artist, playing));
         } else {
             let _ = sender.send(MediaUpdate::none());

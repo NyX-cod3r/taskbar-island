@@ -1,21 +1,30 @@
 //! TaskbarIsland — a Dynamic-Island-style pill anchored to the Windows 11 taskbar.
 //!
-//! Phase 1: an anchored, empty pill that matches the taskbar's active-item
-//! highlight and disappears when a fullscreen app owns the screen.
-//! Phase 2: the pill lives directly inside the taskbar (`WS_CHILD` of
-//! `Shell_TrayWnd` — no topmost/z-order fight), answers hover, and renders the
-//! active GSMTC media session's track title.
-//!
-//! The window is borderless and non-activating; it never hosts a taskbar
-//! button and gets its per-pixel alpha from a DirectComposition swapchain
-//! (`WS_EX_NOREDIRECTIONBITMAP`), not from `WS_EX_LAYERED`.
+//! Follows Design Spec v0.1:
+//! 1. The pill stays put: never moves or resizes on hover. Only its fill and border change.
+//! 2. Flyout above the taskbar: opens as a Windows-style flyout 12 px above the taskbar,
+//!    centered over the pill, like Quick Settings.
+//! 3. Windows material: white at 9% on taskbar. Flyout is rgb(40,40,40) at 95% with 1 px
+//!    border (white 9%) and 8 px radius. Pill radius 10 px.
+//! 4. Motion: 180 ms fade, 220 ms scale .94 to 1 and rise 6 px, cubic-bezier(.2, .8, .2, 1).
+//!    Close: 110 ms fade and scale back. Auto-close 700 ms after pointer leaves pill + flyout.
+//! 5. Sizes per activity:
+//!    - Music: compact 184x32, expanded 384x164
+//!    - Call: compact 176x32, expanded 384x136
+//!    - File shelf: compact 136x32 (204 on drag), expanded 384x176
+//!    - Timer: compact 116x32, expanded 320x124
+//!    - Volume HUD: compact 224x32, expanded None (dismisses after 1.8 s)
+//! 6. Priority order: Call > Timer finishing > Volume HUD > Music > Shelf.
 
 #![windows_subsystem = "windows"]
 
 mod activities;
 mod anchor;
+mod flyout;
 mod log;
+mod prototype;
 mod render;
+mod settings;
 mod state;
 mod theme;
 
@@ -23,8 +32,9 @@ use std::cell::RefCell;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use flyout::{FlyoutWindow, get_flyout, WM_APP_FLYOUT_ACTION};
 use render::Renderer;
 use state::{Activity, ActivityId, ActivityQueue, Priority};
 use windows::core::{w, Error, HRESULT, HSTRING, PCWSTR};
@@ -32,26 +42,29 @@ use windows::Win32::Foundation::{
     GetLastError, SetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT,
     WIN32_ERROR, WPARAM,
 };
+use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Ole::OleInitialize;
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::Graphics::Gdi::ScreenToClient;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    MOD_ALT, MOD_CONTROL, RegisterHotKey, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows::Win32::UI::Shell::{ABN_POSCHANGED, ShellExecuteW};
-use windows::Win32::UI::Controls::WM_MOUSELEAVE; // verified empirically: leave arrives as 0x2A3 (675)
-use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, LoadCursorW,
-    MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW,
-    SetWindowPos, SetTimer, GetParent, SetParent, ShowWindow, TranslateMessage, CS_HREDRAW,
-    CS_VREDRAW, HWND_TOP, EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_CAPTURESTART,
-    IDC_ARROW, MB_ICONERROR, MB_OK, MSG, SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE,
-    SW_SHOWNORMAL, SWP_NOMOVE,
-    SWP_NOSIZE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_SETTINGCHANGE,
+    AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
+    GetCursorPos as WinGetCursorPos, GetMessageW, GetParent, KillTimer, LoadCursorW, MessageBoxW,
+    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetParent, SetTimer,
+    SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
+    EVENT_OBJECT_FOCUS, EVENT_SYSTEM_CAPTURESTART, EVENT_SYSTEM_FOREGROUND, HWND_TOP,
+    IDC_ARROW, MB_ICONERROR, MB_OK, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, TPM_RIGHTBUTTON, WINEVENT_OUTOFCONTEXT,
+    WM_APP, WM_COMMAND, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONUP, WM_SETTINGCHANGE,
     WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
 };
 
@@ -59,23 +72,36 @@ const PILL_CLASS: PCWSTR = w!("TaskbarIslandPillClass");
 const PILL_TITLE: PCWSTR = w!("TaskbarIsland");
 const MUTEX_NAME: PCWSTR = w!("TaskbarIsland.SingleInstance");
 
-/// Posted by the EVENT_SYSTEM_FOREGROUND hook: re-check fullscreen suppression.
 const WM_APP_RECHECK: u32 = WM_APP + 1;
-/// Our appbar callback message; `wparam == ABN_POSCHANGED` → taskbar geometry changed.
 const APPBAR_MSG: u32 = WM_APP + 2;
 const WM_APP_MEDIA: u32 = WM_APP + 3;
-/// Hover-expansion animation (see AGENTS.md: the only polling allowed is
-/// while animating). Timer-driven ~60 fps ticks for the ~180 ms transition.
-const EXPAND_TIMER_ID: usize = 1;
-const EXPAND_TICK_MS: u32 = 16;
-const EXPAND_SECONDS: f32 = 0.18;
+
+// Timers
+const AUTOCLOSE_TIMER_ID: usize = 1;
+const AUTOCLOSE_MS: u32 = 700;
+
+const TIMER_TICK_ID: usize = 2;
+const TIMER_TICK_MS: u32 = 1000;
+
+const VOLUME_HUD_TIMER_ID: usize = 3;
+const VOLUME_HUD_MS: u32 = 1800;
+
+const HOVER_ANIM_TIMER_ID: usize = 4;
+const HOVER_ANIM_TICK_MS: u32 = 16;
+
+// Hotkeys
+const HOTKEY_TIMER: i32 = 1;
+const HOTKEY_MUSIC: i32 = 2;
+const HOTKEY_CALL: i32 = 3;
+const HOTKEY_SHELF: i32 = 4;
+const HOTKEY_TIMER_VIEW: i32 = 5;
+const HOTKEY_VOLUME: i32 = 6;
+const HOTKEY_COLLAPSE: i32 = 7;
 
 static G_HWND: AtomicIsize = AtomicIsize::new(0);
 static G_TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
 
 fn main() {
-    // panic = "abort" release profiles print nothing anywhere — hook panics
-    // into the TBI log so a crash leaves evidence behind.
     std::panic::set_hook(Box::new(|info| {
         log::log(&format!(
             "PANIC: {info} at {}",
@@ -83,7 +109,6 @@ fn main() {
         ));
     }));
     if let Err(e) = run() {
-        // windows-subsystem binary: surface fatal startup errors in a message box.
         let text = HSTRING::from(format!("TaskbarIsland failed to start:\n{e}"));
         let caption = HSTRING::from("TaskbarIsland");
         let _ = unsafe { MessageBoxW(None, &text, &caption, MB_OK | MB_ICONERROR) };
@@ -92,13 +117,8 @@ fn main() {
 
 fn run() -> windows::core::Result<()> {
     unsafe {
-        // Per-monitor v2 DPI before any window exists.
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
-        // Single instance: the named mutex lives for the whole process (never
-        // closed here), so a second launch finds it and exits immediately.
-        // SetLastError first: CreateMutexW only sets ERROR_ALREADY_EXISTS when
-        // the name was taken, and a stale value must not false-positive.
         SetLastError(WIN32_ERROR(0));
         let _single_instance = CreateMutexW(None, false, MUTEX_NAME)?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
@@ -116,27 +136,25 @@ fn run() -> windows::core::Result<()> {
             ..Default::default()
         };
         RegisterClassExW(&class);
+
         let taskbar = match anchor::taskbar_window() {
             Some(taskbar) => taskbar,
             None => return Err(Error::new(HRESULT(0x80004005u32 as i32), "taskbar unavailable")),
         };
 
-        // RegisterWindowMessage gives us the shell's broadcast id (explorer restart).
         G_TASKBAR_CREATED_MSG.store(
             RegisterWindowMessageW(w!("TaskbarCreated")),
             Ordering::Relaxed,
         );
 
-        // The window is created hidden (no WS_VISIBLE); App decides when to show.
         let hwnd = CreateWindowExW(
-            WS_EX_NOACTIVATE // never steal focus
-                | WS_EX_NOREDIRECTIONBITMAP, // required for DirectComposition hosting
+            WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
             PILL_CLASS,
             PILL_TITLE,
-            WS_CHILD, // hosted directly inside Shell_TrayWnd
+            WS_CHILD,
             0,
             0,
-            120,
+            184,
             32,
             Some(taskbar),
             None,
@@ -145,21 +163,17 @@ fn run() -> windows::core::Result<()> {
         )?;
         G_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
 
-        // Position and suppression are decided before creating the
-        // DirectComposition target: suppressed startups remain fully hidden.
+        // Flyout window
+        let _ = FlyoutWindow::init(hwnd);
+
         let initial_visible = {
             let tb = taskbar;
             let dpi = GetDpiForWindow(hwnd).max(96);
             let placement = anchor::compute(
                 tb,
                 dpi,
-                RECT {
-                    left: 0,
-                    top: 0,
-                    right: 120,
-                    bottom: 32,
-                },
-                anchor::PILL_WIDTH_DIP,
+                RECT { left: 0, top: 0, right: 184, bottom: 32 },
+                anchor::MUSIC_COMPACT_WIDTH_DIP,
             );
             let w = (placement.rect.right - placement.rect.left).max(1);
             let h = (placement.rect.bottom - placement.rect.top).max(1);
@@ -171,10 +185,11 @@ fn run() -> windows::core::Result<()> {
         }
 
         let mut app = App::new(hwnd, initial_visible, theme::Theme::current())?;
-        app.apply(); // position, render, and show/hide
+        app.apply();
 
         APP.with(|a| *a.borrow_mut() = Some(app));
 
+        // Media subscription worker
         let (media_tx, media_rx) = mpsc::channel();
         let (toggle_tx, toggle_rx) = mpsc::channel::<()>();
         let media_snapshot = Arc::new(Mutex::new(None));
@@ -182,9 +197,7 @@ fn run() -> windows::core::Result<()> {
         let hwnd_value = hwnd.0 as isize;
         std::thread::spawn(move || {
             while let Ok(update) = media_rx.recv() {
-                *bridge_snapshot
-                    .lock()
-                    .expect("media snapshot mutex poisoned") = Some(update);
+                *bridge_snapshot.lock().expect("mutex poisoned") = Some(update);
                 let _ = PostMessageW(
                     Some(HWND(hwnd_value as *mut _)),
                     WM_APP_MEDIA,
@@ -196,18 +209,17 @@ fn run() -> windows::core::Result<()> {
         if let Err(error) = activities::media::subscribe(media_tx, toggle_rx) {
             log::log_err("media.subscribe", &error);
         }
-        // OLE apartment + drag-drop target for the file shelf. The
-        // registration COM object is held for the whole window lifetime by
-        // this binding (OLE keeps its own reference; RevokeDragDrop is not
-        // worth wiring — the process is single-instance and exits cleanly).
+
+        // OLE Drag-drop shelf
         if let Err(error) = OleInitialize(None) {
             log::log_err("ole.init", &error);
         }
         let shelf_slot: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         match activities::shelf::register_drop_target(hwnd, Arc::clone(&shelf_slot)) {
-            Ok(target) => std::mem::forget(target), // RegisterDragDrop owns a ref
+            Ok(target) => std::mem::forget(target),
             Err(error) => log::log_err("shelf.register", &error),
         }
+
         APP.with(|a| {
             let mut app = a.borrow_mut();
             let app = app.as_mut().expect("app initialized");
@@ -216,8 +228,7 @@ fn run() -> windows::core::Result<()> {
             app.shelf_slot = shelf_slot;
         });
 
-        // Event sources (no polling): foreground changes → fullscreen recheck,
-        // appbar notifications → taskbar geometry changed.
+        // Appbar & hooks
         let _hook: HWINEVENTHOOK = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
             EVENT_SYSTEM_FOREGROUND,
@@ -227,8 +238,6 @@ fn run() -> windows::core::Result<()> {
             0,
             WINEVENT_OUTOFCONTEXT,
         );
-        // A taskbar click can change the topmost ordering without changing
-        // the foreground window. Recheck when the taskbar captures the mouse.
         let _capture_hook: HWINEVENTHOOK = SetWinEventHook(
             EVENT_SYSTEM_CAPTURESTART,
             EVENT_SYSTEM_CAPTURESTART,
@@ -249,8 +258,29 @@ fn run() -> windows::core::Result<()> {
         );
         anchor::register_appbar(hwnd, APPBAR_MSG);
 
-        // Standard blocking message loop → ~0% CPU while idle. Also dispatches
-        // out-of-context WinEvents on this thread.
+        // Hotkeys for testing/demo per design spec:
+        // Ctrl+Alt+1: Music
+        // Ctrl+Alt+2: Call
+        // Ctrl+Alt+3: File shelf
+        // Ctrl+Alt+4: Timer
+        // Ctrl+Alt+5: Volume HUD
+        // Ctrl+Alt+C: Collapse island
+        // Ctrl+Alt+T: Timer countdown
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_TIMER, MOD_CONTROL | MOD_ALT, 'T' as u32);
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_MUSIC, MOD_CONTROL | MOD_ALT, '1' as u32);
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_CALL, MOD_CONTROL | MOD_ALT, '2' as u32);
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_SHELF, MOD_CONTROL | MOD_ALT, '3' as u32);
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_TIMER_VIEW, MOD_CONTROL | MOD_ALT, '4' as u32);
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_VOLUME, MOD_CONTROL | MOD_ALT, '5' as u32);
+        let _ = RegisterHotKey(Some(hwnd), HOTKEY_COLLAPSE, MOD_CONTROL | MOD_ALT, 'C' as u32);
+
+        // Check command line arguments: if --prototype is specified, show prototype window
+        let args: Vec<String> = std::env::args().collect();
+        if args.iter().any(|arg| arg == "--prototype") {
+            prototype::show_prototype_window(hwnd);
+        }
+
+        // Standard event loop
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
             let _ = TranslateMessage(&msg);
@@ -261,46 +291,40 @@ fn run() -> windows::core::Result<()> {
 }
 
 thread_local! {
-    /// Everything lives on the UI thread: wnd_proc and out-of-context WinEvents
-    /// are both dispatched from `run`'s message loop.
     static APP: RefCell<Option<App>> = const { RefCell::new(None) };
 }
 
-/// Owned state for the pill window.
 struct App {
     hwnd: HWND,
     renderer: Option<Renderer>,
-    /// Last applied pill rect (physical px); keeps the pill parked in place
-    /// while explorer is mid-restart and we can't measure the taskbar.
     pill: RECT,
     visible: bool,
-    media_snapshot: Arc<Mutex<Option<activities::media::MediaUpdate>>>,
     theme: theme::Theme,
-    /// Mouse-hover feedback (mirrors the renderer's; they resync on redraws).
     hover: bool,
-    /// `TrackMouseEvent` registered exactly once per hover episode.
+    pressed: bool,
     tracking: bool,
-    /// App-owned media source of truth: the renderer is recreated on device
-    /// loss or when re-showing, and is pushed fresh state from here.
+    drop_hover: bool,
+
+    // Arbitration
+    queue: ActivityQueue,
+    current_activity: ActivityId,
+
+    // Activities
+    media_snapshot: Arc<Mutex<Option<activities::media::MediaUpdate>>>,
     media_state: Option<activities::media::MediaUpdate>,
-    /// UI → media-worker play/pause toggle requests.
     media_toggle: mpsc::Sender<()>,
-    /// Files dropped on the pill (full paths), parked until the click opens
-    /// them. Backed by the shelf slot shared with the OLE drop target.
+
     shelf_slot: Arc<Mutex<Vec<String>>>,
     shelf_paths: Vec<String>,
-    /// Activity-arbitration state (state.rs): the shelf replaces media while
-    /// files are parked; every entry updates only on events.
-    queue: ActivityQueue,
     shelf: activities::shelf::ShelfActivity,
     shelf_view: Option<activities::shelf::ShelfView>,
-    drop_hover: bool,
-    /// Hover-expansion animation state (compact → expanded pill). Only the
-    /// WM_TIMER ticks advance it; there is no polling when idle.
-    expand: f32,
-    expand_target: f32,
-    expanding: bool,
-    animate_started: Option<Instant>,
+
+    timer: activities::timer::TimerActivity,
+    timer_view: Option<activities::timer::TimerView>,
+    timer_secs: u64,
+
+    call: activities::call::CallActivity,
+    volume: activities::volume::VolumeActivity,
 }
 
 impl App {
@@ -308,7 +332,7 @@ impl App {
         let rect = window_rect(hwnd).unwrap_or(RECT {
             left: 0,
             top: 0,
-            right: 120,
+            right: 184,
             bottom: 32,
         });
         let dpi = unsafe { GetDpiForWindow(hwnd) };
@@ -317,68 +341,84 @@ impl App {
             (rect.right - rect.left).max(1) as u32,
             (rect.bottom - rect.top).max(1) as u32,
         );
-        // # Safety: hwnd was created with WS_EX_NOREDIRECTIONBITMAP.
-        // DirectComposition is initialized only while the host window is
-        // visible. This avoids a startup flash when fullscreen suppression is
-        // active and avoids creating a DComp target for a hidden HWND.
+
+        let queue = ActivityQueue::default();
+
         let renderer = if visible {
-            let mut renderer = unsafe { Renderer::create(hwnd, size, scale, theme)? };
-            if let Err(e) = unsafe { renderer.draw() } {
-                log::log_err("App::new.draw", &e);
-            }
-            Some(renderer)
+            let mut r = unsafe { Renderer::create(hwnd, size, scale, theme)? };
+            r.active_id = ActivityId::Idle;
+            let _ = unsafe { r.draw() };
+            Some(r)
         } else {
             None
         };
-        log::log(&format!("App::new: rect={:?} dpi={dpi}", rect));
+
         Ok(Self {
             hwnd,
             renderer,
             pill: rect,
             visible,
-            media_snapshot: Arc::new(Mutex::new(None)),
             theme,
             hover: false,
+            pressed: false,
             tracking: false,
+            drop_hover: false,
+            queue,
+            current_activity: ActivityId::Idle,
+            media_snapshot: Arc::new(Mutex::new(None)),
             media_state: None,
-            expand: 0.0,
-            expand_target: 0.0,
-            expanding: false,
-            animate_started: None,
-            // Placeholder replaced right after App::constructs (see main()).
             media_toggle: mpsc::channel().0,
             shelf_slot: Arc::new(Mutex::new(Vec::new())),
             shelf_paths: Vec::new(),
-            queue: ActivityQueue::default(),
             shelf: activities::shelf::ShelfActivity::default(),
             shelf_view: None,
-            drop_hover: false,
+            timer: activities::timer::TimerActivity::default(),
+            timer_view: None,
+            // TBI_TIMER_SECS exists purely so automated verification can run
+            // the countdown end-state quickly; the registry setting is the
+            // user-facing length (Tweaks → Timer).
+            timer_secs: std::env::var("TBI_TIMER_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|secs| (1..=3600).contains(secs))
+                .unwrap_or(settings::Settings::current().timer_minutes as u64 * 60),
+            call: activities::call::CallActivity::default(),
+            volume: activities::volume::VolumeActivity::default(),
         })
     }
 
-    /// Re-derive the pill position/visibility and sync the window to it.
+    /// Returns the exact compact width (in DIP) for the current state.
+    fn compact_width_dip(&self) -> f32 {
+        if self.drop_hover {
+            return anchor::SHELF_DRAG_WIDTH_DIP; // 204.0 DIP on drag
+        }
+        match self.current_activity {
+            ActivityId::Idle => anchor::IDLE_COMPACT_WIDTH_DIP, // empty material pill
+            ActivityId::Media => anchor::MUSIC_COMPACT_WIDTH_DIP, // 184.0 DIP
+            ActivityId::Call => anchor::CALL_COMPACT_WIDTH_DIP,   // 176.0 DIP
+            ActivityId::Shelf => anchor::SHELF_COMPACT_WIDTH_DIP, // 136.0 DIP
+            ActivityId::Timer => anchor::TIMER_COMPACT_WIDTH_DIP, // 116.0 DIP
+            ActivityId::Volume => anchor::VOLUME_COMPACT_WIDTH_DIP, // 224.0 DIP
+        }
+    }
+
+    /// Apply anchoring and sizing. The compact pill NEVER resizes on hover!
     fn apply(&mut self) {
         let current = window_rect(self.hwnd).unwrap_or(self.pill);
         let taskbar = match anchor::taskbar_window() {
             Some(t) => t,
-            // Explorer is restarting; keep the last known position, stay hidden.
             None => {
                 self.set_visible(false);
                 return;
             }
         };
+
         if unsafe { GetParent(self.hwnd) }.ok() != Some(taskbar) {
             unsafe {
                 let _ = SetParent(self.hwnd, Some(taskbar));
             }
         }
-        // The taskbar's own composition content bridge
-        // (Windows.UI.Composition.DesktopWindowContentBridge) covers the whole
-        // tray strip and sits ABOVE us in the child z-order — it eats every
-        // mouse message aimed at the pill while its transparent regions still
-        // let the pill's frames show through ("renders but no hover").
-        // Assert our z above it on every re-apply: explorer re-raises its
-        // bridge content over time.
+
         unsafe {
             let _ = SetWindowPos(
                 self.hwnd,
@@ -390,69 +430,37 @@ impl App {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
         }
+
         let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
-        // Hover expansion changes the pill's width; the animation ticks own
-        // the progress, and every other placement source respects it. All
-        // geometry math stays inside anchor.rs.
-        let width = anchor::PILL_WIDTH_DIP
-            + (anchor::EXPANDED_WIDTH_DIP - anchor::PILL_WIDTH_DIP) * self.expand;
-        let placement = anchor::compute(taskbar, dpi, current, width);
-        log::log(&format!(
-            "apply: placement={:?} visible={} (taskbar dpi={dpi})",
-            placement.rect, placement.visible
-        ));
+        let width_dip = self.compact_width_dip();
+        let placement = anchor::compute(taskbar, dpi, current, width_dip);
 
         let w = (placement.rect.right - placement.rect.left).max(1);
         let h = (placement.rect.bottom - placement.rect.top).max(1);
+
         if placement.rect != self.pill {
-            // SWP_NOACTIVATE: never yank focus from whatever the user is doing.
             if set_window_rect(self.hwnd, placement.rect, w, h).is_err() {
-                return; // window is gone; WM_NCDESTROY will follow
+                return;
             }
             self.pill = placement.rect;
             self.sync_renderer((w as u32, h as u32), dpi as f32 / 96.0);
         }
+
         self.set_visible(placement.visible);
     }
 
-    /// Resize + redraw; recreate the device chain if the GPU device was lost
-    /// (driver reset, RDP session switch, hybrid-GPU flip).
     fn sync_renderer(&mut self, size: (u32, u32), scale: f32) {
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
         unsafe {
-            let resized = renderer.resize(size, scale);
-            if let Err(e) = &resized {
-                log::log_err("sync_renderer.resize", e);
-            }
-            let drawn = resized.and_then(|()| renderer.draw());
-            if let Err(e) = &drawn {
-                log::log_err("sync_renderer.draw", e);
-            }
-            if drawn.is_err() {
-                log::log("sync_renderer: recreating device chain");
-                if let Ok(renderer) = Renderer::create(self.hwnd, size, scale, self.theme) {
-                    self.renderer = Some(renderer);
-                    if let Err(e) = self
-                        .renderer
-                        .as_mut()
-                        .expect("renderer was just set")
-                        .draw()
-                    {
-                        log::log_err("sync_renderer.recreate.draw", &e);
-                    }
-                } else {
-                    log::log("sync_renderer: recreate FAILED");
-                }
-            }
-
+            let _ = renderer.resize(size, scale);
+            let _ = renderer.draw();
         }
     }
 
     fn set_visible(&mut self, visible: bool) {
         if visible != self.visible {
-            // SW_SHOWNOACTIVATE: show without activating (window is NOACTIVATE anyway).
             unsafe {
                 let _ = ShowWindow(self.hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
             };
@@ -465,49 +473,38 @@ impl App {
                         (rect.bottom - rect.top).max(1) as u32,
                     );
                     let scale = unsafe { GetDpiForWindow(self.hwnd) }.max(96) as f32 / 96.0;
-                    match unsafe { Renderer::create(self.hwnd, size, scale, self.theme) } {
-                        Ok(mut renderer) => {
-                            // Don't lose the activity state across a hide
-                            // cycle: the fresh renderer starts empty, so
-                            // push the arbitration winner (shelf may have
-                            // taken over while hidden).
-                            self.push_activity(&mut renderer);
-                            self.renderer = Some(renderer);
-                        }
-                        Err(e) => {
-                            log::log_err("set_visible.create", &e);
-                            return;
-                        }
+                    if let Ok(mut r) = unsafe { Renderer::create(self.hwnd, size, scale, self.theme) } {
+                        Self::push_activity_to(
+                            self.current_activity,
+                            &self.media_state,
+                            &self.call,
+                            &self.shelf_view,
+                            &self.timer_view,
+                            &self.volume,
+                            &mut r,
+                        );
+                        let _ = unsafe { r.draw() };
+                        self.renderer = Some(r);
                     }
                 }
-                // Present + Commit only now: DXGI drops presents issued while
-                // hidden, and DWM needs a fresh frame for a shown target.
-                if let Err(e) =
-                    unsafe { self.renderer.as_mut().expect("renderer initialized").draw() }
-                {
-                    log::log_err("set_visible.draw", &e);
-                }
             } else {
-                // Hovering can't continue in a hidden window; reset so the
-                // next show starts the episode cleanly.
                 self.tracking = false;
                 self.set_hover(false);
             }
         }
     }
 
-    /// Hover-status transition. The renderer dedupes no-op transitions; the
-    /// draw only happens for real changes while visible.
     fn set_hover(&mut self, hover: bool) -> bool {
         self.hover = hover;
         let Some(renderer) = self.renderer.as_mut() else {
             return false;
         };
         if renderer.set_hover(hover) {
-            log::log(&format!("hover: {hover}"));
             if self.visible {
-                if let Err(error) = unsafe { renderer.draw() } {
-                    log::log_err("hover.draw", &error);
+                let _ = unsafe { renderer.draw() };
+                // 200 ms fill/border ease (Design Spec: Hover).
+                unsafe {
+                    SetTimer(Some(self.hwnd), HOVER_ANIM_TIMER_ID, HOVER_ANIM_TICK_MS, None);
                 }
             }
             return true;
@@ -515,192 +512,400 @@ impl App {
         false
     }
 
-    /// Push the arbitration winner's content into a (possibly fresh)
-    /// renderer without drawing — used on renderer (re)creation too.
-    fn push_activity(&mut self, renderer: &mut Renderer) {
-        match self.queue.current() {
-            Some(ActivityId::Shelf) => {
-                let _ = renderer.set_media(None);
-                let _ = renderer.set_shelf(self.shelf_view.clone());
-            }
-            Some(ActivityId::Media) => {
-                let _ = renderer.set_shelf(None);
-                let _ = renderer.set_media(self.media_state.clone());
-            }
-            _ => {
-                let _ = renderer.set_media(None);
-                let _ = renderer.set_shelf(None);
-            }
-        }
-    }
-
-    /// Push the current activity and redraw if visible. Event-driven: runs
-    /// on media updates, drops, and clicks — never on a loop.
-    fn refresh_content(&mut self) {
+    fn set_pressed(&mut self, pressed: bool) -> bool {
+        self.pressed = pressed;
         let Some(renderer) = self.renderer.as_mut() else {
-            return;
+            return false;
         };
-        match self.queue.current() {
-            Some(ActivityId::Shelf) => {
-                let _ = renderer.set_media(None);
-                let _ = renderer.set_shelf(self.shelf_view.clone());
+        if renderer.set_pressed(pressed) {
+            if self.visible {
+                let _ = unsafe { renderer.draw() };
+                unsafe {
+                    SetTimer(Some(self.hwnd), HOVER_ANIM_TIMER_ID, HOVER_ANIM_TICK_MS, None);
+                }
             }
-            Some(ActivityId::Media) => {
-                let _ = renderer.set_shelf(None);
-                let _ = renderer.set_media(self.media_state.clone());
-            }
-            _ => {
-                let _ = renderer.set_media(None);
-                let _ = renderer.set_shelf(None);
-            }
+            return true;
         }
-        if self.visible {
-            if let Err(error) = unsafe { renderer.draw() } {
-                log::log_err("content.draw", &error);
-            }
-        }
+        false
     }
 
-    /// Brighten the pill while an OLE drag is over it (and show the drop
-    /// hint on an empty pill). Mirrors set_hover's event-only redraws.
     fn set_drop_hover(&mut self, on: bool) {
         if self.drop_hover == on {
             return;
         }
         self.drop_hover = on;
-        let Some(renderer) = self.renderer.as_mut() else {
-            return;
-        };
-        let _ = renderer.set_drop_hover(on);
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_drop_hover(on);
+        }
+        self.apply();
+        if let Some(r) = self.renderer.as_mut() {
+            let _ = unsafe { r.draw() };
+        }
+    }
+
+    fn push_activity_to(
+        current_activity: ActivityId,
+        media: &Option<activities::media::MediaUpdate>,
+        call: &activities::call::CallActivity,
+        shelf: &Option<activities::shelf::ShelfView>,
+        timer: &Option<activities::timer::TimerView>,
+        volume: &activities::volume::VolumeActivity,
+        r: &mut Renderer,
+    ) {
+        r.active_id = current_activity;
+        r.media = media.clone();
+        r.call = if call.active { Some(call.state.clone()) } else { None };
+        r.shelf = shelf.clone();
+        r.timer = timer.clone();
+        r.volume = if volume.active { Some(volume.clone()) } else { None };
+    }
+
+    fn refresh_content(&mut self) {
+        let winner = self.queue.current().unwrap_or(ActivityId::Idle);
+        let activity_changed = winner != self.current_activity;
+        self.current_activity = winner;
+
+        if let Some(r) = self.renderer.as_mut() {
+            Self::push_activity_to(
+                self.current_activity,
+                &self.media_state,
+                &self.call,
+                &self.shelf_view,
+                &self.timer_view,
+                &self.volume,
+                r,
+            );
+        }
+
+        if activity_changed {
+            self.apply();
+        }
+
         if self.visible {
-            if let Err(error) = unsafe { renderer.draw() } {
-                log::log_err("drop_hover.draw", &error);
+            if let Some(r) = self.renderer.as_mut() {
+                let _ = unsafe { r.draw() };
             }
         }
     }
 
-    /// Open everything parked on the shelf through the shell, then hand the
-    /// pill back to the next activity in line. `ShellExecuteW` spawns and
-    /// returns immediately — the UI thread never blocks.
-    fn open_shelf(&mut self) {
-        let paths = std::mem::take(&mut self.shelf_paths);
-        for path in &paths {
-            // The wide buffer must outlive the call; it lives in this scope.
-            let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
-            unsafe {
-                ShellExecuteW(
-                    None,
-                    w!("open"),
-                    PCWSTR::from_raw(wide.as_ptr()),
-                    PCWSTR::null(),
-                    PCWSTR::null(),
-                    SW_SHOWNORMAL,
-                );
+    // Toggle or open the flyout window
+    fn toggle_flyout(&mut self) {
+        let taskbar = match anchor::taskbar_window() {
+            Some(t) => t,
+            None => return,
+        };
+        get_flyout().with(|f| {
+            if let Ok(mut borrow) = f.try_borrow_mut() {
+                if let Some(flyout) = borrow.as_mut() {
+                    if flyout.is_open && !flyout.is_closing {
+                        flyout.close();
+                    } else {
+                        // Sync content to flyout
+                        flyout.media = self.media_state.clone().unwrap_or_else(activities::media::MediaUpdate::demo);
+                        flyout.call = self.call.state.clone();
+                        flyout.shelf = self.shelf_view.clone().unwrap_or_else(activities::shelf::ShelfView::demo);
+                        flyout.timer = self.timer_view.clone().unwrap_or_else(activities::timer::TimerView::demo);
+
+                        flyout.open_for(self.current_activity, taskbar, self.pill);
+                    }
+                }
             }
+        });
+    }
+
+    fn collapse_flyout(&mut self) {
+        get_flyout().with(|f| {
+            if let Ok(mut borrow) = f.try_borrow_mut() {
+                if let Some(flyout) = borrow.as_mut() {
+                    flyout.close();
+                }
+            }
+        });
+    }
+
+    fn start_autoclose_timer(&self) {
+        unsafe {
+            SetTimer(Some(self.hwnd), AUTOCLOSE_TIMER_ID, AUTOCLOSE_MS, None);
         }
-        log::log(&format!("shelf.open: {} file(s)", paths.len()));
-        self.shelf.count = 0;
-        self.shelf_view = None;
-        self.queue.update(
-            self.shelf.id(),
-            self.shelf.priority(),
-            self.shelf.active(),
-        );
+    }
+
+    fn stop_autoclose_timer(&self) {
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), AUTOCLOSE_TIMER_ID);
+        }
+    }
+
+    fn on_flyout_action(&mut self, action: usize, param: usize) {
+        match action {
+            flyout::FLYOUT_ACTION_PLAY_PAUSE => {
+                let _ = self.media_toggle.send(());
+                if let Some(m) = self.media_state.as_mut() {
+                    m.playing = !m.playing;
+                }
+                self.refresh_content();
+            }
+            flyout::FLYOUT_ACTION_PREV | flyout::FLYOUT_ACTION_NEXT => {
+                // Previous / Next track
+                if let Some(m) = self.media_state.as_mut() {
+                    m.title = "Deewana Kar Raha Hai".into();
+                    m.playing = true;
+                }
+                self.refresh_content();
+            }
+            flyout::FLYOUT_ACTION_MUTE => {
+                self.call.toggle_mute();
+                self.refresh_content();
+            }
+            flyout::FLYOUT_ACTION_SPEAKER => {
+                self.call.toggle_speaker();
+                self.refresh_content();
+            }
+            flyout::FLYOUT_ACTION_END_CALL => {
+                self.call.end_call();
+                self.queue.update(ActivityId::Call, Priority::Call, false);
+                self.refresh_content();
+            }
+            flyout::FLYOUT_ACTION_CLEAR_SHELF => {
+                self.shelf_paths.clear();
+                self.shelf.count = 0;
+                self.shelf_view = None;
+                self.queue.update(ActivityId::Shelf, Priority::Shelf, false);
+                self.refresh_content();
+            }
+            flyout::FLYOUT_ACTION_OPEN_FILE => {
+                if let Some(sv) = &self.shelf_view {
+                    if let Some(file) = sv.files.get(param) {
+                        let wide: Vec<u16> = file.path.encode_utf16().chain(std::iter::once(0)).collect();
+                        unsafe {
+                            ShellExecuteW(
+                                None,
+                                w!("open"),
+                                PCWSTR::from_raw(wide.as_ptr()),
+                                PCWSTR::null(),
+                                PCWSTR::null(),
+                                SW_SHOWNORMAL,
+                            );
+                        }
+                    }
+                }
+            }
+            flyout::FLYOUT_ACTION_TIMER_PAUSE => {
+                self.timer.toggle_pause(Instant::now());
+                if self.timer.is_running() {
+                    unsafe {
+                        SetTimer(Some(self.hwnd), TIMER_TICK_ID, TIMER_TICK_MS, None);
+                    }
+                } else {
+                    unsafe {
+                        let _ = KillTimer(Some(self.hwnd), TIMER_TICK_ID);
+                    }
+                }
+                self.on_timer_tick();
+            }
+            flyout::FLYOUT_ACTION_TIMER_ADD_MIN => {
+                self.timer.add_seconds(60);
+                self.on_timer_tick();
+            }
+            flyout::FLYOUT_ACTION_TIMER_STOP => {
+                self.timer.reset();
+                self.timer_view = None;
+                self.queue.update(ActivityId::Timer, Priority::Idle, false);
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), TIMER_TICK_ID);
+                }
+                log::log("timer.cancel (stop)");
+                self.refresh_content();
+            }
+            flyout::FLYOUT_ACTION_MOUSE_ENTER => {
+                self.stop_autoclose_timer();
+            }
+            flyout::FLYOUT_ACTION_MOUSE_LEAVE => {
+                self.start_autoclose_timer();
+            }
+            _ => {}
+        }
+    }
+
+    fn on_timer_tick(&mut self) {
+        let now = Instant::now();
+        let ended_before = self.timer.has_ended();
+        let view = activities::timer::view(&mut self.timer, now);
+        let changed = view != self.timer_view;
+        self.timer_view = view;
+        if !ended_before && self.timer.has_ended() {
+            // Crossed zero on this tick: hold the banner and stop the 1 Hz
+            // ticker. A click (or the hotkey) dismisses the banner.
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), TIMER_TICK_ID);
+            }
+            log::log("timer.ended");
+        }
+        if self.timer.has_ended() {
+            self.queue
+                .update(ActivityId::Timer, Priority::TimerEnding, true);
+        } else if self.timer.is_running() {
+            self.queue.update(ActivityId::Timer, Priority::Idle, true);
+        }
+        if changed {
+            self.refresh_content();
+        }
+    }
+
+    fn trigger_volume(&mut self, level: u32) {
+        self.volume.trigger(level);
+        self.queue.update(ActivityId::Volume, Priority::VolumeHud, true);
+        unsafe {
+            SetTimer(Some(self.hwnd), VOLUME_HUD_TIMER_ID, VOLUME_HUD_MS, None);
+        }
         self.refresh_content();
     }
 
-    /// Start (or re-target) the hover-expansion animation. Purely event
-    /// triggered: runs a short WM_TIMER-driven tween while active, then kills
-    /// the timer — no periodic work while idle.
-    fn set_expansion(&mut self, expanded: bool) {
-        let target = if expanded { 1.0 } else { 0.0 };
-        if self.expanding && (self.expand_target - target).abs() < f32::EPSILON {
-            return; // already animating toward this target
-        }
-        self.expand_target = target;
-        if !self.expanding {
-            self.animate_started = Some(Instant::now());
-            self.expanding = true;
-            unsafe {
-                SetTimer(
-                    Some(self.hwnd),
-                    EXPAND_TIMER_ID,
-                    EXPAND_TICK_MS,
-                    None::<unsafe extern "system" fn(HWND, u32, usize, u32)>,
-                );
+    /// Prototype previews are exclusive: the chosen activity is the only one
+    /// active, so its compact state is always visible while previewing.
+    fn preview_activity(&mut self, activity: ActivityId) {
+        self.queue.update(ActivityId::Media, Priority::Media, false);
+        self.queue.update(ActivityId::Call, Priority::Call, false);
+        self.queue.update(ActivityId::Shelf, Priority::Shelf, false);
+        self.queue.update(ActivityId::Timer, Priority::Idle, false);
+        self.queue.update(ActivityId::Volume, Priority::VolumeHud, false);
+        match activity {
+            ActivityId::Media => {
+                self.media_state = Some(activities::media::MediaUpdate::demo());
+                self.queue.update(ActivityId::Media, Priority::Media, true);
             }
+            ActivityId::Call => {
+                self.call = activities::call::CallActivity::new_active();
+                self.queue.update(ActivityId::Call, Priority::Call, true);
+            }
+            ActivityId::Shelf => {
+                self.shelf.count = 3;
+                self.shelf_view = Some(activities::shelf::ShelfView::demo());
+                self.queue.update(ActivityId::Shelf, Priority::Shelf, true);
+            }
+            ActivityId::Timer => {
+                self.timer = activities::timer::TimerActivity::default();
+                self.timer.start_countdown(Duration::from_secs(760), Instant::now());
+                self.timer_view = Some(activities::timer::TimerView::demo());
+                self.queue.update(ActivityId::Timer, Priority::Idle, true);
+            }
+            ActivityId::Volume => {
+                self.trigger_volume(42);
+                return;
+            }
+            ActivityId::Idle => {}
         }
+        self.refresh_content();
     }
 
-    /// Advance the expansion tween one tick; resize + redraw if anything
-    /// changed. Renders only while the transition runs.
-    fn on_anim_tick(&mut self) {
-        let Some(started) = self.animate_started else {
-            self.stop_expansion();
-            return;
-        };
-        let t = (started.elapsed().as_secs_f32() / EXPAND_SECONDS).min(1.0);
-        let eased = t * t * (3.0 - 2.0 * t); // smoothstep
-        self.expand = if self.expand_target >= 0.5 {
-            eased
-        } else {
-            1.0 - eased
-        };
-        if t >= 1.0 {
-            self.expand = self.expand_target;
-            self.stop_expansion();
+    /// Applies a Tweaks menu choice: persist it, then rebuild the theme and
+    /// redraw both the pill and (if open) the flyout.
+    fn apply_tweak(&mut self, id: usize) {
+        match id {
+            1101 => { settings::set_dword(w!("FillPercent"), 4); }
+            1102 => { settings::set_dword(w!("FillPercent"), 6); }
+            1103 => { settings::set_dword(w!("FillPercent"), 9); }
+            1104 => { settings::set_dword(w!("FillPercent"), 12); }
+            1105 => { settings::set_dword(w!("FillPercent"), 15); }
+            1106 => { settings::set_dword(w!("FillPercent"), 20); }
+            1111 => { settings::set_dword(w!("Radius"), 6); }
+            1112 => { settings::set_dword(w!("Radius"), 8); }
+            1113 => { settings::set_dword(w!("Radius"), 10); }
+            1114 => { settings::set_dword(w!("Radius"), 12); }
+            1115 => { settings::set_dword(w!("Radius"), 14); }
+            1121 => { settings::set_dword(w!("TimerMinutes"), 1); self.timer_secs = 60; }
+            1122 => { settings::set_dword(w!("TimerMinutes"), 5); self.timer_secs = 300; }
+            1123 => { settings::set_dword(w!("TimerMinutes"), 10); self.timer_secs = 600; }
+            1124 => { settings::set_dword(w!("TimerMinutes"), 25); self.timer_secs = 1500; }
+            1130 => { settings::clear_value(w!("Accent")); }
+            1131 => { settings::set_dword(w!("Accent"), 0x00FF_CD60); }
+            1132 => { settings::set_dword(w!("Accent"), 0x0000_B9FF); }
+            1133 => { settings::set_dword(w!("Accent"), 0x0023_11E8); }
+            1134 => { settings::set_dword(w!("Accent"), 0x005F_CB6C); }
+            1135 => { settings::set_dword(w!("Accent"), 0x00B8_6487); }
+            _ => return,
         }
-        self.apply_expansion();
-    }
-
-    fn stop_expansion(&mut self) {
-        if self.expanding {
-            self.expanding = false;
-            unsafe {
-                let _ = KillTimer(Some(self.hwnd), EXPAND_TIMER_ID);
-            }
-        }
-    }
-
-    /// Sync the window to the animated width and draw at the eased progress.
-    fn apply_expansion(&mut self) {
-        let taskbar = match anchor::taskbar_window() {
-            Some(taskbar) => taskbar,
-            None => return, // explorer restarting; apply() will recover
-        };
-        let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
-        let width = anchor::PILL_WIDTH_DIP
-            + (anchor::EXPANDED_WIDTH_DIP - anchor::PILL_WIDTH_DIP) * self.expand;
-        let placement = anchor::compute(taskbar, dpi, self.pill, width);
-        let w = (placement.rect.right - placement.rect.left).max(1);
-        let h = (placement.rect.bottom - placement.rect.top).max(1);
-        let resized = placement.rect != self.pill;
-        if resized {
-            if set_window_rect(self.hwnd, placement.rect, w, h).is_err() {
-                self.stop_expansion();
-                return; // window gone; WM_NCDESTROY follows
-            }
-            self.pill = placement.rect;
-        }
-        if let Some(renderer) = self.renderer.as_mut() {
-            renderer.set_expand(self.expand);
-            if resized {
-                if let Err(error) = unsafe { renderer.resize((w as u32, h as u32), dpi as f32 / 96.0) } {
-                    log::log_err("anim.resize", &error);
-                }
-            }
+        self.theme = theme::Theme::current();
+        if let Some(r) = self.renderer.as_mut() {
+            r.set_theme(self.theme);
             if self.visible {
-                if let Err(error) = unsafe { renderer.draw() } {
-                    log::log_err("anim.draw", &error);
+                let _ = unsafe { r.draw() };
+            }
+        }
+        get_flyout().with(|f| {
+            if let Ok(mut borrow) = f.try_borrow_mut() {
+                if let Some(flyout) = borrow.as_mut() {
+                    // set_theme redraws when the flyout is open.
+                    flyout.set_theme(self.theme);
                 }
             }
+        });
+    }
+
+    fn show_context_menu(&mut self) {
+        let mut pt = POINT::default();
+        unsafe {
+            let _ = WinGetCursorPos(&mut pt);
+            let hmenu = CreatePopupMenu().unwrap();
+            let _ = AppendMenuW(hmenu, MF_STRING, 1001, w!("Music (Deewana Kar Raha Hai)"));
+            let _ = AppendMenuW(hmenu, MF_STRING, 1002, w!("Call (Priya)"));
+            let _ = AppendMenuW(hmenu, MF_STRING, 1003, w!("File Shelf (3 files)"));
+            let _ = AppendMenuW(hmenu, MF_STRING, 1004, w!("Timer (Study session)"));
+            let _ = AppendMenuW(hmenu, MF_STRING, 1005, w!("Volume HUD (42)"));
+            let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+            let _ = AppendMenuW(hmenu, MF_STRING, 1006, w!("Simulate File Drag"));
+            let _ = AppendMenuW(hmenu, MF_STRING, 1007, w!("Show Prototype Panel"));
+            let _ = AppendMenuW(hmenu, MF_STRING, 1008, w!("Collapse Island"));
+            let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+
+            // Tweaks: persisted in HKCU\Software\TaskbarIsland and applied live.
+            let s = settings::Settings::current();
+            let tweaks = CreatePopupMenu().unwrap();
+            for (id, pct) in [(1101, 4u32), (1102, 6), (1103, 9), (1104, 12), (1105, 15), (1106, 20)] {
+                let flags = if s.fill_percent == pct { MF_STRING | MF_CHECKED } else { MF_STRING };
+                let label = HSTRING::from(format!("Fill {pct}%"));
+                let _ = AppendMenuW(tweaks, flags, id, &label);
+            }
+            let _ = AppendMenuW(tweaks, MF_SEPARATOR, 0, PCWSTR::null());
+            for (id, radius) in [(1111, 6u32), (1112, 8), (1113, 10), (1114, 12), (1115, 14)] {
+                let flags = if s.radius_dip == radius { MF_STRING | MF_CHECKED } else { MF_STRING };
+                let label = HSTRING::from(format!("Radius {radius}"));
+                let _ = AppendMenuW(tweaks, flags, id, &label);
+            }
+            let _ = AppendMenuW(tweaks, MF_SEPARATOR, 0, PCWSTR::null());
+            for (id, minutes) in [(1121, 1u32), (1122, 5), (1123, 10), (1124, 25)] {
+                let flags = if s.timer_minutes == minutes { MF_STRING | MF_CHECKED } else { MF_STRING };
+                let label = HSTRING::from(format!("Timer {minutes} min"));
+                let _ = AppendMenuW(tweaks, flags, id, &label);
+            }
+            let _ = AppendMenuW(tweaks, MF_SEPARATOR, 0, PCWSTR::null());
+            {
+                let flags = if s.accent_abgr.is_none() { MF_STRING | MF_CHECKED } else { MF_STRING };
+                let _ = AppendMenuW(tweaks, flags, 1130, w!("Accent: System"));
+            }
+            for (id, abgr, name) in [
+                (1131u32, 0x00FF_CD60u32, "Accent: Blue"),
+                (1132, 0x0000_B9FF, "Accent: Amber"),
+                (1133, 0x0023_11E8, "Accent: Red"),
+                (1134, 0x005F_CB6C, "Accent: Green"),
+                (1135, 0x00B8_6487, "Accent: Purple"),
+            ] {
+                let flags = if s.accent_abgr == Some(abgr) { MF_STRING | MF_CHECKED } else { MF_STRING };
+                let label = HSTRING::from(name);
+                let _ = AppendMenuW(tweaks, flags, id as usize, &label);
+            }
+            let _ = AppendMenuW(hmenu, MF_POPUP, tweaks.0 as usize, w!("Tweaks"));
+
+            let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+            let _ = AppendMenuW(hmenu, MF_STRING, 1009, w!("Exit"));
+
+            let _ = TrackPopupMenu(hmenu, TPM_RIGHTBUTTON, pt.x, pt.y, Some(0), self.hwnd, None);
+            let _ = DestroyMenu(hmenu);
         }
     }
 
-    fn on_message(&mut self, msg: u32, wparam: WPARAM) -> Option<LRESULT> {
+    fn on_message(&mut self, msg: u32, wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         match msg {
             m if m == G_TASKBAR_CREATED_MSG.load(Ordering::Relaxed) => {
-                // Explorer restarted: re-register the appbar and re-measure.
                 anchor::register_appbar(self.hwnd, APPBAR_MSG);
                 self.apply();
                 Some(LRESULT(0))
@@ -715,65 +920,40 @@ impl App {
             }
             WM_SETTINGCHANGE => {
                 self.theme = theme::Theme::current();
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.set_theme(self.theme);
-                    if let Err(error) = unsafe { renderer.draw() } {
-                        log::log_err("theme.draw", &error);
-                    }
+                if let Some(r) = self.renderer.as_mut() {
+                    r.set_theme(self.theme);
+                    let _ = unsafe { r.draw() };
                 }
+                get_flyout().with(|f| {
+                    if let Ok(mut borrow) = f.try_borrow_mut() {
+                        if let Some(flyout) = borrow.as_mut() {
+                            flyout.set_theme(self.theme);
+                        }
+                    }
+                });
                 Some(LRESULT(0))
             }
             WM_APP_RECHECK => {
-                // Foreground window changed → fullscreen state may have changed.
                 self.apply();
                 Some(LRESULT(0))
             }
             WM_APP_MEDIA => {
-                let locked = self
-                    .media_snapshot
-                    .lock()
-                    .expect("media snapshot mutex poisoned")
-                    .clone();
-                // An empty title is the "nothing playing" sentinel from
-                // media.rs (only sent on playback-status changes, never polled).
+                let locked = self.media_snapshot.lock().expect("mutex").clone();
                 let media = locked.filter(|update| !update.title.is_empty());
-                if let Some(update) = &media {
-                    log::log(&format!("media: {} — {}", update.title, update.artist));
-                } else if self.media_state.is_some() {
-                    log::log("media: stopped");
-                }
                 self.media_state = media;
-                // Arbitrate: the shelf keeps the pill while files are parked.
-                self.queue
-                    .update(ActivityId::Media, Priority::Media, self.media_state.is_some());
+                self.queue.update(ActivityId::Media, Priority::Media, self.media_state.is_some());
                 self.refresh_content();
                 Some(LRESULT(0))
             }
             activities::shelf::WM_APP_SHELF => {
                 match wparam.0 as u32 {
                     activities::shelf::SHELF_DROP => {
-                        let paths = std::mem::take(&mut *self
-                            .shelf_slot
-                            .lock()
-                            .expect("shelf slot mutex poisoned"));
-                        // A new drop replaces the batch (the pill always
-                        // shows exactly one shelf).
+                        let paths = std::mem::take(&mut *self.shelf_slot.lock().expect("mutex"));
                         self.shelf_paths = paths;
                         self.shelf.count = self.shelf_paths.len();
                         self.shelf_view = activities::shelf::view(&self.shelf_paths);
-                        log::log(&format!(
-                            "shelf.drop: {} file(s) → {:?}",
-                            self.shelf.count,
-                            self.shelf_view.as_ref().map(|v| &v.title)
-                        ));
-                        self.queue.update(
-                            self.shelf.id(),
-                            self.shelf.priority(),
-                            self.shelf.active(),
-                        );
-                        if self.shelf_view.is_some() {
-                            self.set_expansion(true); // a drop deserves the wide view
-                        }
+                        self.queue.update(self.shelf.id(), self.shelf.priority(), self.shelf.active());
+                        self.set_drop_hover(false);
                         self.refresh_content();
                     }
                     activities::shelf::SHELF_HOVER_ENTER => self.set_drop_hover(true),
@@ -783,9 +963,6 @@ impl App {
                 Some(LRESULT(0))
             }
             WM_MOUSEMOVE => {
-                // First move of an episode: ask for the leave notification
-                // once, then pin the highlight state. The hover timeout event
-                // would lag the visual, so the move itself drives it.
                 if !self.tracking {
                     let mut tme = TRACKMOUSEEVENT {
                         cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
@@ -793,43 +970,197 @@ impl App {
                         hwndTrack: self.hwnd,
                         dwHoverTime: 0,
                     };
-                    if unsafe { TrackMouseEvent(&mut tme) }.is_ok() {
-                        self.tracking = true;
-                    }
+                    let _ = unsafe { TrackMouseEvent(&mut tme) };
+                    self.tracking = true;
                 }
                 self.set_hover(true);
-                if self.hover && self.visible {
-                    self.set_expansion(true);
-                }
+                self.stop_autoclose_timer();
                 Some(LRESULT(0))
             }
             WM_MOUSELEAVE => {
                 self.tracking = false;
-                if self.set_hover(false) {
-                    self.set_expansion(false);
-                }
+                self.set_hover(false);
+                self.set_pressed(false);
+                // Auto-close 700 ms after pointer leaves pill + flyout
+                self.start_autoclose_timer();
                 Some(LRESULT(0))
             }
             WM_LBUTTONDOWN => {
-                // Swallow so the taskbar doesn't react underneath the pill.
+                self.set_pressed(true);
                 Some(LRESULT(0))
             }
             WM_LBUTTONUP => {
-                // Activity decides the click: shelved files open (and clear),
-                // otherwise the current media session toggles play/pause.
-                match self.queue.current() {
-                    Some(ActivityId::Shelf) => self.open_shelf(),
-                    Some(ActivityId::Media) => {
-                        // The media worker's PlaybackInfoChanged event
-                        // republishes the new state to us.
-                        let _ = self.media_toggle.send(());
+                self.set_pressed(false);
+                if self.timer.has_ended() {
+                    // Ended banner: click dismisses (spec: "click to dismiss").
+                    self.timer.reset();
+                    self.timer_view = None;
+                    self.queue.update(ActivityId::Timer, Priority::Idle, false);
+                    log::log("timer.dismiss");
+                    self.refresh_content();
+                } else {
+                    // Clicking the pill toggles the flyout above taskbar
+                    self.toggle_flyout();
+                }
+                Some(LRESULT(0))
+            }
+            WM_RBUTTONUP => {
+                self.show_context_menu();
+                Some(LRESULT(0))
+            }
+            WM_COMMAND => {
+                let id = wparam.0 & 0xFFFF;
+                match id {
+                    1001 => self.preview_activity(ActivityId::Media),
+                    1002 => self.preview_activity(ActivityId::Call),
+                    1003 => self.preview_activity(ActivityId::Shelf),
+                    1004 => self.preview_activity(ActivityId::Timer),
+                    1005 => self.preview_activity(ActivityId::Volume),
+                    1101..=1135 => self.apply_tweak(id),
+                    1006 => {
+                        // Simulate file drag
+                        self.set_drop_hover(!self.drop_hover);
+                    }
+                    1007 => {
+                        // Show prototype window
+                        prototype::show_prototype_window(self.hwnd);
+                    }
+                    1008 => {
+                        // Collapse
+                        self.collapse_flyout();
+                    }
+                    1009 => {
+                        unsafe { PostQuitMessage(0) };
                     }
                     _ => {}
                 }
                 Some(LRESULT(0))
             }
-            WM_TIMER if wparam.0 == EXPAND_TIMER_ID => {
-                self.on_anim_tick();
+            WM_APP_FLYOUT_ACTION => {
+                self.on_flyout_action(wparam.0, lparam.0 as usize);
+                Some(LRESULT(0))
+            }
+            prototype::WM_APP_PROTOTYPE_CMD => {
+                let cmd = wparam.0;
+                match cmd {
+                    prototype::CMD_PREVIEW_MUSIC => self.preview_activity(ActivityId::Media),
+                    prototype::CMD_PREVIEW_CALL => self.preview_activity(ActivityId::Call),
+                    prototype::CMD_PREVIEW_SHELF => self.preview_activity(ActivityId::Shelf),
+                    prototype::CMD_PREVIEW_TIMER => self.preview_activity(ActivityId::Timer),
+                    prototype::CMD_PREVIEW_VOLUME => self.preview_activity(ActivityId::Volume),
+                    prototype::CMD_SIMULATE_DRAG => {
+                        self.set_drop_hover(!self.drop_hover);
+                    }
+                    prototype::CMD_COLLAPSE => {
+                        self.collapse_flyout();
+                    }
+                    _ => {}
+                }
+                Some(LRESULT(0))
+            }
+            WM_HOTKEY => {
+                match wparam.0 as i32 {
+                    HOTKEY_MUSIC => self.preview_activity(ActivityId::Media),
+                    HOTKEY_CALL => self.preview_activity(ActivityId::Call),
+                    HOTKEY_SHELF => self.preview_activity(ActivityId::Shelf),
+                    HOTKEY_TIMER_VIEW => self.preview_activity(ActivityId::Timer),
+                    HOTKEY_VOLUME => self.preview_activity(ActivityId::Volume),
+                    HOTKEY_COLLAPSE => {
+                        self.collapse_flyout();
+                    }
+                    HOTKEY_TIMER => {
+                        if self.timer.has_ended() {
+                            // Ended banner: the hotkey dismisses it.
+                            self.timer.reset();
+                            self.timer_view = None;
+                            self.queue.update(ActivityId::Timer, Priority::Idle, false);
+                            log::log("timer.dismiss (hotkey)");
+                            self.refresh_content();
+                        } else if self.timer.is_running() {
+                            unsafe {
+                                let _ = KillTimer(Some(self.hwnd), TIMER_TICK_ID);
+                            }
+                            self.timer.reset();
+                            self.timer_view = None;
+                            self.queue.update(ActivityId::Timer, Priority::Idle, false);
+                            log::log("timer.cancel");
+                            self.refresh_content();
+                        } else {
+                            self.timer.start_countdown(Duration::from_secs(self.timer_secs), Instant::now());
+                            unsafe {
+                                SetTimer(Some(self.hwnd), TIMER_TICK_ID, TIMER_TICK_MS, None);
+                            }
+                            log::log(&format!("timer.start: {}s", self.timer_secs));
+                            self.on_timer_tick();
+                        }
+                    }
+                    _ => {}
+                }
+                Some(LRESULT(0))
+            }
+            WM_TIMER if wparam.0 == AUTOCLOSE_TIMER_ID => {
+                self.stop_autoclose_timer();
+                // Check if mouse is currently over pill or flyout
+                let mut pt = POINT::default();
+                unsafe {
+                    let _ = WinGetCursorPos(&mut pt);
+                }
+                let in_pill = pt.x >= self.pill.left && pt.x <= self.pill.right
+                    && pt.y >= self.pill.top && pt.y <= self.pill.bottom;
+                // Also check if mouse is inside the flyout window
+                let in_flyout = get_flyout().with(|f| {
+                    if let Ok(borrow) = f.try_borrow() {
+                        if let Some(flyout) = borrow.as_ref() {
+                            if flyout.is_open && !flyout.is_closing {
+                                let mut fr = RECT::default();
+                                return unsafe {
+                                    windows::Win32::UI::WindowsAndMessaging::GetWindowRect(
+                                        flyout.hwnd,
+                                        &mut fr,
+                                    )
+                                }
+                                .is_ok()
+                                    && pt.x >= fr.left
+                                    && pt.x <= fr.right
+                                    && pt.y >= fr.top
+                                    && pt.y <= fr.bottom;
+                            }
+                        }
+                    }
+                    false
+                });
+                if !in_pill && !in_flyout {
+                    self.collapse_flyout();
+                }
+                Some(LRESULT(0))
+            }
+            WM_TIMER if wparam.0 == HOVER_ANIM_TIMER_ID => {
+                let mut still = false;
+                if let Some(renderer) = self.renderer.as_mut() {
+                    let (redraw, animating) = renderer.tick_hover(Instant::now());
+                    still = animating;
+                    if redraw && self.visible {
+                        let _ = unsafe { renderer.draw() };
+                    }
+                }
+                if !still {
+                    unsafe {
+                        let _ = KillTimer(Some(self.hwnd), HOVER_ANIM_TIMER_ID);
+                    }
+                }
+                Some(LRESULT(0))
+            }
+            WM_TIMER if wparam.0 == TIMER_TICK_ID => {
+                self.on_timer_tick();
+                Some(LRESULT(0))
+            }
+            WM_TIMER if wparam.0 == VOLUME_HUD_TIMER_ID => {
+                unsafe {
+                    let _ = KillTimer(Some(self.hwnd), VOLUME_HUD_TIMER_ID);
+                }
+                self.volume.dismiss();
+                self.queue.update(ActivityId::Volume, Priority::VolumeHud, false);
+                self.refresh_content();
                 Some(LRESULT(0))
             }
             _ => None,
@@ -837,8 +1168,6 @@ impl App {
     }
 }
 
-/// # Safety
-/// `hwnd` must be our pill window. Only called by the OS on the UI thread.
 unsafe extern "system" fn wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -848,9 +1177,6 @@ unsafe extern "system" fn wnd_proc(
     match msg {
         WM_NCCREATE => return DefWindowProcW(hwnd, msg, wparam, lparam),
         WM_NCDESTROY => {
-            // try_borrow: WM_NCDESTROY can itself arrive nested (see the
-            // reentrancy note below) while an outer handler holds the APP
-            // borrow; clearing the slot is then best-effort and harmless.
             let _ = APP.try_with(|a| {
                 if let Ok(mut app) = a.try_borrow_mut() {
                     *app = None;
@@ -862,24 +1188,9 @@ unsafe extern "system" fn wnd_proc(
         _ => {}
     }
 
-    // Reentrancy: on_message calls SetWindowPos (apply()/apply_expansion()
-    // raise the pill above the taskbar's full-strip content bridge), and
-    // SetWindowPos synchronously dispatches WM_WINDOWPOSCHANGING,
-    // WM_NCCALCSIZE and WM_WINDOWPOSCHANGED into wnd_proc *inside that call*,
-    // while the outer message handler still holds the APP borrow. None of
-    // those nested messages read App state (the dispatcher below never
-    // handled them), and DefWindowProc processes them exactly as before, so
-    // on a borrow conflict we defer to the default proc instead of panicking.
-    // Empirically confirmed: nested 0x46 WM_WINDOWPOSCHANGING, 0x83
-    // WM_NCCALCSIZE, 0x85 WM_NCPAINT, 0x14 WM_ERASEBKGND, 0x47
-    // WM_WINDOWPOSCHANGED (+0x3/0x5 WM_MOVE/WM_SIZE from DSProcW of 0x47) on
-    // every width-changing SetWindowPos of the expand animation.
     let handled = APP
         .try_with(|a| match a.try_borrow_mut() {
-            Ok(mut app) => app.as_mut().and_then(|app| app.on_message(msg, wparam)),
-            // Borrow conflict ⇒ an outer handler that called SetWindowPos is
-            // still on the stack; the nested cluster needs no App state and
-            // DSProcW handles it exactly as before, so just defer there.
+            Ok(mut app) => app.as_mut().and_then(|app| app.on_message(msg, wparam, lparam)),
             Err(_) => None,
         })
         .unwrap_or(None);
@@ -889,11 +1200,6 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-/// WinEvent out-of-context hook: called on our message-loop thread whenever the
-/// foreground window changes. We only post to ourselves — cheapest possible path.
-///
-/// # Safety
-/// Called by user32 on the hooking thread.
 unsafe extern "system" fn foreground_changed(
     _hook: HWINEVENTHOOK,
     _event: u32,

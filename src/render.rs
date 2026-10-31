@@ -1,19 +1,21 @@
-//! render.rs — GPU rendering for the pill.
+//! render.rs — GPU rendering for the compact taskbar pill.
 //!
 //! Pipeline: D3D11 device → DXGI swapchain (flip, `DXGI_ALPHA_MODE_PREMULTIPLIED`)
 //! hosted in a DirectComposition visual tree on the HWND → Direct2D device
-//! context draws into the backbuffer. This is what gives the window per-pixel
-//! alpha without `WS_EX_LAYERED`, so the pill blends with the real taskbar
-//! pixels underneath (no blur, just alpha — matching the taskbar highlight).
+//! context draws into the backbuffer.
 //!
-//! Renders on demand only: once at startup, on resize, and (later phases)
-//! while an animation is active. There is no frame loop.
+//! The compact pill stays put and never resizes or scales on hover. Only its fill
+//! and border brighten.
 
+use crate::activities::call::CallState;
 use crate::activities::media::MediaUpdate;
 use crate::activities::shelf::ShelfView;
-use crate::log::{log, log_err};
+use crate::activities::timer::TimerView;
+use crate::activities::volume::VolumeActivity;
+use crate::state::ActivityId;
 use crate::theme::Theme;
 use core::mem::ManuallyDrop;
+use std::time::Instant;
 use windows::core::{w, Interface, Result};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -21,15 +23,17 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateDevice, ID2D1Bitmap1, ID2D1Device, ID2D1DeviceContext, ID2D1Image,
-    ID2D1SolidColorBrush, D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-    D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ROUNDED_RECT,
+    ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
+    D2D1_BITMAP_PROPERTIES1, D2D1_DASH_STYLE_DASH, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
+    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL,
-    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
-    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-    DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_NORMAL,
+    DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_WORD_WRAPPING_NO_WRAP, IDWriteFactory, IDWriteTextFormat,
 };
 use windows_numerics::Vector2;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -51,108 +55,75 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 
-/// Taskbar-highlight colors come from theme.rs; the radius is the design spec.
-const CORNER_RADIUS_DIP: f32 = 8.0;
-/// Hover feedback: highlight-alpha multipliers. Applied only on the
-/// mouse-enter/leave transition events, never per frame.
-const HOVER_FILL_MULT: f32 = 2.6;
-const HOVER_BORDER_MULT: f32 = 2.0;
-/// Media row layout (DIP): the bars column sits on the left, the track title
-/// starts right of it and is clipped at the right padding. The artist line is
-/// a touch smaller and appears only while expanded.
 const TEXT_SIZE_DIP: f32 = 12.0;
-const ARTIST_SIZE_DIP: f32 = 11.0;
-const TEXT_LEFT_DIP: f32 = 34.0;
-const TEXT_RIGHT_PAD_DIP: f32 = 6.0;
-/// Shelf stack (Files indicator): one thin line per parked file, capped.
-const SHELF_LINES_MAX: usize = 4;
-const SHELF_LINE_W_DIP: f32 = 16.0;
-const SHELF_LINE_STEP_DIP: f32 = 4.0;
-const SHELF_LINE_H_DIP: f32 = 2.5;
-/// Shown only on an empty pill while a drag is over it.
-const DROP_HINT: &str = "Drop to shelve";
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Indicator {
     Idle,
     Media,
-    /// Wired up when timer activities render (later phase).
-    #[allow(dead_code)]
+    Call,
     Timer,
-    /// Shelved-file stack; carries the count (draw caps the lines).
+    Volume,
     Files(usize),
-}
-
-/// The indicator follows the resolved activity (state.rs priorities): media
-/// while it owns the pill, else the shelf while files are parked, else idle.
-fn derive_indicator(
-    media: Option<&MediaUpdate>,
-    shelf: Option<&ShelfView>,
-) -> Indicator {
-    match (media, shelf) {
-        (_, Some(shelf)) => Indicator::Files(shelf.count.min(SHELF_LINES_MAX)),
-        (Some(_), None) => Indicator::Media,
-        (None, None) => Indicator::Idle,
-    }
 }
 
 pub struct Renderer {
     swapchain: IDXGISwapChain1,
-    // Keep the device alive for the lifetime of its target/visual tree.
     #[allow(dead_code)]
     comp_device: IDCompositionDevice,
-    // DirectComposition does not guarantee that the HWND target or root visual
-    // outlive their last COM references. Keep both alive with the swapchain.
     #[allow(dead_code)]
     comp_target: IDCompositionTarget,
     #[allow(dead_code)]
     comp_visual: IDCompositionVisual,
     d2d_context: ID2D1DeviceContext,
-    fill_brush: ID2D1SolidColorBrush,
-    border_brush: ID2D1SolidColorBrush,
     text_format: IDWriteTextFormat,
-    /// Artist line format (slightly smaller) for the expanded pill.
-    artist_format: IDWriteTextFormat,
-    /// Retained: the ellipsis trimming sign is created from this at draw time.
+    bold_format: IDWriteTextFormat,
+    center_format: IDWriteTextFormat,
+    /// Dashed stroke for the drag-over drop target (Design Spec 06).
+    dash_style: ID2D1StrokeStyle,
+    #[allow(dead_code)]
     dwrite_factory: IDWriteFactory,
-    text_brush: ID2D1SolidColorBrush,
-    /// Artist line brush; recolored per draw with the expansion fade.
-    artist_brush: ID2D1SolidColorBrush,
-    /// Single-line, ellipsis-trimmed title layout — rebuilt only when the
-    /// title or available width changes (keyed cache below).
-    text_layout: Option<IDWriteTextLayout>,
-    text_layout_key: (String, f32),
-    artist_layout: Option<IDWriteTextLayout>,
-    artist_layout_key: (String, f32),
-    /// Hover-expansion progress (0 compact — 1 expanded), driven by the UI's
-    /// animation timer; pure render input, no timing logic here.
-    expand: f32,
-    /// Shelved files display strings (built by activities::shelf::view at
-    /// event time). Set only when the shelf is the resolved activity.
-    shelf: Option<ShelfView>,
-    /// An OLE drag is currently over the pill (brighten + empty-pill hint).
-    drop_hover: bool,
-    /// Backbuffer size in physical pixels.
+
     size: (u32, u32),
-    /// DIPs → physical pixels (dpi / 96).
     scale: f32,
-    indicator: Indicator,
     theme: Theme,
-    /// Mouse-hover feedback state (WM_MOUSEMOVE/LEAVE transitions).
     hover: bool,
-    /// Current media snapshot; `None` = nothing playing.
-    media: Option<MediaUpdate>,
+    pressed: bool,
+    pub drop_hover: bool,
+    /// Hover transition (spec: 200 ms ease, fill and border only).
+    hover_mix: f32,
+    hover_from: f32,
+    hover_target: f32,
+    hover_anim_start: Option<Instant>,
+
+    // Active state
+    pub active_id: ActivityId,
+    pub media: Option<MediaUpdate>,
+    pub call: Option<CallState>,
+    pub shelf: Option<ShelfView>,
+    pub timer: Option<TimerView>,
+    pub volume: Option<VolumeActivity>,
+}
+
+/// cubic-bezier(.2, .8, .2, 1): fast-out, no overshoot (Design Spec motion).
+fn ease_out(t: f32) -> f32 {
+    let u = 1.0 - t;
+    3.0 * u * u * t * 0.8 + 3.0 * u * t * t + t * t * t
+}
+
+/// Component-wise RGBA interpolation used by the hover fill/border tween.
+fn lerp_rgba(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32), t: f32) -> (f32, f32, f32, f32) {
+    (
+        a.0 + (b.0 - a.0) * t,
+        a.1 + (b.1 - a.1) * t,
+        a.2 + (b.2 - a.2) * t,
+        a.3 + (b.3 - a.3) * t,
+    )
 }
 
 impl Renderer {
-    /// Build the whole device chain for `hwnd` at `size` physical px.
-    ///
-    /// # Safety
-    /// `hwnd` must be a valid window created with `WS_EX_NOREDIRECTIONBITMAP`
-    /// (required by `IDCompositionDevice::CreateTargetForHwnd`).
     pub unsafe fn create(hwnd: HWND, size: (u32, u32), scale: f32, theme: Theme) -> Result<Self> {
-        log("create: d3d…");
-        // --- Direct3D device (BGRA support is required by Direct2D-on-DXGI) ---
         let mut d3d_device: Option<ID3D11Device> = None;
         let mut feature_level = core::mem::MaybeUninit::uninit();
         D3D11CreateDevice(
@@ -165,40 +136,18 @@ impl Renderer {
             Some(&mut d3d_device),
             Some(feature_level.as_mut_ptr()),
             None,
-        )
-        .inspect_err(|e| {
-            log_err("create.D3D11CreateDevice", e);
-        })?;
-        let d3d_device = d3d_device.expect("D3D11CreateDevice succeeded without a device");
+        )?;
+        let d3d_device = d3d_device.expect("d3d device");
 
-        // --- DXGI pieces: the factory that created the device's adapter, plus
-        //     the device itself for swapchain/DComp interop. ---
         let dxgi_device: IDXGIDevice = d3d_device.cast()?;
         let adapter = dxgi_device.GetAdapter()?;
-        if let Ok(desc) = adapter.GetDesc() {
-            let name: Vec<u16> = desc
-                .Description
-                .iter()
-                .copied()
-                .take_while(|&c| c != 0)
-                .collect();
-            log(&format!(
-                "create: adapter = {}",
-                String::from_utf16_lossy(&name)
-            ));
-        }
         let factory: IDXGIFactory2 = adapter.GetParent()?;
-        log("create: dxgi ok");
 
-        // --- Premultiplied-alpha flip swapchain hosted by the window. ---
         let desc = DXGI_SWAP_CHAIN_DESC1 {
-            Width: size.0,
-            Height: size.1,
+            Width: size.0.max(1),
+            Height: size.1.max(1),
             Format: DXGI_FORMAT_R8G8B8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
             BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
             BufferCount: 2,
             Scaling: DXGI_SCALING_STRETCH,
@@ -206,50 +155,32 @@ impl Renderer {
             AlphaMode: DXGI_ALPHA_PREMULTIPLIED,
             ..Default::default()
         };
-        // --- Premultiplied-alpha flip swapchain hosted in the composition tree.
-        //     CreateSwapChainForHwnd rejects DXGI_ALPHA_MODE_PREMULTIPLIED on
-        //     current Windows 11 (verified: 0x887A0001 for every swap effect),
-        //     so the swapchain is created for composition instead. The HWND
-        //     still owns the on-screen region via the DComp target below, and
-        //     we drive Present/ResizeBuffers ourselves. ---
-        let swapchain = factory
-            .CreateSwapChainForComposition(&d3d_device, &desc, None)
-            .inspect_err(|e| {
-                log_err("create.CreateSwapChainForComposition", e);
-            })?;
-        log("create: swapchain ok");
 
-        // --- DirectComposition tree: target(root(visual(content = swapchain))) ---
-        let comp_device: IDCompositionDevice =
-            DCompositionCreateDevice(&dxgi_device).inspect_err(|e| {
-                log_err("create.DCompositionCreateDevice", e);
-            })?;
-        let comp_target = comp_device.CreateTargetForHwnd(hwnd, true).inspect_err(|e| {
-            log_err("create.CreateTargetForHwnd", e);
-        })?;
+        let swapchain = factory.CreateSwapChainForComposition(&d3d_device, &desc, None)?;
+
+        let comp_device: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
+        let comp_target = comp_device.CreateTargetForHwnd(hwnd, true)?;
         let comp_visual = comp_device.CreateVisual()?;
         comp_visual.SetContent(&swapchain)?;
         comp_target.SetRoot(&comp_visual)?;
-        // Commit BEFORE the first Present so the visual<->swapchain binding is
-        // on record with DWM ahead of any frame (spec order: Commit, then Present).
-        comp_device.Commit().inspect_err(|e| {
-            log_err("create.dcomp.Commit", e);
-        })?;
-        log("create: dcomp ok (commit-before-present)");
+        comp_device.Commit()?;
 
-        // --- Direct2D device + context + the two theme brushes. Brushes are
-        //     context-bound, not backbuffer-bound, so they survive resizes. ---
         let d2d_device: ID2D1Device = D2D1CreateDevice(&dxgi_device, None)?;
         let d2d_context = d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-        let fill_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.fill()), None)?;
-        let border_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.border()), None)?;
 
-        // Track-title text format via DirectWrite (windows-rs routes D2D text
-        // through IDWriteTextFormat). Sizes are DIPs — the context works in
-        // DIPs because the backbuffer bitmap carries the scaled DPI.
+        // Dashed 1 px stroke used only for the drag-over drop target.
+        let dash_style = d2d_context.GetFactory()?.CreateStrokeStyle(
+            &D2D1_STROKE_STYLE_PROPERTIES {
+                dashStyle: D2D1_DASH_STYLE_DASH,
+                ..Default::default()
+            },
+            None,
+        )?;
+
         let text_factory: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+
         let text_format = text_factory.CreateTextFormat(
-            w!("Segoe UI"),
+            w!("Segoe UI Variable Text"),
             None,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
@@ -259,69 +190,190 @@ impl Renderer {
         )?;
         text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
-        let artist_format = text_factory.CreateTextFormat(
-            w!("Segoe UI"),
+        text_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+
+        let bold_format = text_factory.CreateTextFormat(
+            w!("Segoe UI Variable Text"),
+            None,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            TEXT_SIZE_DIP,
+            w!("en-US"),
+        )?;
+        bold_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        bold_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
+        bold_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+
+        let center_format = text_factory.CreateTextFormat(
+            w!("Segoe UI Variable Text"),
             None,
             DWRITE_FONT_WEIGHT_NORMAL,
             DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
-            ARTIST_SIZE_DIP,
+            TEXT_SIZE_DIP,
             w!("en-US"),
         )?;
-        artist_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-        artist_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING)?;
-        let text_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.text()), None)?;
-        let artist_brush = d2d_context.CreateSolidColorBrush(&Self::color(theme.text()), None)?;
+        center_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+        center_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+        center_format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
 
-        log(&format!("create ok: size={:?} scale={scale}", size));
         Ok(Self {
             swapchain,
             comp_device,
             comp_target,
             comp_visual,
             d2d_context,
-            fill_brush,
-            border_brush,
             text_format,
-            artist_format,
+            bold_format,
+            center_format,
+            dash_style,
             dwrite_factory: text_factory,
-            text_brush,
-            artist_brush,
-            text_layout: None,
-            text_layout_key: (String::new(), 0.0),
-            artist_layout: None,
-            artist_layout_key: (String::new(), 0.0),
             size,
             scale,
-            indicator: Indicator::Idle,
             theme,
             hover: false,
-            media: None,
-            expand: 0.0,
-            shelf: None,
+            pressed: false,
             drop_hover: false,
+            hover_mix: 0.0,
+            hover_from: 0.0,
+            hover_target: 0.0,
+            hover_anim_start: None,
+            active_id: ActivityId::Media,
+            media: Some(MediaUpdate::demo()),
+            call: None,
+            shelf: None,
+            timer: None,
+            volume: None,
         })
     }
 
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
-        let fill = Self::color(theme.fill());
-        let border = Self::color(theme.border());
-        unsafe {
-            self.fill_brush.SetColor(&fill);
-            self.border_brush.SetColor(&border);
+    }
+
+    pub fn set_hover(&mut self, hover: bool) -> bool {
+        if self.hover == hover {
+            return false;
+        }
+        self.hover = hover;
+        self.retarget_hover();
+        true
+    }
+
+    pub fn set_pressed(&mut self, pressed: bool) -> bool {
+        if self.pressed == pressed {
+            return false;
+        }
+        self.pressed = pressed;
+        self.retarget_hover();
+        true
+    }
+
+    /// Starts the 200 ms ease toward the current hover/press target.
+    /// Drop-hover is deliberately instant (it tracks an OLE drag, not the pointer).
+    fn retarget_hover(&mut self) {
+        let target = if self.hover || self.pressed { 1.0 } else { 0.0 };
+        if (target - self.hover_target).abs() < f32::EPSILON {
+            return;
+        }
+        self.hover_from = self.hover_mix;
+        self.hover_target = target;
+        self.hover_anim_start = Some(Instant::now());
+    }
+
+    /// Advances the hover tween. Returns `(needs_redraw, still_animating)`.
+    pub fn tick_hover(&mut self, now: Instant) -> (bool, bool) {
+        let Some(started) = self.hover_anim_start else {
+            return (false, false);
+        };
+        let t = (now.duration_since(started).as_secs_f32() / 0.2).min(1.0);
+        // cubic-bezier(.2, .8, .2, 1), same ease as the flyout open motion.
+        let eased = ease_out(t);
+        self.hover_mix = self.hover_from + (self.hover_target - self.hover_from) * eased;
+        if t >= 1.0 {
+            self.hover_mix = self.hover_target;
+            self.hover_anim_start = None;
+            (true, false)
+        } else {
+            (true, true)
         }
     }
 
-    /// Wrap the swapchain's *current* back buffer as the D2D target bitmap.
-    /// Must be called before every draw: flip-model Present rotates the buffer
-    /// queue, so a bitmap cached across a Present points at a stale buffer.
+    pub fn set_drop_hover(&mut self, on: bool) -> bool {
+        if self.drop_hover == on {
+            return false;
+        }
+        self.drop_hover = on;
+        true
+    }
+
+    #[allow(dead_code)]
+    pub fn set_media(&mut self, media: Option<MediaUpdate>) -> bool {
+        if self.media == media {
+            return false;
+        }
+        self.media = media;
+        true
+    }
+
+    #[allow(dead_code)]
+    pub fn set_shelf(&mut self, shelf: Option<ShelfView>) -> bool {
+        if self.shelf == shelf {
+            return false;
+        }
+        self.shelf = shelf;
+        true
+    }
+
+    #[allow(dead_code)]
+    pub fn set_timer(&mut self, timer: Option<TimerView>) -> bool {
+        if self.timer == timer {
+            return false;
+        }
+        self.timer = timer;
+        true
+    }
+
+    #[allow(dead_code)]
+    pub fn set_call(&mut self, call: Option<CallState>) -> bool {
+        if self.call == call {
+            return false;
+        }
+        self.call = call;
+        true
+    }
+
+    #[allow(dead_code)]
+    pub fn set_volume(&mut self, vol: Option<VolumeActivity>) -> bool {
+        if self.volume == vol {
+            return false;
+        }
+        self.volume = vol;
+        true
+    }
+
+    pub unsafe fn resize(&mut self, size: (u32, u32), scale: f32) -> Result<()> {
+        if size == self.size && (scale - self.scale).abs() < f32::EPSILON {
+            return Ok(());
+        }
+        self.swapchain.ResizeBuffers(
+            0,
+            size.0.max(1),
+            size.1.max(1),
+            DXGI_FORMAT_UNKNOWN,
+            DXGI_SWAP_CHAIN_FLAG(0),
+        )?;
+        self.size = size;
+        self.scale = scale;
+        Ok(())
+    }
+
     unsafe fn wrap_backbuffer(
         ctx: &ID2D1DeviceContext,
         swapchain: &IDXGISwapChain1,
         scale: f32,
     ) -> Result<ID2D1Bitmap1> {
-        // Release the previous wrapper first — no refs may overlap a GetBuffer.
         ctx.SetTarget(None::<&ID2D1Image>);
         let back_buffer: ID3D11Texture2D = swapchain.GetBuffer(0)?;
         let surface: IDXGISurface = back_buffer.cast()?;
@@ -341,331 +393,278 @@ impl Renderer {
         Ok(bitmap)
     }
 
-    fn color((r, g, b, a): (f32, f32, f32, f32)) -> D2D1_COLOR_F {
-        D2D1_COLOR_F { r, g, b, a }
-    }
-
-    /// Current backbuffer size in physical pixels (used by later phases).
-    #[allow(dead_code)]
-    pub fn size(&self) -> (u32, u32) {
-        self.size
-    }
-
-    /// Kept for later phases (timer bars); media state now flows through
-    /// `set_media`, which derives the indicator itself.
-    #[allow(dead_code)]
-    pub fn set_indicator(&mut self, indicator: Indicator) {
-        self.indicator = indicator;
-    }
-
-    /// Hover feedback. Returns `true` on a transition so callers redraw only
-    /// on enter/leave events.
-    pub fn set_hover(&mut self, hover: bool) -> bool {
-        if self.hover == hover {
-            return false;
-        }
-        self.hover = hover;
-        true
-    }
-
-    /// Replace the media snapshot (`None` = nothing playing). Kept deduped:
-    /// returns `true` when the visible state changed, so callers can skip
-    /// no-op redraws. Derives the indicator internally so the two states can
-    /// never disagree.
-    pub fn set_media(&mut self, media: Option<MediaUpdate>) -> bool {
-        if self.media == media {
-            return false;
-        }
-        // The media slot is only a mirror of `App.media_state`; the shelf
-        // below keeps operating independently when media disappears.
-        self.indicator = derive_indicator(media.as_ref(), self.shelf.as_ref());
-        self.media = media;
-        true
-    }
-
-    /// Replace the shelf snapshot (`None` = nothing parked). Same contract
-    /// as set_media: deduped + derives the indicator so the bars match the
-    /// displayed content.
-    pub fn set_shelf(&mut self, shelf: Option<ShelfView>) -> bool {
-        if self.shelf == shelf {
-            return false;
-        }
-        self.indicator = derive_indicator(self.media.as_ref(), shelf.as_ref());
-        self.shelf = shelf;
-        true
-    }
-
-    /// An OLE drag is over the pill: brighten like hover; on an empty pill
-    /// also shows the drop hint.
-    pub fn set_drop_hover(&mut self, on: bool) -> bool {
-        if self.drop_hover == on {
-            return false;
-        }
-        self.drop_hover = on;
-        true
-    }
-
-    /// Hover-expansion progress (0..1), set by the animation timer ticks.
-    pub fn set_expand(&mut self, expand: f32) {
-        self.expand = expand;
-    }
-
-    /// Single-line ellipsized layout, cached by (text, max width); rebuilt
-    /// only when either changes. Shared by the title and artist lines.
-    ///
-    /// # Safety
-    /// DirectWrite factory/format COM calls; callers draw on the UI thread
-    /// inside existing unsafe blocks.
-    unsafe fn ensure_layout<'a>(
-        factory: &IDWriteFactory,
+    unsafe fn draw_text(
+        &self,
+        string: &[u16],
         format: &IDWriteTextFormat,
-        cache: &'a mut Option<IDWriteTextLayout>,
-        cache_key: &mut (String, f32),
-        text: &str,
-        max_width: f32,
-        max_height: f32,
-    ) -> Result<&'a IDWriteTextLayout> {
-        if cache_key.0 != text || (cache_key.1 - max_width).abs() > f32::EPSILON {
-            let chars: Vec<u16> = text.encode_utf16().collect();
-            let layout =
-                factory.CreateTextLayout(&chars, format, max_width, max_height)?;
-            layout.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
-            // A plain "…" is attached through the sign object.
-            let sign = factory.CreateEllipsisTrimmingSign(&layout)?;
-            layout.SetTrimming(
-                &DWRITE_TRIMMING {
-                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
-                    delimiter: 0,
-                    delimiterCount: 0,
-                },
-                &sign,
-            )?;
-            *cache = Some(layout);
-            *cache_key = (text.to_owned(), max_width);
-        }
-        Ok(cache.as_ref().expect("layout cached"))
+        rect: &D2D_RECT_F,
+        brush: &ID2D1SolidColorBrush,
+    ) {
+        self.d2d_context.DrawText(
+            string,
+            format,
+            rect,
+            brush,
+            D2D1_DRAW_TEXT_OPTIONS_NONE,
+            DWRITE_MEASURING_MODE_NATURAL,
+        );
     }
 
-    /// Resize the backbuffer for a new physical-pixel size. No-op if unchanged.
-    pub unsafe fn resize(&mut self, size: (u32, u32), scale: f32) -> Result<()> {
-        if size == self.size && scale == self.scale {
-            return Ok(());
-        }
-        log(&format!(
-            "resize: {:?} -> {:?} scale {scale}",
-            self.size, size
-        ));
-        // No target/bitmap is cached across draws (each draw wraps the current
-        // backbuffer and drops it before Present), so no backbuffer reference
-        // is outstanding here — ResizeBuffers is safe.
-        self.swapchain
-            .ResizeBuffers(
-                0,
-                size.0,
-                size.1,
-                DXGI_FORMAT_UNKNOWN,
-                DXGI_SWAP_CHAIN_FLAG(0),
-            )
-            .inspect_err(|e| {
-                log_err("resize.ResizeBuffers", e);
-            })?;
-        self.size = size;
-        self.scale = scale;
-        Ok(())
-    }
-
-    /// Draw the pill once and present. Static content → single Present, then
-    /// let DirectComposition pick up the new frame.
     pub unsafe fn draw(&mut self) -> Result<()> {
         let w = self.size.0 as f32 / self.scale;
         let h = self.size.1 as f32 / self.scale;
-        let radius = CORNER_RADIUS_DIP.min(w.min(h) / 2.0);
+        let radius = self.theme.radius_dip.min(w.min(h) / 2.0);
+
         let shape = D2D1_ROUNDED_RECT {
-            rect: D2D_RECT_F {
-                left: 0.0,
-                top: 0.0,
-                right: w,
-                bottom: h,
-            },
+            rect: D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: h },
             radiusX: radius,
             radiusY: radius,
         };
-        // Appearance per event: hover or an OLE drop over the pill bumps the
-        // highlight, pause dims the content, expansion fades the artist line
-        // in. All re-color the existing brushes — no allocations on the draw
-        // path.
-        let playing = self.media.as_ref().is_none_or(|media| media.playing);
-        let dim = if playing { 1.0 } else { 0.55 };
-        let mut fill = self.theme.fill();
-        let mut border = self.theme.border();
-        if self.hover || self.drop_hover {
-            fill.3 = (fill.3 * HOVER_FILL_MULT).min(1.0);
-            border.3 = (border.3 * HOVER_BORDER_MULT).min(1.0);
-        }
-        let text_base = self.theme.text();
-        self.fill_brush.SetColor(&Self::color(fill));
-        self.border_brush.SetColor(&Self::color(border));
-        self.text_brush.SetColor(&Self::color((
-            text_base.0,
-            text_base.1,
-            text_base.2,
-            text_base.3 * dim,
-        )));
-        self.artist_brush.SetColor(&Self::color((
-            text_base.0,
-            text_base.1,
-            text_base.2,
-            text_base.3 * 0.8 * self.expand.clamp(0.0, 1.0) * dim,
-        )));
-        // Wrap the *current* back buffer for this draw only. The bitmap (and
-        // the buffer reference it holds) MUST be dropped before Present: with
-        // CreateSwapChainForComposition, DWM cannot scan out a frame while any
-        // reference to the back buffer is outstanding — Present still returns
-        // S_OK, but the frame is silently dropped. So the target lives in a
-        // local scope here and is never cached on `self`.
+
+        // Fill & border per spec:
+        // Idle: white 9%, border 10%
+        // Hover / Pressed: fill 15%, border 20% (200 ms ease)
+        let (fill, border) = if self.drop_hover {
+            (self.theme.hover_fill(), self.theme.hover_border())
+        } else {
+            let idle_fill = self.theme.fill();
+            let hover_fill = self.theme.hover_fill();
+            let idle_border = self.theme.border();
+            let hover_border = self.theme.hover_border();
+            let m = self.hover_mix;
+            (
+                lerp_rgba(idle_fill, hover_fill, m),
+                lerp_rgba(idle_border, hover_border, m),
+            )
+        };
+
+        let text_color = self.theme.text();
+        let sec_color = self.theme.secondary_text();
+        let accent = self.theme.accent_color();
+
+        let fill_brush = self.d2d_context.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: fill.0, g: fill.1, b: fill.2, a: fill.3 },
+            None,
+        )?;
+        let border_brush = self.d2d_context.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: border.0, g: border.1, b: border.2, a: border.3 },
+            None,
+        )?;
+        let text_brush = self.d2d_context.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: text_color.0, g: text_color.1, b: text_color.2, a: text_color.3 },
+            None,
+        )?;
+        let sec_brush = self.d2d_context.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: sec_color.0, g: sec_color.1, b: sec_color.2, a: sec_color.3 },
+            None,
+        )?;
+        let accent_brush = self.d2d_context.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: accent.0, g: accent.1, b: accent.2, a: 1.0 },
+            None,
+        )?;
+
         {
             let target = Self::wrap_backbuffer(&self.d2d_context, &self.swapchain, self.scale)?;
-
             self.d2d_context.BeginDraw();
-            self.d2d_context.Clear(None); // fully transparent — taskbar shows through
-            self.d2d_context
-                .FillRoundedRectangle(&shape, &self.fill_brush);
-            // Vertical bars for media/timer, a staggered horizontal stack for
-            // the shelf — all drawn with the border brush, no allocations.
-            let bars: Option<&[f32]> = match self.indicator {
-                Indicator::Media => {
-                    // Playing: uneven bars; paused: flat bars, still dimmed text.
-                    Some(if playing {
-                        &[7.0, 13.0, 9.0, 16.0]
-                    } else {
-                        &[11.0, 11.0, 11.0, 11.0]
-                    })
-                }
-                Indicator::Timer => Some(&[16.0, 16.0, 16.0]),
-                Indicator::Idle | Indicator::Files(_) => None,
-            };
-            if let Some(heights) = bars {
-                for (index, height) in heights.iter().enumerate() {
-                    let x = 12.0 + index as f32 * 4.0;
-                    self.d2d_context.FillRectangle(
-                        &D2D_RECT_F {
-                            left: x,
-                            top: (h - height) / 2.0,
-                            right: x + 2.0,
-                            bottom: (h + height) / 2.0,
-                        },
-                        &self.border_brush,
-                    );
-                }
-            }
-            if let Indicator::Files(count) = self.indicator {
-                // The shelf: one thin line per parked file (up to the cap),
-                // widths stepping down so the top line reads as "next".
-                for index in 0..count {
-                    let y = h / 2.0
-                        + (count as f32 - 1.0) * SHELF_LINE_STEP_DIP / 2.0
-                        - index as f32 * SHELF_LINE_STEP_DIP;
-                    let width = SHELF_LINE_W_DIP - index as f32 * 3.0;
-                    self.d2d_context.FillRectangle(
-                        &D2D_RECT_F {
-                            left: 12.0,
-                            top: y - SHELF_LINE_H_DIP / 2.0,
-                            right: 12.0 + width,
-                            bottom: y + SHELF_LINE_H_DIP / 2.0,
-                        },
-                        &self.border_brush,
-                    );
-                }
-            }
-            // Content line(s): the shelf while it holds files, else the media
-            // track, else (only the empty pill under a drag) the drop hint.
-            // Strings are prebuilt at event time; the layouts below are
-            // cached by (text, max width) and rebuilt only on change.
-            let shelf = self.shelf.as_ref();
-            let media = self.media.as_ref().filter(|_| shelf.is_none());
-            let (title, artist): (&str, &str) = if let Some(shelf) = shelf {
-                (&shelf.title, &shelf.artist)
-            } else if let Some(media) = media {
-                (&media.title, &media.artist)
-            } else if self.drop_hover {
-                (DROP_HINT, "")
-            } else {
-                ("", "")
-            };
-            if !title.is_empty() {
-                let max_width = w - TEXT_LEFT_DIP - TEXT_RIGHT_PAD_DIP;
-                let artist_line = self.expand > 0.05 && !artist.is_empty();
-                let (title_top, artist_top) = if artist_line {
-                    let block = TEXT_SIZE_DIP + 2.0 + ARTIST_SIZE_DIP;
-                    ((h - block) / 2.0, (h - block) / 2.0 + TEXT_SIZE_DIP + 2.0)
-                } else {
-                    ((h - TEXT_SIZE_DIP) / 2.0, 0.0)
-                };
-                let title_layout = Self::ensure_layout(
-                    &self.dwrite_factory,
-                    &self.text_format,
-                    &mut self.text_layout,
-                    &mut self.text_layout_key,
-                    title,
-                    max_width,
-                    TEXT_SIZE_DIP * 1.4,
-                )?;
-                self.d2d_context.DrawTextLayout(
-                    Vector2 {
-                        X: TEXT_LEFT_DIP,
-                        Y: title_top,
-                    },
-                    title_layout,
-                    &self.text_brush,
-                    D2D1_DRAW_TEXT_OPTIONS_NONE,
-                );
-                if artist_line {
-                    let artist_layout = Self::ensure_layout(
-                        &self.dwrite_factory,
-                        &self.artist_format,
-                        &mut self.artist_layout,
-                        &mut self.artist_layout_key,
-                        artist,
-                        max_width,
-                        ARTIST_SIZE_DIP * 1.4,
-                    )?;
-                    self.d2d_context.DrawTextLayout(
-                        Vector2 {
-                            X: TEXT_LEFT_DIP,
-                            Y: artist_top,
-                        },
-                        artist_layout,
-                        &self.artist_brush,
-                        D2D1_DRAW_TEXT_OPTIONS_NONE,
-                    );
-                }
-            }
-            self.d2d_context.EndDraw(None, None).inspect_err(|e| {
-                log_err("draw.EndDraw", e);
-            })?;
+            self.d2d_context.Clear(None);
 
-            // Release the target + its back-buffer reference before Present.
+            self.d2d_context.FillRoundedRectangle(&shape, &fill_brush);
+
+            if self.drop_hover {
+                // Dashed drop target border (Design Spec 06).
+                self.d2d_context.DrawRoundedRectangle(
+                    &shape,
+                    &border_brush,
+                    1.0,
+                    Some(&self.dash_style),
+                );
+            } else {
+                self.d2d_context.DrawRoundedRectangle(&shape, &border_brush, 1.0, None);
+            }
+
+            if self.drop_hover {
+                // "Drop to hold" with a down arrow (Design Spec 06).
+                let drop_sym: Vec<u16> = "\u{2193}  Drop to hold".encode_utf16().collect();
+                self.draw_text(
+                    &drop_sym,
+                    &self.center_format,
+                    &D2D_RECT_F { left: 0.0, top: 0.0, right: w, bottom: h },
+                    &text_brush,
+                );
+            } else {
+                match self.active_id {
+                    ActivityId::Idle => {
+                        // Idle pill: material only, no content (Design Spec 01).
+                    }
+                    ActivityId::Media => {
+                        // Compact Music (184 wide)
+                        // Art (20x20), vertically centered
+                        let art_top = (h - 20.0) / 2.0;
+                        let art_rect = D2D1_ROUNDED_RECT {
+                            rect: D2D_RECT_F { left: 6.0, top: art_top, right: 26.0, bottom: art_top + 20.0 },
+                            radiusX: 4.0,
+                            radiusY: 4.0,
+                        };
+                        let cover_brush = self.d2d_context.CreateSolidColorBrush(
+                            &D2D1_COLOR_F { r: 0.15, g: 0.50, b: 0.85, a: 1.0 },
+                            None,
+                        )?;
+                        self.d2d_context.FillRoundedRectangle(&art_rect, &cover_brush);
+
+                        // Title
+                        let title = self.media.as_ref().map(|m| m.title.as_str()).unwrap_or("Deewana Kar Raha ...");
+                        let title_w: Vec<u16> = title.encode_utf16().collect();
+                        self.draw_text(
+                            &title_w,
+                            &self.text_format,
+                            &D2D_RECT_F { left: 32.0, top: 0.0, right: w - 24.0, bottom: h },
+                            &text_brush,
+                        );
+
+                        // 3-bar equalizer at right
+                        let playing = self.media.as_ref().map(|m| m.playing).unwrap_or(true);
+                        let bars = if playing { [12.0, 7.0, 14.0] } else { [9.0, 9.0, 9.0] };
+                        for (i, bar_h) in bars.iter().enumerate() {
+                            let bx = w - 18.0 + i as f32 * 4.0;
+                            self.d2d_context.FillRectangle(
+                                &D2D_RECT_F {
+                                    left: bx,
+                                    top: (h - bar_h) / 2.0,
+                                    right: bx + 2.0,
+                                    bottom: (h + bar_h) / 2.0,
+                                },
+                                &accent_brush,
+                            );
+                        }
+                    }
+                    ActivityId::Call => {
+                        // Compact Call (176 wide)
+                        // Green mic dot, vertically centered
+                        let green = Theme::call_color();
+                        let green_brush = self.d2d_context.CreateSolidColorBrush(
+                            &D2D1_COLOR_F { r: green.0, g: green.1, b: green.2, a: 1.0 },
+                            None,
+                        )?;
+                        self.d2d_context.FillEllipse(
+                            &D2D1_ELLIPSE { point: Vector2 { X: 16.0, Y: h / 2.0 }, radiusX: 4.0, radiusY: 4.0 },
+                            &green_brush,
+                        );
+
+                        // Name: "Priya"
+                        let name = self.call.as_ref().map(|c| c.name.as_str()).unwrap_or("Priya");
+                        let name_w: Vec<u16> = name.encode_utf16().collect();
+                        self.draw_text(
+                            &name_w,
+                            &self.bold_format,
+                            &D2D_RECT_F { left: 28.0, top: 0.0, right: 110.0, bottom: h },
+                            &text_brush,
+                        );
+
+                        // Timer: "02:14"
+                        let duration = self.call.as_ref().map(|c| c.duration_str.as_str()).unwrap_or("02:14");
+                        let dur_w: Vec<u16> = duration.encode_utf16().collect();
+                        self.draw_text(
+                            &dur_w,
+                            &self.text_format,
+                            &D2D_RECT_F { left: 116.0, top: 0.0, right: w - 8.0, bottom: h },
+                            &sec_brush,
+                        );
+                    }
+                    ActivityId::Shelf => {
+                        // Compact File shelf (136 wide):
+                        // Folder icon at x=14
+                        let folder_sym: Vec<u16> = "[F]".encode_utf16().collect();
+                        self.draw_text(
+                            &folder_sym,
+                            &self.bold_format,
+                            &D2D_RECT_F { left: 14.0, top: 0.0, right: 38.0, bottom: h },
+                            &text_brush,
+                        );
+
+                        let count = self.shelf.as_ref().map(|s| s.count).unwrap_or(3);
+                        let count_str = format!("{count} files");
+                        let count_w: Vec<u16> = count_str.encode_utf16().collect();
+                        self.draw_text(
+                            &count_w,
+                            &self.text_format,
+                            &D2D_RECT_F { left: 42.0, top: 0.0, right: w - 8.0, bottom: h },
+                            &text_brush,
+                        );
+                    }
+                    ActivityId::Timer => {
+                        // Compact Timer (116 wide):
+                        // Ring icon, vertically centered
+                        self.d2d_context.DrawEllipse(
+                            &D2D1_ELLIPSE { point: Vector2 { X: 18.0, Y: h / 2.0 }, radiusX: 6.5, radiusY: 6.5 },
+                            &accent_brush,
+                            2.0,
+                            None,
+                        );
+
+                        let time_str = self.timer.as_ref().map(|t| t.title.as_str()).unwrap_or("12:40");
+                        let time_w: Vec<u16> = time_str.encode_utf16().collect();
+                        self.draw_text(
+                            &time_w,
+                            &self.bold_format,
+                            &D2D_RECT_F { left: 34.0, top: 0.0, right: w - 8.0, bottom: h },
+                            &text_brush,
+                        );
+                    }
+                    ActivityId::Volume => {
+                        // Compact Volume HUD (224 wide):
+                        // Speaker icon at x=14
+                        let spk_w: Vec<u16> = "(())".encode_utf16().collect();
+                        self.draw_text(
+                            &spk_w,
+                            &self.bold_format,
+                            &D2D_RECT_F { left: 14.0, top: 0.0, right: 40.0, bottom: h },
+                            &text_brush,
+                        );
+
+                        // Level bar: x=44..176
+                        let level = self.volume.as_ref().map(|v| v.level).unwrap_or(42) as f32 / 100.0;
+                        let bar_w = 130.0;
+                        let track_brush = self.d2d_context.CreateSolidColorBrush(
+                            &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.15 },
+                            None,
+                        )?;
+                        let bar_top = h / 2.0 - 2.0;
+                        self.d2d_context.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F { left: 44.0, top: bar_top, right: 44.0 + bar_w, bottom: bar_top + 4.0 },
+                                radiusX: 2.0,
+                                radiusY: 2.0,
+                            },
+                            &track_brush,
+                        );
+                        self.d2d_context.FillRoundedRectangle(
+                            &D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F { left: 44.0, top: bar_top, right: 44.0 + bar_w * level, bottom: bar_top + 4.0 },
+                                radiusX: 2.0,
+                                radiusY: 2.0,
+                            },
+                            &text_brush,
+                        );
+
+                        // Value: "42"
+                        let val_str = format!("{}", (level * 100.0).round() as u32);
+                        let val_w: Vec<u16> = val_str.encode_utf16().collect();
+                        self.draw_text(
+                            &val_w,
+                            &self.bold_format,
+                            &D2D_RECT_F { left: 184.0, top: 0.0, right: w - 8.0, bottom: h },
+                            &text_brush,
+                        );
+                    }
+                }
+            }
+
+            self.d2d_context.EndDraw(None, None)?;
             self.d2d_context.SetTarget(None::<&ID2D1Image>);
             drop(target);
         }
 
-        // The visual tree was committed when it was created. Presenting a
-        // composition swapchain updates that visual directly; calling Commit
-        // again here can fail with DXGI_ERROR_INVALID_CALL while the initial
-        // asynchronous commit is still pending.
-        // Do not wait for a compositor refresh on the UI thread.  The visual
-        // is static and updates only on events, so allowing DWM to pick up the
-        // latest frame asynchronously is both sufficient and keeps input and
-        // taskbar notifications responsive.
-        let hr = self.swapchain.Present(0, DXGI_PRESENT(0));
-        if hr.is_err() {
-            log_err("draw.Present", &windows::core::Error::from(hr));
-            return Err(windows::core::Error::from(hr));
-        }
-        log(&format!("draw ok: size={:?}", self.size));
+        let _ = self.swapchain.Present(0, DXGI_PRESENT(0));
         Ok(())
     }
 }
-
-// The ID2D1Device that produced d2d_context is kept alive by the context
-// itself (COM refcount), so dropping it here is fine.

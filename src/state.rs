@@ -1,28 +1,23 @@
 //! Event-driven activity arbitration for the taskbar island.
-#![allow(dead_code)] // Activity variants are enabled as their platform modules land.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
     Idle,
-    Media,
-    /// Files dropped on the pill take it over until opened: a drop is a direct
-    /// user action aimed at the pill, so it outranks the in-progress media.
     Shelf,
+    Media,
     VolumeHud,
     TimerEnding,
     Call,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActivityId {
-    Media,
-    Shelf,
+    Idle,
     Call,
     Timer,
     Volume,
-    Battery,
-    Bluetooth,
-    Privacy,
+    Media,
+    Shelf,
 }
 
 /// A visible activity is completely event driven: `active` changes only when
@@ -62,14 +57,12 @@ mod tests {
 
     #[test]
     fn spec_priority_order_wins() {
+        // Spec rule 4: call, then timer finishing, then volume HUD, then music, then shelf.
         let mut queue = ActivityQueue::default();
-        queue.update(ActivityId::Media, Priority::Media, true);
         queue.update(ActivityId::Shelf, Priority::Shelf, true);
-        // A drop is a user action on the pill itself → the shelf takes over
-        // from the in-progress media run.
         assert_eq!(queue.current(), Some(ActivityId::Shelf));
 
-        queue.update(ActivityId::Shelf, Priority::Shelf, false);
+        queue.update(ActivityId::Media, Priority::Media, true);
         assert_eq!(queue.current(), Some(ActivityId::Media));
 
         queue.update(ActivityId::Volume, Priority::VolumeHud, true);
@@ -80,6 +73,22 @@ mod tests {
 
         queue.update(ActivityId::Call, Priority::Call, true);
         assert_eq!(queue.current(), Some(ActivityId::Call));
+
+        // When Call deactivates, TimerEnding takes over
+        queue.update(ActivityId::Call, Priority::Call, false);
+        assert_eq!(queue.current(), Some(ActivityId::Timer));
+
+        // When TimerEnding deactivates, VolumeHud takes over
+        queue.update(ActivityId::Timer, Priority::TimerEnding, false);
+        assert_eq!(queue.current(), Some(ActivityId::Volume));
+
+        // When VolumeHud deactivates, Media takes over
+        queue.update(ActivityId::Volume, Priority::VolumeHud, false);
+        assert_eq!(queue.current(), Some(ActivityId::Media));
+
+        // When Media deactivates, Shelf takes over
+        queue.update(ActivityId::Media, Priority::Media, false);
+        assert_eq!(queue.current(), Some(ActivityId::Shelf));
     }
 
     #[test]

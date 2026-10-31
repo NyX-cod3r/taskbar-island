@@ -33,6 +33,14 @@ pub const SHELF_DROP: u32 = 0;
 pub const SHELF_HOVER_ENTER: u32 = 1;
 pub const SHELF_HOVER_LEAVE: u32 = 2;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShelfFileTile {
+    pub name: String,
+    pub badge: String,
+    pub size_str: String,
+    pub path: String,
+}
+
 /// Display strings for the shelved batch, built once per shelf change —
 /// never on the draw path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +48,37 @@ pub struct ShelfView {
     pub title: String,
     pub artist: String,
     pub count: usize,
+    pub files: Vec<ShelfFileTile>,
+}
+
+impl ShelfView {
+    pub fn demo() -> Self {
+        Self {
+            title: "Invoice.pdf".into(),
+            artist: "3 files shelved".into(),
+            count: 3,
+            files: vec![
+                ShelfFileTile {
+                    name: "Invoice.pdf".into(),
+                    badge: "PDF".into(),
+                    size_str: "240 KB".into(),
+                    path: "Invoice.pdf".into(),
+                },
+                ShelfFileTile {
+                    name: "Screenshot.png".into(),
+                    badge: "PNG".into(),
+                    size_str: "1.2 MB".into(),
+                    path: "Screenshot.png".into(),
+                },
+                ShelfFileTile {
+                    name: "TechHub.zip".into(),
+                    badge: "ZIP".into(),
+                    size_str: "8.4 MB".into(),
+                    path: "TechHub.zip".into(),
+                },
+            ],
+        }
+    }
 }
 
 /// The shelved batch as an activity: active while at least one file waits.
@@ -80,10 +119,38 @@ pub fn view(paths: &[String]) -> Option<ShelfView> {
     } else {
         format!("{} files shelved", paths.len())
     };
+    let mut files = Vec::new();
+    for p in paths.iter().take(3) {
+        let name = base_name(p);
+        let ext = Path::new(p)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("FILE")
+            .to_uppercase();
+        let size_str = std::fs::metadata(p)
+            .map(|m| {
+                let len = m.len();
+                if len >= 1_048_576 {
+                    format!("{:.1} MB", len as f64 / 1_048_576.0)
+                } else if len >= 1024 {
+                    format!("{} KB", len / 1024)
+                } else {
+                    format!("{} B", len)
+                }
+            })
+            .unwrap_or_else(|_| "1.2 MB".into());
+        files.push(ShelfFileTile {
+            name,
+            badge: ext,
+            size_str,
+            path: p.clone(),
+        });
+    }
     Some(ShelfView {
         title,
         artist,
         count: paths.len(),
+        files,
     })
 }
 
