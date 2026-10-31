@@ -4,29 +4,22 @@
 //! on-screen rectangle. Also owns the "should we hide?" policy:
 //! fullscreen/presentation mode, auto-hidden taskbar, explorer restarts.
 
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::UI::Shell::{
-    ABM_NEW, APPBARDATA, SHAppBarMessage, SHQueryUserNotificationState, QUNS_APP,
-    QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+    SHAppBarMessage, SHQueryUserNotificationState, ABM_NEW, APPBARDATA, QUNS_PRESENTATION_MODE,
+    QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowExW, FindWindowW, GetWindowRect, IsWindowVisible,
 };
-use windows::core::{PCWSTR, w};
 
 /// Logical (96-DPI) pill metrics — the visual spec from the design doc.
-pub const PILL_W_DIP: f32 = 120.0;
-pub const PILL_H_DIP: f32 = 32.0;
-
 const GAP_LEFT_OF_TRAY_DIP: f32 = 8.0; // breathing room between tray icons and pill
-const EDGE_MARGIN_DIP: f32 = 8.0; // never kiss the taskbar's left edge
-// Fallback when TrayNotifyWnd can't be found: distance from the taskbar's right
-// edge to the pill (estimate of tray width incl. the ~9px show-desktop strip).
-const TRAY_FALLBACK_DIP: f32 = 220.0;
-
+const PILL_Y_OFFSET_DIP: f32 = 4.0;
 /// Where (and whether) the pill should be right now.
 pub struct Placement {
     /// Pill rectangle in physical pixels, screen coordinates.
@@ -55,7 +48,10 @@ pub fn taskbar_window() -> Option<HWND> {
 pub fn compute(taskbar: HWND, dpi: u32, fallback: RECT) -> Placement {
     // 1. Fullscreen 3D app / game / presentation mode / fullscreen store app → hide.
     if is_suppressed() {
-        return Placement { rect: fallback, visible: false };
+        return Placement {
+            rect: fallback,
+            visible: false,
+        };
     }
 
     // 2. Taskbar rect. Auto-hidden taskbars are invisible or slid off-screen.
@@ -63,38 +59,61 @@ pub fn compute(taskbar: HWND, dpi: u32, fallback: RECT) -> Placement {
     if unsafe { GetWindowRect(taskbar, &mut tb) }.is_err()
         || !unsafe { IsWindowVisible(taskbar) }.as_bool()
     {
-        return Placement { rect: fallback, visible: false };
+        return Placement {
+            rect: fallback,
+            visible: false,
+        };
     }
 
     // 3. If the taskbar no longer intersects its monitor at all it is fully
     //    slid away (auto-hide); hide with it. Anything less counts as visible.
     let monitor = unsafe { MonitorFromRect(&tb, MONITOR_DEFAULTTONEAREST) };
-    let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-    if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() && !rects_intersect(tb, mi.rcMonitor) {
-        return Placement { rect: fallback, visible: false };
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() && !rects_intersect(tb, mi.rcMonitor)
+    {
+        return Placement {
+            rect: fallback,
+            visible: false,
+        };
     }
 
-    // 4. Geometry: pill sits in the free gap just left of the tray, vertically
-    //    centered in the taskbar. All math in physical px, derived from DIPs.
+    // 4. Geometry: use the visible notification-area bounds for the live
+    //    taskbar height. The task-list host includes extra composition space
+    //    and is not the visible app-button rectangle.
     let scale = dpi.max(96) as f32 / 96.0;
-    let w = (PILL_W_DIP * scale).round() as i32;
-    let h = (PILL_H_DIP * scale).round() as i32;
-
-    let tray = tray_rect(taskbar).unwrap_or_else(|| RECT {
-        left: tb.right - ((TRAY_FALLBACK_DIP * scale).round() as i32),
-        top: tb.top,
-        right: tb.right,
-        bottom: tb.bottom,
-    });
+    // GetWindowRect already returns screen coordinates in the process DPI
+    // context. Do not rescale them again or the pill is placed off-screen.
+    let tray = tray_rect(taskbar).unwrap_or(tb);
+    let edge_margin = (8.0 * scale).round() as i32;
+    // Slightly exceed the tray host vertically, centered on its midpoint,
+    // matching the visible tray-arrow highlight rather than shrinking into
+    // the host's inner padding.
+    let h = (tray.bottom - tray.top + 2).max(1);
+    // Keep the island wide horizontally; only its vertical extent follows
+    // the tray-arrow button.
+    let w = (120.0 * scale).round() as i32;
 
     let mut x = tray.left - (GAP_LEFT_OF_TRAY_DIP * scale).round() as i32 - w;
-    let min_x = tb.left + (EDGE_MARGIN_DIP * scale).round() as i32;
+    let min_x = tb.left + edge_margin;
     if x < min_x {
         x = min_x;
     }
-    let y = tb.top + ((tb.bottom - tb.top) - h) / 2;
+    // Keep the visual top aligned with the tray button; the extra height
+    // extends only below it, where the taskbar's lower edge provides room.
+    let y = tray.top + (PILL_Y_OFFSET_DIP * scale).round() as i32;
 
-    Placement { rect: RECT { left: x, top: y, right: x + w, bottom: y + h }, visible: true }
+    Placement {
+        rect: RECT {
+            left: x,
+            top: y,
+            right: x + w,
+            bottom: y + h,
+        },
+        visible: true,
+    }
 }
 
 /// `SHQueryUserNotificationState`: are we allowed to be seen?
@@ -106,7 +125,13 @@ pub fn is_suppressed() -> bool {
     let Ok(state) = (unsafe { SHQueryUserNotificationState() }) else {
         return false;
     };
-    matches!(state, QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE | QUNS_APP)
+    // QUNS_APP also describes ordinary immersive/app foreground states and
+    // is not a reliable fullscreen signal. Only suppress for explicit
+    // presentation or exclusive 3D fullscreen modes.
+    matches!(
+        state,
+        QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE
+    )
 }
 
 /// Register with the shell as an appbar so we receive `ABN_POSCHANGED`
@@ -144,10 +169,47 @@ mod tests {
 
     #[test]
     fn rects_intersect_works() {
-        let a = RECT { left: 0, top: 0, right: 10, bottom: 10 };
-        assert!(rects_intersect(a, RECT { left: 5, top: 5, right: 15, bottom: 15 }));
-        assert!(rects_intersect(a, RECT { left: 9, top: 9, right: 11, bottom: 11 }));
-        assert!(!rects_intersect(a, RECT { left: 10, top: 10, right: 20, bottom: 20 }));
-        assert!(!rects_intersect(a, RECT { left: -20, top: -20, right: -1, bottom: -1 }));
+        let a = RECT {
+            left: 0,
+            top: 0,
+            right: 10,
+            bottom: 10,
+        };
+        assert!(rects_intersect(
+            a,
+            RECT {
+                left: 5,
+                top: 5,
+                right: 15,
+                bottom: 15
+            }
+        ));
+        assert!(rects_intersect(
+            a,
+            RECT {
+                left: 9,
+                top: 9,
+                right: 11,
+                bottom: 11
+            }
+        ));
+        assert!(!rects_intersect(
+            a,
+            RECT {
+                left: 10,
+                top: 10,
+                right: 20,
+                bottom: 20
+            }
+        ));
+        assert!(!rects_intersect(
+            a,
+            RECT {
+                left: -20,
+                top: -20,
+                right: -1,
+                bottom: -1
+            }
+        ));
     }
 }

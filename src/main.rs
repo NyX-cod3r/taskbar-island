@@ -11,35 +11,42 @@
 
 #![windows_subsystem = "windows"]
 
+mod activities;
 mod anchor;
+mod log;
 mod render;
+mod state;
+mod theme;
 
 use std::cell::RefCell;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 
 use render::Renderer;
+use windows::core::{w, Error, HRESULT, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
-    GetLastError, SetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, RECT, WIN32_ERROR,
-    WPARAM,
+    GetLastError, SetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT,
+    WIN32_ERROR, WPARAM,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
-use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, EVENT_SYSTEM_FOREGROUND, GetMessageW,
-    HWND_TOPMOST, IDC_ARROW, LoadCursorW, MB_ICONERROR, MB_OK, MessageBoxW, MSG, PostMessageW,
-    PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetWindowPos, ShowWindow, SW_HIDE,
-    SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOWNOACTIVATE, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-    WINEVENT_OUTOFCONTEXT, WM_APP, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY, WM_NCCREATE,
-    WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT, WS_POPUP,
-};
+use windows::Win32::Graphics::Gdi::ScreenToClient;
+use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow, SetProcessDpiAwarenessContext,
+    GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Shell::ABN_POSCHANGED;
-use windows::core::{HSTRING, PCWSTR, w};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, MessageBoxW,
+    PostMessageW, PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetWindowPos,
+    GetParent, SetParent, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
+    EVENT_SYSTEM_FOREGROUND,
+    EVENT_OBJECT_FOCUS, EVENT_SYSTEM_CAPTURESTART, IDC_ARROW, MB_ICONERROR, MB_OK, MSG,
+    SWP_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_DISPLAYCHANGE,
+    WM_DPICHANGED, WM_NCCREATE, WM_NCDESTROY, WM_SETTINGCHANGE, WNDCLASSEXW, WS_CHILD,
+    WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TRANSPARENT,
+};
 
 const PILL_CLASS: PCWSTR = w!("TaskbarIslandPillClass");
 const PILL_TITLE: PCWSTR = w!("TaskbarIsland");
@@ -49,6 +56,7 @@ const MUTEX_NAME: PCWSTR = w!("TaskbarIsland.SingleInstance");
 const WM_APP_RECHECK: u32 = WM_APP + 1;
 /// Our appbar callback message; `wparam == ABN_POSCHANGED` → taskbar geometry changed.
 const APPBAR_MSG: u32 = WM_APP + 2;
+const WM_APP_MEDIA: u32 = WM_APP + 3;
 
 static G_HWND: AtomicIsize = AtomicIsize::new(0);
 static G_TASKBAR_CREATED_MSG: AtomicU32 = AtomicU32::new(0);
@@ -88,41 +96,117 @@ fn run() -> windows::core::Result<()> {
             ..Default::default()
         };
         RegisterClassExW(&class);
+        let taskbar = match anchor::taskbar_window() {
+            Some(taskbar) => taskbar,
+            None => return Err(Error::new(HRESULT(0x80004005u32 as i32), "taskbar unavailable")),
+        };
 
         // RegisterWindowMessage gives us the shell's broadcast id (explorer restart).
-        G_TASKBAR_CREATED_MSG.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
+        G_TASKBAR_CREATED_MSG.store(
+            RegisterWindowMessageW(w!("TaskbarCreated")),
+            Ordering::Relaxed,
+        );
 
         // The window is created hidden (no WS_VISIBLE); App decides when to show.
         let hwnd = CreateWindowExW(
-            WS_EX_TOOLWINDOW // no taskbar button, no Alt-Tab entry
-                | WS_EX_TOPMOST
-                | WS_EX_NOACTIVATE // never steal focus
+            WS_EX_NOACTIVATE // never steal focus
                 | WS_EX_TRANSPARENT // Phase 1: clicks pass through (Phase 2 adds input)
                 | WS_EX_NOREDIRECTIONBITMAP, // required for DirectComposition hosting
             PILL_CLASS,
             PILL_TITLE,
-            WS_POPUP, // borderless
+            WS_CHILD, // hosted directly inside Shell_TrayWnd
             0,
             0,
             120,
             32,
-            None,
+            Some(taskbar),
             None,
             Some(hinstance),
             None,
         )?;
         G_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
 
-        let mut app = App::new(hwnd)?;
+        // Position and suppression are decided before creating the
+        // DirectComposition target: suppressed startups remain fully hidden.
+        let initial_visible = {
+            let tb = taskbar;
+            let dpi = GetDpiForWindow(hwnd).max(96);
+            let placement = anchor::compute(
+                tb,
+                dpi,
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: 120,
+                    bottom: 32,
+                },
+            );
+            let w = (placement.rect.right - placement.rect.left).max(1);
+            let h = (placement.rect.bottom - placement.rect.top).max(1);
+            let _ = set_window_rect(hwnd, placement.rect, w, h);
+            placement.visible
+        };
+        if initial_visible {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+
+        let mut app = App::new(hwnd, initial_visible, theme::Theme::current())?;
         app.apply(); // position, render, and show/hide
 
         APP.with(|a| *a.borrow_mut() = Some(app));
+
+        let (media_tx, media_rx) = mpsc::channel();
+        let media_snapshot = Arc::new(Mutex::new(None));
+        let bridge_snapshot = Arc::clone(&media_snapshot);
+        let hwnd_value = hwnd.0 as isize;
+        std::thread::spawn(move || {
+            while let Ok(update) = media_rx.recv() {
+                *bridge_snapshot
+                    .lock()
+                    .expect("media snapshot mutex poisoned") = Some(update);
+                let _ = PostMessageW(
+                    Some(HWND(hwnd_value as *mut _)),
+                    WM_APP_MEDIA,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        });
+        if let Err(error) = activities::media::subscribe(media_tx) {
+            log::log_err("media.subscribe", &error);
+        }
+        APP.with(|a| {
+            a.borrow_mut()
+                .as_mut()
+                .expect("app initialized")
+                .media_snapshot = media_snapshot
+        });
 
         // Event sources (no polling): foreground changes → fullscreen recheck,
         // appbar notifications → taskbar geometry changed.
         let _hook: HWINEVENTHOOK = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
             EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(foreground_changed),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        // A taskbar click can change the topmost ordering without changing
+        // the foreground window. Recheck when the taskbar captures the mouse.
+        let _capture_hook: HWINEVENTHOOK = SetWinEventHook(
+            EVENT_SYSTEM_CAPTURESTART,
+            EVENT_SYSTEM_CAPTURESTART,
+            None,
+            Some(foreground_changed),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        let _focus_hook: HWINEVENTHOOK = SetWinEventHook(
+            EVENT_OBJECT_FOCUS,
+            EVENT_OBJECT_FOCUS,
             None,
             Some(foreground_changed),
             0,
@@ -151,25 +235,51 @@ thread_local! {
 /// Owned state for the pill window.
 struct App {
     hwnd: HWND,
-    renderer: Renderer,
+    renderer: Option<Renderer>,
     /// Last applied pill rect (physical px); keeps the pill parked in place
     /// while explorer is mid-restart and we can't measure the taskbar.
     pill: RECT,
     visible: bool,
+    media_snapshot: Arc<Mutex<Option<activities::media::MediaUpdate>>>,
+    theme: theme::Theme,
 }
 
 impl App {
-    fn new(hwnd: HWND) -> windows::core::Result<Self> {
-        let rect = window_rect(hwnd).unwrap_or(RECT { left: 0, top: 0, right: 120, bottom: 32 });
+    fn new(hwnd: HWND, visible: bool, theme: theme::Theme) -> windows::core::Result<Self> {
+        let rect = window_rect(hwnd).unwrap_or(RECT {
+            left: 0,
+            top: 0,
+            right: 120,
+            bottom: 32,
+        });
         let dpi = unsafe { GetDpiForWindow(hwnd) };
         let scale = dpi.max(96) as f32 / 96.0;
-        let size = ((rect.right - rect.left).max(1) as u32, (rect.bottom - rect.top).max(1) as u32);
+        let size = (
+            (rect.right - rect.left).max(1) as u32,
+            (rect.bottom - rect.top).max(1) as u32,
+        );
         // # Safety: hwnd was created with WS_EX_NOREDIRECTIONBITMAP.
-        let mut renderer = unsafe { Renderer::create(hwnd, size, scale)? };
-        // Draw once up front: `apply` only redraws when the rect changes, and a
-        // first paint must not depend on that happening.
-        let _ = unsafe { renderer.draw() };
-        Ok(Self { hwnd, renderer, pill: rect, visible: false })
+        // DirectComposition is initialized only while the host window is
+        // visible. This avoids a startup flash when fullscreen suppression is
+        // active and avoids creating a DComp target for a hidden HWND.
+        let renderer = if visible {
+            let mut renderer = unsafe { Renderer::create(hwnd, size, scale, theme)? };
+            if let Err(e) = unsafe { renderer.draw() } {
+                log::log_err("App::new.draw", &e);
+            }
+            Some(renderer)
+        } else {
+            None
+        };
+        log::log(&format!("App::new: rect={:?} dpi={dpi}", rect));
+        Ok(Self {
+            hwnd,
+            renderer,
+            pill: rect,
+            visible,
+            media_snapshot: Arc::new(Mutex::new(None)),
+            theme,
+        })
     }
 
     /// Re-derive the pill position/visibility and sync the window to it.
@@ -183,8 +293,17 @@ impl App {
                 return;
             }
         };
+        if unsafe { GetParent(self.hwnd) }.ok() != Some(taskbar) {
+            unsafe {
+                let _ = SetParent(self.hwnd, Some(taskbar));
+            }
+        }
         let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
         let placement = anchor::compute(taskbar, dpi, current);
+        log::log(&format!(
+            "apply: placement={:?} visible={} (taskbar dpi={dpi})",
+            placement.rect, placement.visible
+        ));
 
         let w = (placement.rect.right - placement.rect.left).max(1);
         let h = (placement.rect.bottom - placement.rect.top).max(1);
@@ -202,23 +321,69 @@ impl App {
     /// Resize + redraw; recreate the device chain if the GPU device was lost
     /// (driver reset, RDP session switch, hybrid-GPU flip).
     fn sync_renderer(&mut self, size: (u32, u32), scale: f32) {
+        let Some(renderer) = self.renderer.as_mut() else {
+            return;
+        };
         unsafe {
-            let resized = self.renderer.resize(size, scale);
-            let drawn = resized.and_then(|()| self.renderer.draw());
+            let resized = renderer.resize(size, scale);
+            if let Err(e) = &resized {
+                log::log_err("sync_renderer.resize", e);
+            }
+            let drawn = resized.and_then(|()| renderer.draw());
+            if let Err(e) = &drawn {
+                log::log_err("sync_renderer.draw", e);
+            }
             if drawn.is_err() {
-                if let Ok(renderer) = Renderer::create(self.hwnd, size, scale) {
-                    self.renderer = renderer;
-                    let _ = self.renderer.draw();
+                log::log("sync_renderer: recreating device chain");
+                if let Ok(renderer) = Renderer::create(self.hwnd, size, scale, self.theme) {
+                    self.renderer = Some(renderer);
+                    if let Err(e) = self
+                        .renderer
+                        .as_mut()
+                        .expect("renderer was just set")
+                        .draw()
+                    {
+                        log::log_err("sync_renderer.recreate.draw", &e);
+                    }
+                } else {
+                    log::log("sync_renderer: recreate FAILED");
                 }
             }
+
         }
     }
 
     fn set_visible(&mut self, visible: bool) {
         if visible != self.visible {
             // SW_SHOWNOACTIVATE: show without activating (window is NOACTIVATE anyway).
-            unsafe { let _ = ShowWindow(self.hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE }); };
+            unsafe {
+                let _ = ShowWindow(self.hwnd, if visible { SW_SHOWNOACTIVATE } else { SW_HIDE });
+            };
             self.visible = visible;
+            if visible {
+                if self.renderer.is_none() {
+                    let rect = window_rect(self.hwnd).unwrap_or(self.pill);
+                    let size = (
+                        (rect.right - rect.left).max(1) as u32,
+                        (rect.bottom - rect.top).max(1) as u32,
+                    );
+                    let scale = unsafe { GetDpiForWindow(self.hwnd) }.max(96) as f32 / 96.0;
+                    match unsafe { Renderer::create(self.hwnd, size, scale, self.theme) } {
+                        Ok(renderer) => self.renderer = Some(renderer),
+                        Err(e) => {
+                            log::log_err("set_visible.create", &e);
+                            return;
+                        }
+                    }
+                }
+                // Present + Commit only now: DXGI drops presents issued while
+                // hidden, and DWM needs a fresh frame for a shown target.
+                if let Err(e) =
+                    unsafe { self.renderer.as_mut().expect("renderer initialized").draw() }
+                {
+                    log::log_err("set_visible.draw", &e);
+                }
+            }
         }
     }
 
@@ -238,9 +403,36 @@ impl App {
                 self.apply();
                 Some(LRESULT(0))
             }
+            WM_SETTINGCHANGE => {
+                self.theme = theme::Theme::current();
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.set_theme(self.theme);
+                    if let Err(error) = unsafe { renderer.draw() } {
+                        log::log_err("theme.draw", &error);
+                    }
+                }
+                Some(LRESULT(0))
+            }
             WM_APP_RECHECK => {
                 // Foreground window changed → fullscreen state may have changed.
                 self.apply();
+                Some(LRESULT(0))
+            }
+            WM_APP_MEDIA => {
+                if let Some(update) = self
+                    .media_snapshot
+                    .lock()
+                    .expect("media snapshot mutex poisoned")
+                    .as_ref()
+                {
+                    log::log(&format!("media: {} — {}", update.title, update.artist));
+                }
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.set_indicator(render::Indicator::Media);
+                    if let Err(error) = unsafe { renderer.draw() } {
+                        log::log_err("media.draw", &error);
+                    }
+                }
                 Some(LRESULT(0))
             }
             _ => None,
@@ -306,16 +498,27 @@ fn window_rect(hwnd: HWND) -> Option<RECT> {
 }
 
 fn set_window_rect(hwnd: HWND, rect: RECT, w: i32, h: i32) -> windows::core::Result<()> {
+    let parent = unsafe { GetParent(hwnd) }?;
+    let mut origin = POINT {
+        x: rect.left,
+        y: rect.top,
+    };
+    unsafe {
+        if !ScreenToClient(parent, &mut origin).as_bool() {
+            return Err(Error::new(HRESULT(0x80004005u32 as i32), "ScreenToClient failed"));
+        }
+    }
     unsafe {
         SetWindowPos(
             hwnd,
-            Some(HWND_TOPMOST), // stay pinned above the taskbar
-            rect.left,
-            rect.top,
+            None,
+            origin.x,
+            origin.y,
             w,
             h,
-            SWP_NOACTIVATE | SWP_NOZORDER,
+            SWP_NOACTIVATE | windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER,
         )?;
     }
+
     Ok(())
 }
