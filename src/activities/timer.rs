@@ -29,7 +29,7 @@ impl Default for TimerActivity {
             accumulated: Duration::ZERO,
             countdown: Duration::ZERO,
             ended: false,
-            label: "Study session".into(),
+            label: "Timer".into(),
         }
     }
 }
@@ -115,7 +115,7 @@ impl Activity for TimerActivity {
 }
 
 /// Display strings for the timer, rebuilt per tick.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TimerView {
     pub title: String,
     pub artist: String,
@@ -124,20 +124,6 @@ pub struct TimerView {
     pub running: bool,
     pub remaining_secs: u64,
     pub total_secs: u64,
-}
-
-impl TimerView {
-    pub fn demo() -> Self {
-        Self {
-            title: "12:40".into(),
-            artist: "Running".into(),
-            ended: false,
-            label: "Study session".into(),
-            running: true,
-            remaining_secs: 760,
-            total_secs: 1500,
-        }
-    }
 }
 
 pub fn view(timer: &mut TimerActivity, now: Instant) -> Option<TimerView> {

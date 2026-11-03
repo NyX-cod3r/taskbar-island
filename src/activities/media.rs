@@ -3,10 +3,12 @@
 use std::sync::mpsc::{Receiver, Sender};
 
 use windows::Foundation::TypedEventHandler;
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 use windows::Media::Control::{
     CurrentSessionChangedEventArgs, GlobalSystemMediaTransportControlsSession,
     GlobalSystemMediaTransportControlsSessionManager,
-    GlobalSystemMediaTransportControlsSessionPlaybackStatus, PlaybackInfoChangedEventArgs,
+    GlobalSystemMediaTransportControlsSessionPlaybackStatus, MediaPropertiesChangedEventArgs,
+    PlaybackInfoChangedEventArgs,
 };
 
 use crate::state::{Activity, ActivityId, Priority};
@@ -32,25 +34,33 @@ impl MediaUpdate {
         }
     }
 
-    /// Design spec demo track: "Deewana Kar Raha Hai", "Now playing", 1:24 / -2:24
-    pub fn demo() -> Self {
-        Self {
-            title: "Deewana Kar Raha Hai".into(),
-            artist: "Now playing".into(),
-            playing: true,
-            position_secs: 84,   // 1:24
-            duration_secs: 228,  // 3:48 (remaining: -2:24)
-        }
-    }
 }
 
-pub fn update(title: String, artist: String, playing: bool) -> MediaUpdate {
+/// Commands sent to the GSMTC worker. The UI never calls WinRT directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaCommand {
+    TogglePlayPause,
+    Previous,
+    Next,
+    /// Re-read metadata/timeline without changing playback.
+    Refresh,
+    /// Internal: the system's current media session changed.
+    SessionChanged,
+}
+
+pub fn update(
+    title: String,
+    artist: String,
+    playing: bool,
+    position_secs: u32,
+    duration_secs: u32,
+) -> MediaUpdate {
     MediaUpdate {
         title,
         artist,
         playing,
-        position_secs: 84,
-        duration_secs: 228,
+        position_secs,
+        duration_secs,
     }
 }
 
@@ -76,51 +86,84 @@ impl Activity for MediaActivity {
 /// snapshot to the caller's channel, which can then post a UI message.
 pub fn subscribe(
     sender: Sender<MediaUpdate>,
-    toggle_rx: Receiver<()>,
+    command_rx: Receiver<MediaCommand>,
+    command_tx: Sender<MediaCommand>,
 ) -> windows::core::Result<()> {
     std::thread::Builder::new()
         .name("taskbar-island-media".into())
         .spawn(move || {
+            // WinRT needs a COM apartment on this worker before RequestAsync.
+            if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
+                crate::log::log("media.worker: COM init failed");
+                return;
+            }
             let Ok(operation) = GlobalSystemMediaTransportControlsSessionManager::RequestAsync()
             else {
+                crate::log::log("media.worker: manager request failed");
                 return;
             };
-            let _ = operation.when(move |manager| {
-                let Ok(manager) = manager else { return };
-                if let Ok(session) = manager.GetCurrentSession() {
-                    publish_session(&session, &sender);
-                    hook_playback_info(session, &sender);
-                }
 
-                let session_sender = sender.clone();
-                let handler: TypedEventHandler<
+            let _ = operation.when(move |manager| {
+                let Ok(manager) = manager else {
+                    crate::log::log("media.worker: manager request errored");
+                    return;
+                };
+                // The completion callback can run on a WinRT thread-pool
+                // thread. Give that thread a COM apartment before querying
+                // the manager or its sessions.
+                let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+
+                let session_event_tx = command_tx.clone();
+                let session_handler: TypedEventHandler<
                     GlobalSystemMediaTransportControlsSessionManager,
                     CurrentSessionChangedEventArgs,
-                > = TypedEventHandler::new(
-                    move |manager: windows::core::Ref<
-                        '_,
-                        GlobalSystemMediaTransportControlsSessionManager,
-                    >,
-                          _| {
-                        if let Some(manager) = manager.as_ref() {
-                            match manager.GetCurrentSession() {
-                                Ok(session) => {
-                                    publish_session(&session, &session_sender);
-                                    hook_playback_info(session, &session_sender);
-                                }
-                                Err(_) => {
-                                    let _ = session_sender.send(MediaUpdate::none());
+                > = TypedEventHandler::new(move |_manager, _| {
+                    let _ = session_event_tx.send(MediaCommand::SessionChanged);
+                    Ok(())
+                });
+                let _ = manager.CurrentSessionChanged(&session_handler);
+
+                let mut session_handlers: Option<SessionHandlers> = None;
+                refresh_current(&manager, &sender, &command_tx, &mut session_handlers, true);
+
+                while let Ok(command) = command_rx.recv() {
+                    match command {
+                        MediaCommand::TogglePlayPause
+                        | MediaCommand::Previous
+                        | MediaCommand::Next => {
+                            if let Ok(session) = manager.GetCurrentSession() {
+                                match command {
+                                    MediaCommand::TogglePlayPause => {
+                                        let _ = session.TryTogglePlayPauseAsync();
+                                    }
+                                    MediaCommand::Previous => {
+                                        let _ = session.TrySkipPreviousAsync();
+                                    }
+                                    MediaCommand::Next => {
+                                        let _ = session.TrySkipNextAsync();
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
-                        Ok(())
-                    },
-                );
-                let _ = manager.CurrentSessionChanged(&handler);
-
-                while let Ok(()) = toggle_rx.recv() {
-                    if let Ok(session) = manager.GetCurrentSession() {
-                        let _ = session.TryTogglePlayPauseAsync();
+                        MediaCommand::Refresh => {
+                            refresh_current(
+                                &manager,
+                                &sender,
+                                &command_tx,
+                                &mut session_handlers,
+                                false,
+                            );
+                        }
+                        MediaCommand::SessionChanged => {
+                            refresh_current(
+                                &manager,
+                                &sender,
+                                &command_tx,
+                                &mut session_handlers,
+                                true,
+                            );
+                        }
                     }
                 }
             });
@@ -129,23 +172,56 @@ pub fn subscribe(
         .map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))
 }
 
-fn hook_playback_info(
-    session: GlobalSystemMediaTransportControlsSession,
+/// Event delegates for the current session. Holding them here keeps the
+/// subscriptions alive for as long as the worker owns the manager.
+#[allow(dead_code)]
+struct SessionHandlers {
+    playback: TypedEventHandler<GlobalSystemMediaTransportControlsSession, PlaybackInfoChangedEventArgs>,
+    media: TypedEventHandler<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs>,
+}
+
+/// Re-reads the current session on the COM worker. `hook` installs fresh
+/// listeners when the current session itself changed.
+fn refresh_current(
+    manager: &GlobalSystemMediaTransportControlsSessionManager,
     sender: &Sender<MediaUpdate>,
+    command_tx: &Sender<MediaCommand>,
+    session_handlers: &mut Option<SessionHandlers>,
+    hook: bool,
 ) {
-    let session_sender = sender.clone();
-    let handler: TypedEventHandler<
-        GlobalSystemMediaTransportControlsSession,
-        PlaybackInfoChangedEventArgs,
-    > = TypedEventHandler::new(
-        move |session: windows::core::Ref<'_, GlobalSystemMediaTransportControlsSession>, _| {
-            if let Some(session) = session.as_ref() {
-                publish_session(session, &session_sender);
+    match manager.GetCurrentSession() {
+        Ok(session) => {
+            publish_session(&session, sender);
+            if hook || session_handlers.is_none() {
+                *session_handlers = Some(hook_session(session, command_tx));
             }
-            Ok(())
-        },
-    );
-    let _ = session.PlaybackInfoChanged(&handler);
+        }
+        Err(_) => {
+            *session_handlers = None;
+            let _ = sender.send(MediaUpdate::none());
+        }
+    }
+}
+
+fn hook_session(
+    session: GlobalSystemMediaTransportControlsSession,
+    command_tx: &Sender<MediaCommand>,
+) -> SessionHandlers {
+    let playback_tx = command_tx.clone();
+    let playback = TypedEventHandler::new(move |_session, _| {
+        let _ = playback_tx.send(MediaCommand::Refresh);
+        Ok(())
+    });
+    let _ = session.PlaybackInfoChanged(&playback);
+
+    let media_tx = command_tx.clone();
+    let media = TypedEventHandler::new(move |_session, _| {
+        let _ = media_tx.send(MediaCommand::Refresh);
+        Ok(())
+    });
+    let _ = session.MediaPropertiesChanged(&media);
+
+    SessionHandlers { playback, media }
 }
 
 fn publish_session(
@@ -172,8 +248,22 @@ fn publish_session(
             .Artist()
             .map(|value| value.to_string())
             .unwrap_or_default();
+
+        // Timeline properties give the real position/duration (100 ns ticks).
+        let (position_secs, duration_secs) = state_session
+            .GetTimelineProperties()
+            .map(|timeline| {
+                let start = timeline.StartTime().map(|t| t.Duration).unwrap_or(0);
+                let end = timeline.EndTime().map(|t| t.Duration).unwrap_or(0);
+                let position = timeline.Position().map(|t| t.Duration).unwrap_or(0);
+                let duration = (end - start).max(0) / 10_000_000;
+                let position = ((position - start).max(0) / 10_000_000).min(duration);
+                (position as u32, duration as u32)
+            })
+            .unwrap_or((0, 0));
+
         if !title.is_empty() {
-            let _ = sender.send(update(title, artist, playing));
+            let _ = sender.send(update(title, artist, playing, position_secs, duration_secs));
         } else {
             let _ = sender.send(MediaUpdate::none());
         }
@@ -186,10 +276,12 @@ mod tests {
 
     #[test]
     fn update_keeps_track_metadata() {
-        let update = update("Track".into(), "Artist".into(), true);
+        let update = update("Track".into(), "Artist".into(), true, 30, 180);
         assert_eq!(update.title, "Track");
         assert_eq!(update.artist, "Artist");
         assert!(update.playing);
+        assert_eq!(update.position_secs, 30);
+        assert_eq!(update.duration_secs, 180);
     }
 
     #[test]
@@ -200,7 +292,7 @@ mod tests {
 
     #[test]
     fn paused_track_keeps_its_title() {
-        let paused = update("Track".into(), "Artist".into(), false);
+        let paused = update("Track".into(), "Artist".into(), false, 10, 60);
         assert!(!paused.playing);
         assert_eq!(paused.title, "Track");
     }

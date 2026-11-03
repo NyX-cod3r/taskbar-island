@@ -2,23 +2,12 @@
 
 use crate::state::{Activity, ActivityId, Priority};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallState {
     pub name: String,
     pub duration_str: String,
     pub is_muted: bool,
     pub is_speaker: bool,
-}
-
-impl Default for CallState {
-    fn default() -> Self {
-        Self {
-            name: "Priya".into(),
-            duration_str: "02:14".into(),
-            is_muted: false,
-            is_speaker: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -28,13 +17,6 @@ pub struct CallActivity {
 }
 
 impl CallActivity {
-    pub fn new_active() -> Self {
-        Self {
-            active: true,
-            state: CallState::default(),
-        }
-    }
-
     pub fn end_call(&mut self) {
         self.active = false;
     }

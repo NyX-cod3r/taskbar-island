@@ -43,42 +43,12 @@ pub struct ShelfFileTile {
 
 /// Display strings for the shelved batch, built once per shelf change —
 /// never on the draw path.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ShelfView {
     pub title: String,
     pub artist: String,
     pub count: usize,
     pub files: Vec<ShelfFileTile>,
-}
-
-impl ShelfView {
-    pub fn demo() -> Self {
-        Self {
-            title: "Invoice.pdf".into(),
-            artist: "3 files shelved".into(),
-            count: 3,
-            files: vec![
-                ShelfFileTile {
-                    name: "Invoice.pdf".into(),
-                    badge: "PDF".into(),
-                    size_str: "240 KB".into(),
-                    path: "Invoice.pdf".into(),
-                },
-                ShelfFileTile {
-                    name: "Screenshot.png".into(),
-                    badge: "PNG".into(),
-                    size_str: "1.2 MB".into(),
-                    path: "Screenshot.png".into(),
-                },
-                ShelfFileTile {
-                    name: "TechHub.zip".into(),
-                    badge: "ZIP".into(),
-                    size_str: "8.4 MB".into(),
-                    path: "TechHub.zip".into(),
-                },
-            ],
-        }
-    }
 }
 
 /// The shelved batch as an activity: active while at least one file waits.
@@ -138,7 +108,7 @@ pub fn view(paths: &[String]) -> Option<ShelfView> {
                     format!("{} B", len)
                 }
             })
-            .unwrap_or_else(|_| "1.2 MB".into());
+            .unwrap_or_else(|_| "—".into());
         files.push(ShelfFileTile {
             name,
             badge: ext,

@@ -9,7 +9,7 @@
 - Each activity is a module implementing the Activity trait: id, priority, poll/subscribe, render(compact|expanded), on_click.
 - Add unit tests for state.rs priority logic. Keep unsafe blocks small and commented.
 
-## Status (updated 2026-11-01)
+## Status (updated 2026-11-03)
 - **Phase 1 COMPLETE** (commit a8f4744): empty anchored pill, `WS_CHILD` inside `Shell_TrayWnd`
   (no topmost/z-order fight), geometry only in anchor.rs. Rendering: D3D11 ->
   `CreateSwapChainForComposition` (premultiplied alpha) -> DComp visual on the pill HWND -> D2D
@@ -158,3 +158,40 @@
     Direct2D rendering stack is in use on this GPU; ~47 MB private / ~57 MB WS is the honest floor.
     The remaining lever would be replacing the renderer (layered-window GDI or D3D9Ex), which contradicts
     the architecture rules. Idle CPU (0 %) and event-driven behavior are unaffected.
+
+- **Real data + empty states (2026-11-03)**:
+  - **All placeholder/demo data removed**: no Priya, Deewana Kar Raha Hai, Invoice.pdf,
+    Screenshot.png, TechHub.zip, Study session, demo times, or demo volume anywhere in the shipping
+    binary. The renderer starts at `ActivityId::Idle`; the prototype panel is opt-in via
+    `--prototype` only and contains no demo content.
+  - **Honest empty states**: pinned Music shows "Nothing playing" (flyout: "Nothing playing right
+    now"), Call shows "No call", Shelf shows "Shelf empty", Timer shows "No timer". Verified on the
+    release build: idle pill 280×62 px, all four empty pills captured, empty Music flyout captured.
+    Idle (Auto with no events) does not create the flyout at all, matching the lazy-flyout RAM design.
+  - **Manual switcher**: scroll wheel over the pill cycles Auto → Music → Call → Shelf → Timer;
+    right-click → Show mirrors the same order. A pin holds until a new automatic winner changes
+    (incoming call, timer ending, …) or the pinned activity ends; an open flyout closes instantly on
+    switch. Five `resolve_pin` unit tests cover the hold/clear rules.
+  - **Real volume**: `activities/volume.rs` registers an `IAudioEndpointVolumeCallback` on the default
+    render endpoint via WASAPI and posts `WM_APP_VOLUME = WM_APP + 5`; the 224 DIP HUD shows the real
+    level. Verified live at 0/2/4 % changes. No keyboard hook.
+  - **Real media**: GSMTC worker initializes COM (`CoInitializeEx(MTA)`) on both the worker and the
+    WinRT completion thread, holds `CurrentSessionChanged`, `PlaybackInfoChanged`, and
+    `MediaPropertiesChanged` handlers in a `SessionHandlers` struct, and keeps every manager/session
+    query on the COM-initialized thread; callbacks only enqueue `Refresh`/`SessionChanged`. Real
+    title/artist/playback/timeline verified with a WinRT `MediaPlayer` and a 300 s WAV: log
+    `publish title="Taskbar Island Test Track" playing=true pos=29 dur=300`; pill 280 px, flyout
+    `0:29` / `-4:31`, prev/next via `TrySkipPreviousAsync`/`TrySkipNextAsync`, click toggles.
+  - **Autostart + installer**: `settings.rs` supports the HKCU Run key and the right-click
+    **Start with Windows** toggle; `scripts/build.ps1 Installer` invokes `scripts/installer.iss`
+    (Inno Setup 6). The installer itself has not been built here because Inno Setup 6 is not
+    installed on this machine.
+  - **Fixed compact width**: `anchor::COMPACT_WIDTH_DIP = 224.0` (280 px at 125 % DPI). The pill
+    never moves or resizes when activities change; the flyout still opens 12 px above the taskbar,
+    centered on the pill. Verified rect `(1224,1145)-(1504,1207)` for every activity.
+  - **Final measurements (release, 125 % DPI)**: fresh idle **0 ms CPU / 10 s**, WS **58.8 MB**,
+    private **47.7 MB**, 13 threads, 312 handles. **22/22 tests**, `clippy --all-targets` clean.
+  - **Remaining gaps**: real Explorer drag-drop still needs a human (DoDragDrop cannot be
+    scripted); Call has no real integration yet and always renders "No call"; compact icons are
+    text placeholders (not demo data); the pill's bottom 7 px sit below the screen edge
+    (owner-approved thickness); the Inno Setup build is untested here.

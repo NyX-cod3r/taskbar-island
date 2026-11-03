@@ -9,10 +9,7 @@
 //! 4. Motion: 180 ms fade, 220 ms scale .94 to 1 and rise 6 px, cubic-bezier(.2, .8, .2, 1).
 //!    Close: 110 ms fade and scale back. Auto-close 700 ms after pointer leaves pill + flyout.
 //! 5. Sizes per activity:
-//!    - Music: compact 184x32, expanded 384x164
-//!    - Call: compact 176x32, expanded 384x136
-//!    - File shelf: compact 136x32 (204 on drag), expanded 384x176
-//!    - Timer: compact 116x32, expanded 320x124
+//!    - Music, Call, File shelf, Timer: compact 224x32, with activity-specific expanded cards
 //!    - Volume HUD: compact 224x32, expanded None (dismisses after 1.8 s)
 //! 6. Priority order: Call > Timer finishing > Volume HUD > Music > Shelf.
 
@@ -37,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use flyout::{FlyoutWindow, get_flyout, WM_APP_FLYOUT_ACTION};
 use render::Renderer;
-use state::{Activity, ActivityId, ActivityQueue, Priority};
+use state::{Activity, ActivityId, ActivityQueue, Priority, resolve_pin};
 use windows::core::{w, Error, HRESULT, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, SetLastError, ERROR_ALREADY_EXISTS, HWND, LPARAM, LRESULT, POINT, RECT,
@@ -65,7 +62,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDC_ARROW, MB_ICONERROR, MB_OK, MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
     SWP_NOSIZE, SW_HIDE, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, TPM_RIGHTBUTTON, WINEVENT_OUTOFCONTEXT,
     WM_APP, WM_COMMAND, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_HOTKEY, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONUP, WM_SETTINGCHANGE,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_RBUTTONUP, WM_SETTINGCHANGE,
     WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP,
 };
 
@@ -92,11 +89,6 @@ const HOVER_ANIM_TICK_MS: u32 = 16;
 
 // Hotkeys
 const HOTKEY_TIMER: i32 = 1;
-const HOTKEY_MUSIC: i32 = 2;
-const HOTKEY_CALL: i32 = 3;
-const HOTKEY_SHELF: i32 = 4;
-const HOTKEY_TIMER_VIEW: i32 = 5;
-const HOTKEY_VOLUME: i32 = 6;
 const HOTKEY_COLLAPSE: i32 = 7;
 
 static G_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -155,7 +147,7 @@ fn run() -> windows::core::Result<()> {
             WS_CHILD,
             0,
             0,
-            184,
+            anchor::COMPACT_WIDTH_DIP as i32,
             32,
             Some(taskbar),
             None,
@@ -173,8 +165,8 @@ fn run() -> windows::core::Result<()> {
             let placement = anchor::compute(
                 tb,
                 dpi,
-                RECT { left: 0, top: 0, right: 184, bottom: 32 },
-                anchor::MUSIC_COMPACT_WIDTH_DIP,
+                RECT { left: 0, top: 0, right: anchor::COMPACT_WIDTH_DIP as i32, bottom: 32 },
+                anchor::COMPACT_WIDTH_DIP,
             );
             let w = (placement.rect.right - placement.rect.left).max(1);
             let h = (placement.rect.bottom - placement.rect.top).max(1);
@@ -192,7 +184,8 @@ fn run() -> windows::core::Result<()> {
 
         // Media subscription worker
         let (media_tx, media_rx) = mpsc::channel();
-        let (toggle_tx, toggle_rx) = mpsc::channel::<()>();
+        let (media_cmd_tx, media_cmd_rx) =
+            mpsc::channel::<activities::media::MediaCommand>();
         let media_snapshot = Arc::new(Mutex::new(None));
         let bridge_snapshot = Arc::clone(&media_snapshot);
         let hwnd_value = hwnd.0 as isize;
@@ -207,8 +200,14 @@ fn run() -> windows::core::Result<()> {
                 );
             }
         });
-        if let Err(error) = activities::media::subscribe(media_tx, toggle_rx) {
+        if let Err(error) = activities::media::subscribe(media_tx, media_cmd_rx, media_cmd_tx.clone())
+        {
             log::log_err("media.subscribe", &error);
+        }
+
+        // WASAPI volume listener (event driven; no keyboard hook).
+        if let Err(error) = activities::volume::subscribe(hwnd) {
+            log::log_err("volume.subscribe", &error);
         }
 
         // OLE Drag-drop shelf
@@ -225,7 +224,7 @@ fn run() -> windows::core::Result<()> {
             let mut app = a.borrow_mut();
             let app = app.as_mut().expect("app initialized");
             app.media_snapshot = media_snapshot;
-            app.media_toggle = toggle_tx;
+            app.media_cmd = media_cmd_tx;
             app.shelf_slot = shelf_slot;
         });
 
@@ -259,20 +258,9 @@ fn run() -> windows::core::Result<()> {
         );
         anchor::register_appbar(hwnd, APPBAR_MSG);
 
-        // Hotkeys for testing/demo per design spec:
-        // Ctrl+Alt+1: Music
-        // Ctrl+Alt+2: Call
-        // Ctrl+Alt+3: File shelf
-        // Ctrl+Alt+4: Timer
-        // Ctrl+Alt+5: Volume HUD
-        // Ctrl+Alt+C: Collapse island
-        // Ctrl+Alt+T: Timer countdown
+        // Hotkeys: Ctrl+Alt+T starts/cancels the countdown; Ctrl+Alt+C
+        // collapses the flyout. Activity switching is wheel / right-click.
         let _ = RegisterHotKey(Some(hwnd), HOTKEY_TIMER, MOD_CONTROL | MOD_ALT, 'T' as u32);
-        let _ = RegisterHotKey(Some(hwnd), HOTKEY_MUSIC, MOD_CONTROL | MOD_ALT, '1' as u32);
-        let _ = RegisterHotKey(Some(hwnd), HOTKEY_CALL, MOD_CONTROL | MOD_ALT, '2' as u32);
-        let _ = RegisterHotKey(Some(hwnd), HOTKEY_SHELF, MOD_CONTROL | MOD_ALT, '3' as u32);
-        let _ = RegisterHotKey(Some(hwnd), HOTKEY_TIMER_VIEW, MOD_CONTROL | MOD_ALT, '4' as u32);
-        let _ = RegisterHotKey(Some(hwnd), HOTKEY_VOLUME, MOD_CONTROL | MOD_ALT, '5' as u32);
         let _ = RegisterHotKey(Some(hwnd), HOTKEY_COLLAPSE, MOD_CONTROL | MOD_ALT, 'C' as u32);
 
         // Check command line arguments: if --prototype is specified, show prototype window
@@ -309,11 +297,18 @@ struct App {
     // Arbitration
     queue: ActivityQueue,
     current_activity: ActivityId,
+    /// Manual switcher: `Some` shows that activity until the user scrolls back
+    /// to Auto or a new event changes the automatic winner. `None` = automatic.
+    pin: Option<ActivityId>,
+    /// Last automatic (priority) winner, used to detect new events while pinned.
+    last_auto: ActivityId,
+    /// Accumulated wheel delta (trackpads send small increments).
+    wheel_accum: i32,
 
     // Activities
     media_snapshot: Arc<Mutex<Option<activities::media::MediaUpdate>>>,
     media_state: Option<activities::media::MediaUpdate>,
-    media_toggle: mpsc::Sender<()>,
+    media_cmd: mpsc::Sender<activities::media::MediaCommand>,
 
     shelf_slot: Arc<Mutex<Vec<String>>>,
     shelf_paths: Vec<String>,
@@ -333,7 +328,7 @@ impl App {
         let rect = window_rect(hwnd).unwrap_or(RECT {
             left: 0,
             top: 0,
-            right: 184,
+            right: anchor::COMPACT_WIDTH_DIP as i32,
             bottom: 32,
         });
         let dpi = unsafe { GetDpiForWindow(hwnd) };
@@ -366,9 +361,12 @@ impl App {
             drop_hover: false,
             queue,
             current_activity: ActivityId::Idle,
+            pin: None,
+            last_auto: ActivityId::Idle,
+            wheel_accum: 0,
             media_snapshot: Arc::new(Mutex::new(None)),
             media_state: None,
-            media_toggle: mpsc::channel().0,
+            media_cmd: mpsc::channel().0,
             shelf_slot: Arc::new(Mutex::new(Vec::new())),
             shelf_paths: Vec::new(),
             shelf: activities::shelf::ShelfActivity::default(),
@@ -390,17 +388,7 @@ impl App {
 
     /// Returns the exact compact width (in DIP) for the current state.
     fn compact_width_dip(&self) -> f32 {
-        if self.drop_hover {
-            return anchor::SHELF_DRAG_WIDTH_DIP; // 204.0 DIP on drag
-        }
-        match self.current_activity {
-            ActivityId::Idle => anchor::IDLE_COMPACT_WIDTH_DIP, // empty material pill
-            ActivityId::Media => anchor::MUSIC_COMPACT_WIDTH_DIP, // 184.0 DIP
-            ActivityId::Call => anchor::CALL_COMPACT_WIDTH_DIP,   // 176.0 DIP
-            ActivityId::Shelf => anchor::SHELF_COMPACT_WIDTH_DIP, // 136.0 DIP
-            ActivityId::Timer => anchor::TIMER_COMPACT_WIDTH_DIP, // 116.0 DIP
-            ActivityId::Volume => anchor::VOLUME_COMPACT_WIDTH_DIP, // 224.0 DIP
-        }
+        anchor::COMPACT_WIDTH_DIP
     }
 
     /// Apply anchoring and sizing. The compact pill NEVER resizes on hover!
@@ -562,7 +550,15 @@ impl App {
     }
 
     fn refresh_content(&mut self) {
-        let winner = self.queue.current().unwrap_or(ActivityId::Idle);
+        let auto = self.queue.current().unwrap_or(ActivityId::Idle);
+
+        // A manual pin holds until the automatic winner changes because of a
+        // new event (incoming call, timer ending, …). If the pinned activity
+        // itself ended, the pin also clears and automatic behavior resumes.
+        let (pin, winner) = resolve_pin(self.pin, auto, self.last_auto);
+        self.pin = pin;
+        self.last_auto = auto;
+
         let activity_changed = winner != self.current_activity;
         self.current_activity = winner;
 
@@ -600,6 +596,8 @@ impl App {
         if !matches!(self.current_activity, ActivityId::Idle | ActivityId::Volume) {
             let _ = FlyoutWindow::ensure(self.hwnd);
         }
+        let empty = self.activity_is_empty();
+        let mut opened = false;
         get_flyout().with(|f| {
             if let Ok(mut borrow) = f.try_borrow_mut() {
                 if let Some(flyout) = borrow.as_mut() {
@@ -607,16 +605,28 @@ impl App {
                         flyout.close();
                     } else {
                         // Sync content to flyout
-                        flyout.media = self.media_state.clone().unwrap_or_else(activities::media::MediaUpdate::demo);
+                        flyout.empty = empty;
+                        flyout.media = self
+                            .media_state
+                            .clone()
+                            .unwrap_or_else(activities::media::MediaUpdate::none);
                         flyout.call = self.call.state.clone();
-                        flyout.shelf = self.shelf_view.clone().unwrap_or_else(activities::shelf::ShelfView::demo);
-                        flyout.timer = self.timer_view.clone().unwrap_or_else(activities::timer::TimerView::demo);
+                        flyout.shelf = self.shelf_view.clone().unwrap_or_default();
+                        flyout.timer = self.timer_view.clone().unwrap_or_default();
 
                         flyout.open_for(self.current_activity, taskbar, self.pill);
+                        opened = true;
                     }
                 }
             }
         });
+        if opened && self.current_activity == ActivityId::Media {
+            // Ask the worker for a fresh timeline so the progress bar is
+            // accurate even if the last playback event was minutes ago.
+            let _ = self
+                .media_cmd
+                .send(activities::media::MediaCommand::Refresh);
+        }
     }
 
     fn collapse_flyout(&mut self) {
@@ -644,19 +654,23 @@ impl App {
     fn on_flyout_action(&mut self, action: usize, param: usize) {
         match action {
             flyout::FLYOUT_ACTION_PLAY_PAUSE => {
-                let _ = self.media_toggle.send(());
+                let _ = self
+                    .media_cmd
+                    .send(activities::media::MediaCommand::TogglePlayPause);
                 if let Some(m) = self.media_state.as_mut() {
                     m.playing = !m.playing;
                 }
                 self.refresh_content();
             }
-            flyout::FLYOUT_ACTION_PREV | flyout::FLYOUT_ACTION_NEXT => {
-                // Previous / Next track
-                if let Some(m) = self.media_state.as_mut() {
-                    m.title = "Deewana Kar Raha Hai".into();
-                    m.playing = true;
-                }
-                self.refresh_content();
+            flyout::FLYOUT_ACTION_PREV => {
+                let _ = self
+                    .media_cmd
+                    .send(activities::media::MediaCommand::Previous);
+            }
+            flyout::FLYOUT_ACTION_NEXT => {
+                let _ = self
+                    .media_cmd
+                    .send(activities::media::MediaCommand::Next);
             }
             flyout::FLYOUT_ACTION_MUTE => {
                 self.call.toggle_mute();
@@ -760,47 +774,79 @@ impl App {
     fn trigger_volume(&mut self, level: u32) {
         self.volume.trigger(level);
         self.queue.update(ActivityId::Volume, Priority::VolumeHud, true);
+        log::log(&format!("volume.change: {}", self.volume.level));
         unsafe {
             SetTimer(Some(self.hwnd), VOLUME_HUD_TIMER_ID, VOLUME_HUD_MS, None);
         }
         self.refresh_content();
     }
 
-    /// Prototype previews are exclusive: the chosen activity is the only one
-    /// active, so its compact state is always visible while previewing.
-    fn preview_activity(&mut self, activity: ActivityId) {
-        self.queue.update(ActivityId::Media, Priority::Media, false);
-        self.queue.update(ActivityId::Call, Priority::Call, false);
-        self.queue.update(ActivityId::Shelf, Priority::Shelf, false);
-        self.queue.update(ActivityId::Timer, Priority::Idle, false);
-        self.queue.update(ActivityId::Volume, Priority::VolumeHud, false);
-        match activity {
-            ActivityId::Media => {
-                self.media_state = Some(activities::media::MediaUpdate::demo());
-                self.queue.update(ActivityId::Media, Priority::Media, true);
-            }
-            ActivityId::Call => {
-                self.call = activities::call::CallActivity::new_active();
-                self.queue.update(ActivityId::Call, Priority::Call, true);
-            }
-            ActivityId::Shelf => {
-                self.shelf.count = 3;
-                self.shelf_view = Some(activities::shelf::ShelfView::demo());
-                self.queue.update(ActivityId::Shelf, Priority::Shelf, true);
-            }
-            ActivityId::Timer => {
-                self.timer = activities::timer::TimerActivity::default();
-                self.timer.start_countdown(Duration::from_secs(760), Instant::now());
-                self.timer_view = Some(activities::timer::TimerView::demo());
-                self.queue.update(ActivityId::Timer, Priority::Idle, true);
-            }
-            ActivityId::Volume => {
-                self.trigger_volume(42);
-                return;
-            }
-            ActivityId::Idle => {}
+    /// Order used by the wheel switcher and the Show menu. `None` is Auto.
+    const SHOW_ORDER: [Option<ActivityId>; 5] = [
+        None,
+        Some(ActivityId::Media),
+        Some(ActivityId::Call),
+        Some(ActivityId::Shelf),
+        Some(ActivityId::Timer),
+    ];
+
+    fn show_label(pin: Option<ActivityId>) -> &'static str {
+        match pin {
+            None => "Auto",
+            Some(ActivityId::Media) => "Music",
+            Some(ActivityId::Call) => "Call",
+            Some(ActivityId::Shelf) => "File shelf",
+            Some(ActivityId::Timer) => "Timer",
+            Some(ActivityId::Volume) => "Volume",
+            Some(ActivityId::Idle) => "Idle",
         }
+    }
+
+    /// Manual switcher used by the wheel and the Show menu. `None` returns to
+    /// automatic priority. The open card (if any) is hidden instantly because
+    /// it belongs to the previous activity.
+    fn set_pin(&mut self, pin: Option<ActivityId>) {
+        if self.pin == pin {
+            return;
+        }
+        self.pin = pin;
+        log::log(&format!("activity.show: {}", Self::show_label(pin)));
+        get_flyout().with(|f| {
+            if let Ok(mut borrow) = f.try_borrow_mut() {
+                if let Some(flyout) = borrow.as_mut() {
+                    if flyout.is_open || flyout.is_closing {
+                        flyout.close_immediate();
+                    }
+                }
+            }
+        });
         self.refresh_content();
+    }
+
+    /// Wheel over the pill: +1 = next (wheel down), -1 = previous (wheel up).
+    fn cycle_activity(&mut self, step: isize) {
+        let idx = Self::SHOW_ORDER
+            .iter()
+            .position(|x| *x == self.pin)
+            .unwrap_or(0);
+        let next = (idx as isize + step).rem_euclid(Self::SHOW_ORDER.len() as isize) as usize;
+        self.set_pin(Self::SHOW_ORDER[next]);
+    }
+
+    /// True when the shown activity has no live content, so the pill and the
+    /// flyout should render their empty states instead of demo data.
+    fn activity_is_empty(&self) -> bool {
+        match self.current_activity {
+            ActivityId::Media => self.media_state.is_none(),
+            ActivityId::Call => !self.call.active,
+            ActivityId::Shelf => self
+                .shelf_view
+                .as_ref()
+                .map(|s| s.count == 0)
+                .unwrap_or(true),
+            ActivityId::Timer => self.timer_view.is_none(),
+            _ => false,
+        }
     }
 
     /// Applies a Tweaks menu choice: persist it, then rebuild the theme and
@@ -852,14 +898,24 @@ impl App {
         unsafe {
             let _ = WinGetCursorPos(&mut pt);
             let hmenu = CreatePopupMenu().unwrap();
-            let _ = AppendMenuW(hmenu, MF_STRING, 1001, w!("Music (Deewana Kar Raha Hai)"));
-            let _ = AppendMenuW(hmenu, MF_STRING, 1002, w!("Call (Priya)"));
-            let _ = AppendMenuW(hmenu, MF_STRING, 1003, w!("File Shelf (3 files)"));
-            let _ = AppendMenuW(hmenu, MF_STRING, 1004, w!("Timer (Study session)"));
-            let _ = AppendMenuW(hmenu, MF_STRING, 1005, w!("Volume HUD (42)"));
+
+            // Show: manual switcher (same order as the wheel).
+            let show = CreatePopupMenu().unwrap();
+            let show_items: [(usize, Option<ActivityId>); 5] = [
+                (1141, None),
+                (1142, Some(ActivityId::Media)),
+                (1143, Some(ActivityId::Call)),
+                (1144, Some(ActivityId::Shelf)),
+                (1145, Some(ActivityId::Timer)),
+            ];
+            for (id, pin) in show_items {
+                let flags = if self.pin == pin { MF_STRING | MF_CHECKED } else { MF_STRING };
+                let label = HSTRING::from(Self::show_label(pin));
+                let _ = AppendMenuW(show, flags, id, &label);
+            }
+            let _ = AppendMenuW(hmenu, MF_POPUP, show.0 as usize, w!("Show"));
+
             let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-            let _ = AppendMenuW(hmenu, MF_STRING, 1006, w!("Simulate File Drag"));
-            let _ = AppendMenuW(hmenu, MF_STRING, 1007, w!("Show Prototype Panel"));
             let _ = AppendMenuW(hmenu, MF_STRING, 1008, w!("Collapse Island"));
             let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
 
@@ -901,6 +957,13 @@ impl App {
             }
             let _ = AppendMenuW(hmenu, MF_POPUP, tweaks.0 as usize, w!("Tweaks"));
 
+            let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
+            let startup_flags = if settings::autostart_enabled() {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            };
+            let _ = AppendMenuW(hmenu, startup_flags, 1010, w!("Start with Windows"));
             let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(hmenu, MF_STRING, 1009, w!("Exit"));
 
@@ -949,6 +1012,22 @@ impl App {
                 self.media_state = media;
                 self.queue.update(ActivityId::Media, Priority::Media, self.media_state.is_some());
                 self.refresh_content();
+                if let Some(media) = self.media_state.clone() {
+                    get_flyout().with(|f| {
+                        if let Ok(mut borrow) = f.try_borrow_mut() {
+                            if let Some(flyout) = borrow.as_mut() {
+                                if flyout.current_activity == ActivityId::Media {
+                                    flyout.empty = false;
+                                    flyout.set_media(media);
+                                }
+                            }
+                        }
+                    });
+                }
+                Some(LRESULT(0))
+            }
+            activities::volume::WM_APP_VOLUME => {
+                self.trigger_volume(wparam.0 as u32);
                 Some(LRESULT(0))
             }
             activities::shelf::WM_APP_SHELF => {
@@ -995,6 +1074,23 @@ impl App {
                 self.set_pressed(true);
                 Some(LRESULT(0))
             }
+            WM_MOUSEWHEEL => {
+                // Wheel over the pill cycles Auto → Music → Call → Shelf →
+                // Timer. One step per 120 units; trackpads accumulate.
+                let delta = ((wparam.0 >> 16) & 0xFFFF) as u16 as i16 as i32;
+                if delta != 0 {
+                    self.wheel_accum += delta;
+                    while self.wheel_accum >= 120 {
+                        self.wheel_accum -= 120;
+                        self.cycle_activity(-1);
+                    }
+                    while self.wheel_accum <= -120 {
+                        self.wheel_accum += 120;
+                        self.cycle_activity(1);
+                    }
+                }
+                Some(LRESULT(0))
+            }
             WM_LBUTTONUP => {
                 self.set_pressed(false);
                 if self.timer.has_ended() {
@@ -1017,26 +1113,24 @@ impl App {
             WM_COMMAND => {
                 let id = wparam.0 & 0xFFFF;
                 match id {
-                    1001 => self.preview_activity(ActivityId::Media),
-                    1002 => self.preview_activity(ActivityId::Call),
-                    1003 => self.preview_activity(ActivityId::Shelf),
-                    1004 => self.preview_activity(ActivityId::Timer),
-                    1005 => self.preview_activity(ActivityId::Volume),
                     1101..=1135 => self.apply_tweak(id),
-                    1006 => {
-                        // Simulate file drag
-                        self.set_drop_hover(!self.drop_hover);
-                    }
-                    1007 => {
-                        // Show prototype window
-                        prototype::show_prototype_window(self.hwnd);
-                    }
+                    1141 => self.set_pin(None),
+                    1142 => self.set_pin(Some(ActivityId::Media)),
+                    1143 => self.set_pin(Some(ActivityId::Call)),
+                    1144 => self.set_pin(Some(ActivityId::Shelf)),
+                    1145 => self.set_pin(Some(ActivityId::Timer)),
                     1008 => {
                         // Collapse
                         self.collapse_flyout();
                     }
                     1009 => {
                         unsafe { PostQuitMessage(0) };
+                    }
+                    1010 => {
+                        let enabled = !settings::autostart_enabled();
+                        if !settings::set_autostart(enabled) {
+                            log::log("autostart.update failed");
+                        }
                     }
                     _ => {}
                 }
@@ -1049,11 +1143,6 @@ impl App {
             prototype::WM_APP_PROTOTYPE_CMD => {
                 let cmd = wparam.0;
                 match cmd {
-                    prototype::CMD_PREVIEW_MUSIC => self.preview_activity(ActivityId::Media),
-                    prototype::CMD_PREVIEW_CALL => self.preview_activity(ActivityId::Call),
-                    prototype::CMD_PREVIEW_SHELF => self.preview_activity(ActivityId::Shelf),
-                    prototype::CMD_PREVIEW_TIMER => self.preview_activity(ActivityId::Timer),
-                    prototype::CMD_PREVIEW_VOLUME => self.preview_activity(ActivityId::Volume),
                     prototype::CMD_SIMULATE_DRAG => {
                         self.set_drop_hover(!self.drop_hover);
                     }
@@ -1066,11 +1155,6 @@ impl App {
             }
             WM_HOTKEY => {
                 match wparam.0 as i32 {
-                    HOTKEY_MUSIC => self.preview_activity(ActivityId::Media),
-                    HOTKEY_CALL => self.preview_activity(ActivityId::Call),
-                    HOTKEY_SHELF => self.preview_activity(ActivityId::Shelf),
-                    HOTKEY_TIMER_VIEW => self.preview_activity(ActivityId::Timer),
-                    HOTKEY_VOLUME => self.preview_activity(ActivityId::Volume),
                     HOTKEY_COLLAPSE => {
                         self.collapse_flyout();
                     }

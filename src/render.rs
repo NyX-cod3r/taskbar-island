@@ -212,8 +212,8 @@ impl Renderer {
             hover_from: 0.0,
             hover_target: 0.0,
             hover_anim_start: None,
-            active_id: ActivityId::Media,
-            media: Some(MediaUpdate::demo()),
+            active_id: ActivityId::Idle,
+            media: None,
             call: None,
             shelf: None,
             timer: None,
@@ -471,113 +471,155 @@ impl Renderer {
                     }
                     ActivityId::Media => {
                         // Compact Music (184 wide)
-                        // Art (20x20), vertically centered
-                        let art_top = (h - 20.0) / 2.0;
-                        let art_rect = D2D1_ROUNDED_RECT {
-                            rect: D2D_RECT_F { left: 6.0, top: art_top, right: 26.0, bottom: art_top + 20.0 },
-                            radiusX: 4.0,
-                            radiusY: 4.0,
-                        };
-                        let cover_brush = self.d2d_context.CreateSolidColorBrush(
-                            &D2D1_COLOR_F { r: 0.15, g: 0.50, b: 0.85, a: 1.0 },
-                            None,
-                        )?;
-                        self.d2d_context.FillRoundedRectangle(&art_rect, &cover_brush);
+                        if let Some(media) = self.media.as_ref() {
+                            // Art (20x20), vertically centered
+                            let art_top = (h - 20.0) / 2.0;
+                            let art_rect = D2D1_ROUNDED_RECT {
+                                rect: D2D_RECT_F { left: 6.0, top: art_top, right: 26.0, bottom: art_top + 20.0 },
+                                radiusX: 4.0,
+                                radiusY: 4.0,
+                            };
+                            let cover_brush = self.d2d_context.CreateSolidColorBrush(
+                                &D2D1_COLOR_F { r: 0.15, g: 0.50, b: 0.85, a: 1.0 },
+                                None,
+                            )?;
+                            self.d2d_context.FillRoundedRectangle(&art_rect, &cover_brush);
 
-                        // Title
-                        let title = self.media.as_ref().map(|m| m.title.as_str()).unwrap_or("Deewana Kar Raha ...");
-                        let title_w: Vec<u16> = title.encode_utf16().collect();
-                        self.draw_text(
-                            &title_w,
-                            &self.text_format,
-                            &D2D_RECT_F { left: 32.0, top: 0.0, right: w - 24.0, bottom: h },
-                            &text_brush,
-                        );
+                            // Title
+                            let title_w: Vec<u16> = media.title.encode_utf16().collect();
+                            self.draw_text(
+                                &title_w,
+                                &self.text_format,
+                                &D2D_RECT_F { left: 32.0, top: 0.0, right: w - 24.0, bottom: h },
+                                &text_brush,
+                            );
 
-                        // 3-bar equalizer at right
-                        let playing = self.media.as_ref().map(|m| m.playing).unwrap_or(true);
-                        let bars = if playing { [12.0, 7.0, 14.0] } else { [9.0, 9.0, 9.0] };
-                        for (i, bar_h) in bars.iter().enumerate() {
-                            let bx = w - 18.0 + i as f32 * 4.0;
-                            self.d2d_context.FillRectangle(
-                                &D2D_RECT_F {
-                                    left: bx,
-                                    top: (h - bar_h) / 2.0,
-                                    right: bx + 2.0,
-                                    bottom: (h + bar_h) / 2.0,
+                            // 3-bar equalizer at right
+                            let bars = if media.playing { [12.0, 7.0, 14.0] } else { [9.0, 9.0, 9.0] };
+                            for (i, bar_h) in bars.iter().enumerate() {
+                                let bx = w - 18.0 + i as f32 * 4.0;
+                                self.d2d_context.FillRectangle(
+                                    &D2D_RECT_F {
+                                        left: bx,
+                                        top: (h - bar_h) / 2.0,
+                                        right: bx + 2.0,
+                                        bottom: (h + bar_h) / 2.0,
+                                    },
+                                    &accent_brush,
+                                );
+                            }
+                        } else {
+                            // Empty: muted note ring + label (no demo data).
+                            self.d2d_context.DrawEllipse(
+                                &D2D1_ELLIPSE {
+                                    point: Vector2 { X: 16.0, Y: h / 2.0 },
+                                    radiusX: 5.0,
+                                    radiusY: 5.0,
                                 },
-                                &accent_brush,
+                                &sec_brush,
+                                1.5,
+                                None,
+                            );
+                            let label: Vec<u16> = "Nothing playing".encode_utf16().collect();
+                            self.draw_text(
+                                &label,
+                                &self.text_format,
+                                &D2D_RECT_F { left: 32.0, top: 0.0, right: w - 8.0, bottom: h },
+                                &sec_brush,
                             );
                         }
                     }
                     ActivityId::Call => {
                         // Compact Call (176 wide)
-                        // Green mic dot, vertically centered
-                        let green = Theme::call_color();
-                        let green_brush = self.d2d_context.CreateSolidColorBrush(
-                            &D2D1_COLOR_F { r: green.0, g: green.1, b: green.2, a: 1.0 },
-                            None,
-                        )?;
-                        self.d2d_context.FillEllipse(
-                            &D2D1_ELLIPSE { point: Vector2 { X: 16.0, Y: h / 2.0 }, radiusX: 4.0, radiusY: 4.0 },
-                            &green_brush,
-                        );
+                        if let Some(call) = self.call.as_ref() {
+                            // Green mic dot, vertically centered
+                            let green = Theme::call_color();
+                            let green_brush = self.d2d_context.CreateSolidColorBrush(
+                                &D2D1_COLOR_F { r: green.0, g: green.1, b: green.2, a: 1.0 },
+                                None,
+                            )?;
+                            self.d2d_context.FillEllipse(
+                                &D2D1_ELLIPSE { point: Vector2 { X: 16.0, Y: h / 2.0 }, radiusX: 4.0, radiusY: 4.0 },
+                                &green_brush,
+                            );
 
-                        // Name: "Priya"
-                        let name = self.call.as_ref().map(|c| c.name.as_str()).unwrap_or("Priya");
-                        let name_w: Vec<u16> = name.encode_utf16().collect();
-                        self.draw_text(
-                            &name_w,
-                            &self.bold_format,
-                            &D2D_RECT_F { left: 28.0, top: 0.0, right: 110.0, bottom: h },
-                            &text_brush,
-                        );
+                            // Name
+                            let name_w: Vec<u16> = call.name.encode_utf16().collect();
+                            self.draw_text(
+                                &name_w,
+                                &self.bold_format,
+                                &D2D_RECT_F { left: 28.0, top: 0.0, right: 110.0, bottom: h },
+                                &text_brush,
+                            );
 
-                        // Timer: "02:14"
-                        let duration = self.call.as_ref().map(|c| c.duration_str.as_str()).unwrap_or("02:14");
-                        let dur_w: Vec<u16> = duration.encode_utf16().collect();
-                        self.draw_text(
-                            &dur_w,
-                            &self.text_format,
-                            &D2D_RECT_F { left: 116.0, top: 0.0, right: w - 8.0, bottom: h },
-                            &sec_brush,
-                        );
+                            // Duration
+                            let dur_w: Vec<u16> = call.duration_str.encode_utf16().collect();
+                            self.draw_text(
+                                &dur_w,
+                                &self.text_format,
+                                &D2D_RECT_F { left: 116.0, top: 0.0, right: w - 8.0, bottom: h },
+                                &sec_brush,
+                            );
+                        } else {
+                            self.d2d_context.DrawEllipse(
+                                &D2D1_ELLIPSE {
+                                    point: Vector2 { X: 16.0, Y: h / 2.0 },
+                                    radiusX: 4.0,
+                                    radiusY: 4.0,
+                                },
+                                &sec_brush,
+                                1.5,
+                                None,
+                            );
+                            let label: Vec<u16> = "No call".encode_utf16().collect();
+                            self.draw_text(
+                                &label,
+                                &self.text_format,
+                                &D2D_RECT_F { left: 28.0, top: 0.0, right: w - 8.0, bottom: h },
+                                &sec_brush,
+                            );
+                        }
                     }
                     ActivityId::Shelf => {
-                        // Compact File shelf (136 wide):
-                        // Folder icon at x=14
+                        // Compact File shelf (136 wide)
+                        let (icon_brush, label) = match self.shelf.as_ref() {
+                            Some(shelf) if shelf.count > 0 => {
+                                (&text_brush, format!("{} files", shelf.count))
+                            }
+                            _ => (&sec_brush, "Shelf empty".to_string()),
+                        };
                         let folder_sym: Vec<u16> = "[F]".encode_utf16().collect();
                         self.draw_text(
                             &folder_sym,
                             &self.bold_format,
                             &D2D_RECT_F { left: 14.0, top: 0.0, right: 38.0, bottom: h },
-                            &text_brush,
+                            icon_brush,
                         );
 
-                        let count = self.shelf.as_ref().map(|s| s.count).unwrap_or(3);
-                        let count_str = format!("{count} files");
-                        let count_w: Vec<u16> = count_str.encode_utf16().collect();
+                        let label_w: Vec<u16> = label.encode_utf16().collect();
                         self.draw_text(
-                            &count_w,
+                            &label_w,
                             &self.text_format,
                             &D2D_RECT_F { left: 42.0, top: 0.0, right: w - 8.0, bottom: h },
-                            &text_brush,
+                            icon_brush,
                         );
                     }
                     ActivityId::Timer => {
-                        // Compact Timer (116 wide):
-                        // Ring icon, vertically centered
+                        // Compact Timer (116 wide)
+                        let (ring_brush, label) = match self.timer.as_ref() {
+                            Some(timer) => (&accent_brush, timer.title.as_str()),
+                            None => (&sec_brush, "No timer"),
+                        };
                         self.d2d_context.DrawEllipse(
                             &D2D1_ELLIPSE { point: Vector2 { X: 18.0, Y: h / 2.0 }, radiusX: 6.5, radiusY: 6.5 },
-                            &accent_brush,
+                            ring_brush,
                             2.0,
                             None,
                         );
 
-                        let time_str = self.timer.as_ref().map(|t| t.title.as_str()).unwrap_or("12:40");
-                        let time_w: Vec<u16> = time_str.encode_utf16().collect();
+                        let label_w: Vec<u16> = label.encode_utf16().collect();
                         self.draw_text(
-                            &time_w,
+                            &label_w,
                             &self.bold_format,
                             &D2D_RECT_F { left: 34.0, top: 0.0, right: w - 8.0, bottom: h },
                             &text_brush,
@@ -595,7 +637,7 @@ impl Renderer {
                         );
 
                         // Level bar: x=44..176
-                        let level = self.volume.as_ref().map(|v| v.level).unwrap_or(42) as f32 / 100.0;
+                        let level = self.volume.as_ref().map(|v| v.level).unwrap_or(0) as f32 / 100.0;
                         let bar_w = 130.0;
                         let track_brush = self.d2d_context.CreateSolidColorBrush(
                             &D2D1_COLOR_F { r: 1.0, g: 1.0, b: 1.0, a: 0.15 },
@@ -619,9 +661,8 @@ impl Renderer {
                             &text_brush,
                         );
 
-                        // Value: "42"
-                        let val_str = format!("{}", (level * 100.0).round() as u32);
-                        let val_w: Vec<u16> = val_str.encode_utf16().collect();
+                        // Value: 0–100
+                        let val_str = format!("{}", (level * 100.0).round() as u32);                        let val_w: Vec<u16> = val_str.encode_utf16().collect();
                         self.draw_text(
                             &val_w,
                             &self.bold_format,

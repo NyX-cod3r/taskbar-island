@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Debug', 'Release', 'Test')]
+    [ValidateSet('Debug', 'Release', 'Test', 'Installer')]
     [string]$Mode = 'Debug'
 )
 
@@ -18,4 +18,20 @@ switch ($Mode) {
     'Debug'   { cargo build --bin taskbar-island }
     'Release' { cargo build --release --bin taskbar-island }
     'Test'    { cargo test --bin taskbar-island }
+    'Installer' {
+        cargo build --release --bin taskbar-island
+        $isccPath = (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source
+        if (-not $isccPath) {
+            $knownPaths = @(
+                "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+                "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+            )
+            $isccPath = $knownPaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        }
+        if (-not $isccPath) {
+            throw 'Inno Setup 6 was not found. Install it, then rerun: .\scripts\build.ps1 Installer'
+        }
+        & $isccPath (Join-Path $PSScriptRoot 'installer.iss')
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+    }
 }

@@ -51,6 +51,24 @@ impl ActivityQueue {
     }
 }
 
+/// Resolves the manual switcher for one refresh.
+///
+/// A pin survives while the automatic winner is unchanged. It clears when a
+/// new event changes the winner to a different activity (an incoming call, a
+/// timer finishing, …) or when the pinned activity itself ends. Returns
+/// `(pin, shown)`.
+pub fn resolve_pin(
+    pin: Option<ActivityId>,
+    auto: ActivityId,
+    last_auto: ActivityId,
+) -> (Option<ActivityId>, ActivityId) {
+    let pin = match pin {
+        Some(pinned) if auto != last_auto && auto != pinned => None,
+        other => other,
+    };
+    (pin, pin.unwrap_or(auto))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +115,44 @@ mod tests {
         queue.update(ActivityId::Call, Priority::Call, false);
         queue.update(ActivityId::Media, Priority::Media, true);
         assert_eq!(queue.current(), Some(ActivityId::Media));
+    }
+
+    #[test]
+    fn pin_holds_while_auto_is_unchanged() {
+        // Pinned to the shelf while nothing is active: stays pinned.
+        let (pin, shown) = resolve_pin(Some(ActivityId::Shelf), ActivityId::Idle, ActivityId::Idle);
+        assert_eq!(pin, Some(ActivityId::Shelf));
+        assert_eq!(shown, ActivityId::Shelf);
+    }
+
+    #[test]
+    fn pin_survives_its_own_activity_starting() {
+        // Browsing the shelf, then a file is dropped: keep the shelf.
+        let (pin, shown) = resolve_pin(Some(ActivityId::Shelf), ActivityId::Shelf, ActivityId::Idle);
+        assert_eq!(pin, Some(ActivityId::Shelf));
+        assert_eq!(shown, ActivityId::Shelf);
+    }
+
+    #[test]
+    fn new_event_takes_over_from_pin() {
+        // Browsing the shelf, then a call arrives: the call wins.
+        let (pin, shown) = resolve_pin(Some(ActivityId::Shelf), ActivityId::Call, ActivityId::Idle);
+        assert_eq!(pin, None);
+        assert_eq!(shown, ActivityId::Call);
+    }
+
+    #[test]
+    fn pin_clears_when_pinned_activity_ends() {
+        // Pinned to music, then music stops: fall back to automatic idle.
+        let (pin, shown) = resolve_pin(Some(ActivityId::Media), ActivityId::Idle, ActivityId::Media);
+        assert_eq!(pin, None);
+        assert_eq!(shown, ActivityId::Idle);
+    }
+
+    #[test]
+    fn auto_mode_ignores_last_auto() {
+        let (pin, shown) = resolve_pin(None, ActivityId::Media, ActivityId::Call);
+        assert_eq!(pin, None);
+        assert_eq!(shown, ActivityId::Media);
     }
 }

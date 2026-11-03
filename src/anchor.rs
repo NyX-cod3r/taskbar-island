@@ -21,18 +21,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 ///
 /// Vertical thickness is intentionally NOT 32 DIP: the owner asked for the
 /// original chunky band (the first build's ~62 px pill at 125%), so the height
-/// follows the tray and starts a few DIP below its top. Widths stay per-activity.
+/// follows the tray and starts a few DIP below its top. The width stays fixed.
 pub const PILL_Y_OFFSET_DIP: f32 = 4.0;
 
-// Compact widths per activity (DIP)
-/// Empty pill when nothing is active: just the taskbar material.
-pub const IDLE_COMPACT_WIDTH_DIP: f32 = 64.0;
-pub const MUSIC_COMPACT_WIDTH_DIP: f32 = 184.0;
-pub const CALL_COMPACT_WIDTH_DIP: f32 = 176.0;
-pub const SHELF_COMPACT_WIDTH_DIP: f32 = 136.0;
-pub const SHELF_DRAG_WIDTH_DIP: f32 = 204.0;
-pub const TIMER_COMPACT_WIDTH_DIP: f32 = 116.0;
-pub const VOLUME_COMPACT_WIDTH_DIP: f32 = 224.0;
+/// The compact pill has one stable width so activity changes never move or
+/// resize the taskbar surface. This also leaves enough room for every compact
+/// activity layout at all supported DPI scales.
+pub const COMPACT_WIDTH_DIP: f32 = 224.0;
 
 // Expanded flyout sizes per activity (width, height in DIP)
 pub const MUSIC_EXPANDED_SIZE_DIP: (f32, f32) = (384.0, 164.0);

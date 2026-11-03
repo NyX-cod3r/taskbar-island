@@ -1,7 +1,7 @@
-//! prototype.rs — Interactive prototype control window (Page 1 of design spec).
+//! prototype.rs — interactive test panel (opt-in with `--prototype`).
 //!
-//! Provides the control buttons:
-//! [ Music ] [ Call ] [ File shelf ] [ Timer ] [ Volume HUD ]
+//! The panel is developer tooling only; the shipping pill gets all of its
+//! content from real Windows sources. Buttons:
 //! [ Simulate file drag ] [ Collapse island ]
 
 use std::mem::size_of;
@@ -17,11 +17,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub const PROTOTYPE_CLASS: PCWSTR = w!("TaskbarIslandPrototypeClass");
 pub const WM_APP_PROTOTYPE_CMD: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 20;
 
-pub const CMD_PREVIEW_MUSIC: usize = 1;
-pub const CMD_PREVIEW_CALL: usize = 2;
-pub const CMD_PREVIEW_SHELF: usize = 3;
-pub const CMD_PREVIEW_TIMER: usize = 4;
-pub const CMD_PREVIEW_VOLUME: usize = 5;
 pub const CMD_SIMULATE_DRAG: usize = 6;
 pub const CMD_COLLAPSE: usize = 7;
 
@@ -46,12 +41,12 @@ pub fn show_prototype_window(pill_hwnd: HWND) {
         let hwnd = CreateWindowExW(
             Default::default(),
             PROTOTYPE_CLASS,
-            w!("Taskbar Island - Interactive Prototype"),
+            w!("Taskbar Island - Test Panel"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             100,
             100,
-            580,
-            240,
+            340,
+            190,
             None,
             None,
             Some(hinstance),
@@ -59,15 +54,9 @@ pub fn show_prototype_window(pill_hwnd: HWND) {
         )
         .unwrap();
 
-        // Create buttons matching page 1 of design spec
-        create_button(hwnd, w!("Music"), 20, 70, 90, 32, CMD_PREVIEW_MUSIC);
-        create_button(hwnd, w!("Call"), 118, 70, 80, 32, CMD_PREVIEW_CALL);
-        create_button(hwnd, w!("File shelf"), 206, 70, 95, 32, CMD_PREVIEW_SHELF);
-        create_button(hwnd, w!("Timer"), 309, 70, 80, 32, CMD_PREVIEW_TIMER);
-        create_button(hwnd, w!("Volume HUD"), 397, 70, 110, 32, CMD_PREVIEW_VOLUME);
-
-        create_button(hwnd, w!("Simulate file drag"), 20, 120, 150, 32, CMD_SIMULATE_DRAG);
-        create_button(hwnd, w!("Collapse island"), 180, 120, 130, 32, CMD_COLLAPSE);
+        // Developer-only controls: no demo data, just geometry/interaction.
+        create_button(hwnd, w!("Simulate file drag"), 20, 40, 150, 32, CMD_SIMULATE_DRAG);
+        create_button(hwnd, w!("Collapse island"), 180, 40, 130, 32, CMD_COLLAPSE);
 
         let _ = ShowWindow(hwnd, SW_SHOW);
     }
@@ -103,7 +92,7 @@ unsafe extern "system" fn proto_wnd_proc(
     match msg {
         WM_COMMAND => {
             let id = wparam.0 & 0xFFFF;
-            if (1..=7).contains(&id) {
+            if id == CMD_SIMULATE_DRAG || id == CMD_COLLAPSE {
                 let pill = HWND(G_PILL_HWND as *mut _);
                 if !pill.0.is_null() {
                     let _ = PostMessageW(Some(pill), WM_APP_PROTOTYPE_CMD, WPARAM(id), LPARAM(0));

@@ -194,6 +194,9 @@ pub struct FlyoutWindow {
 
     // Content
     pub current_activity: ActivityId,
+    /// True when the shown activity has no live content; the card then renders
+    /// a neutral empty state instead of demo data.
+    pub empty: bool,
     pub media: MediaUpdate,
     pub call: CallState,
     pub shelf: ShelfView,
@@ -404,10 +407,11 @@ impl FlyoutWindow {
             tracking: false,
             hover_btn: None,
             current_activity: ActivityId::Media,
-            media: MediaUpdate::demo(),
+            empty: true,
+            media: MediaUpdate::none(),
             call: CallState::default(),
-            shelf: ShelfView::demo(),
-            timer: TimerView::demo(),
+            shelf: ShelfView::default(),
+            timer: TimerView::default(),
             target_screen_rect: RECT::default(),
         })
     }
@@ -415,6 +419,15 @@ impl FlyoutWindow {
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
         if self.is_open {
+            let _ = unsafe { self.draw(1.0, 0.0) };
+        }
+    }
+
+    /// Updates the music card from a late media snapshot (e.g. the timeline
+    /// refresh requested when the card opens) and repaints if it is settled.
+    pub fn set_media(&mut self, media: MediaUpdate) {
+        self.media = media;
+        if self.is_open && !self.is_animating && !self.is_closing {
             let _ = unsafe { self.draw(1.0, 0.0) };
         }
     }
@@ -666,13 +679,17 @@ impl FlyoutWindow {
         self.d2d_context.DrawRoundedRectangle(&card_rect, &border_brush, 1.0, None);
 
         // Draw activity content
-        match self.current_activity {
-            ActivityId::Idle => {}
-            ActivityId::Media => self.draw_music(origin_x, origin_y, alpha)?,
-            ActivityId::Call => self.draw_call(origin_x, origin_y, alpha)?,
-            ActivityId::Shelf => self.draw_shelf(origin_x, origin_y, alpha)?,
-            ActivityId::Timer => self.draw_timer(origin_x, origin_y, alpha)?,
-            ActivityId::Volume => {}
+        if self.empty {
+            self.draw_empty(origin_x, origin_y, alpha)?;
+        } else {
+            match self.current_activity {
+                ActivityId::Idle => {}
+                ActivityId::Media => self.draw_music(origin_x, origin_y, alpha)?,
+                ActivityId::Call => self.draw_call(origin_x, origin_y, alpha)?,
+                ActivityId::Shelf => self.draw_shelf(origin_x, origin_y, alpha)?,
+                ActivityId::Timer => self.draw_timer(origin_x, origin_y, alpha)?,
+                ActivityId::Volume => {}
+            }
         }
 
         self.d2d_context.EndDraw(None, None)?;
@@ -680,6 +697,72 @@ impl FlyoutWindow {
         drop(target);
 
         let _ = self.swapchain.Present(0, DXGI_PRESENT(0));
+        Ok(())
+    }
+
+    /// Neutral card for an activity that has no live content (manual switcher).
+    unsafe fn draw_empty(&self, ox: f32, oy: f32, alpha: f32) -> Result<()> {
+        let text = self.theme.text();
+        let sec = self.theme.secondary_text();
+        let text_brush = self.d2d_context.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: text.0, g: text.1, b: text.2, a: text.3 * alpha },
+            None,
+        )?;
+        let sec_brush = self.d2d_context.CreateSolidColorBrush(
+            &D2D1_COLOR_F { r: sec.0, g: sec.1, b: sec.2, a: sec.3 * alpha },
+            None,
+        )?;
+
+        let (title, subtitle) = match self.current_activity {
+            ActivityId::Media => ("Music", "Nothing playing right now"),
+            ActivityId::Call => ("Call", "No call in progress"),
+            ActivityId::Shelf => ("File shelf", "No files parked yet"),
+            ActivityId::Timer => ("Timer", "No timer running"),
+            _ => ("", ""),
+        };
+        let card_w = self.card_size_dip.0;
+        let card_h = self.card_size_dip.1;
+
+        let title_w: Vec<u16> = title.encode_utf16().collect();
+        self.draw_text(
+            &title_w,
+            &self.bold_format,
+            &D2D_RECT_F {
+                left: ox + 16.0,
+                top: oy + 16.0,
+                right: ox + card_w - 16.0,
+                bottom: oy + 40.0,
+            },
+            &text_brush,
+        );
+
+        let sub_w: Vec<u16> = subtitle.encode_utf16().collect();
+        self.draw_text(
+            &sub_w,
+            &self.sub_format,
+            &D2D_RECT_F {
+                left: ox + 16.0,
+                top: oy + 40.0,
+                right: ox + card_w - 16.0,
+                bottom: oy + 64.0,
+            },
+            &sec_brush,
+        );
+
+        let hint_w: Vec<u16> = "Scroll the pill or right-click \u{2192} Show to switch"
+            .encode_utf16()
+            .collect();
+        self.draw_text(
+            &hint_w,
+            &self.sub_format,
+            &D2D_RECT_F {
+                left: ox + 16.0,
+                top: oy + card_h - 32.0,
+                right: ox + card_w - 16.0,
+                bottom: oy + card_h - 12.0,
+            },
+            &sec_brush,
+        );
         Ok(())
     }
 
@@ -740,7 +823,7 @@ impl FlyoutWindow {
             right: ox + 320.0,
             bottom: oy + 38.0,
         };
-        let title = if self.media.title.is_empty() { "Deewana Kar Raha Hai" } else { &self.media.title };
+        let title: &str = &self.media.title;
         let title_w: Vec<u16> = title.encode_utf16().collect();
         self.draw_text(
             &title_w,
@@ -755,7 +838,7 @@ impl FlyoutWindow {
             right: ox + 320.0,
             bottom: oy + 58.0,
         };
-        let artist = if self.media.artist.is_empty() { "Now playing" } else { &self.media.artist };
+        let artist: &str = &self.media.artist;
         let artist_w: Vec<u16> = artist.encode_utf16().collect();
         self.draw_text(
             &artist_w,
@@ -780,13 +863,20 @@ impl FlyoutWindow {
         }
 
         // Progress bar row: elapsed (ox+16), bar (ox+52..ox+332), remaining (ox+336)
-        // Use real position/duration from MediaUpdate
+        // Use real position/duration from MediaUpdate.
         let pos = self.media.position_secs;
-        let dur = self.media.duration_secs.max(1);
-        let progress = (pos as f32 / dur as f32).min(1.0);
-        let elapsed_str = format!("{}:{:02}", pos / 60, pos % 60);
-        let remain_secs = dur.saturating_sub(pos);
-        let remain_str = format!("-{}:{:02}", remain_secs / 60, remain_secs % 60);
+        let dur = self.media.duration_secs;
+        let (elapsed_str, remain_str, progress) = if dur == 0 {
+            ("0:00".to_string(), "--:--".to_string(), 0.0)
+        } else {
+            let progress = (pos as f32 / dur as f32).min(1.0);
+            let remain_secs = dur.saturating_sub(pos);
+            (
+                format!("{}:{:02}", pos / 60, pos % 60),
+                format!("-{}:{:02}", remain_secs / 60, remain_secs % 60),
+                progress,
+            )
+        };
 
         let elapsed_rect = D2D_RECT_F {
             left: ox + 16.0,
@@ -941,12 +1031,19 @@ impl FlyoutWindow {
             None,
         )?;
 
-        // Avatar: 40x40 circle with 'P' at (ox + 16, oy + 16)
+        // Avatar: 40x40 circle with the call's initial.
         self.d2d_context.FillEllipse(
             &D2D1_ELLIPSE { point: Vector2 { X: ox + 36.0, Y: oy + 36.0 }, radiusX: 20.0, radiusY: 20.0 },
             &green_brush,
         );
-        let letter_w: Vec<u16> = "P".encode_utf16().collect();
+        let initial = self
+            .call
+            .name
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        let letter_w: Vec<u16> = initial.encode_utf16().collect();
         self.draw_text(
             &letter_w,
             &self.bold_format,
@@ -1100,12 +1197,8 @@ impl FlyoutWindow {
             &text_brush,
         );
 
-        // 3 file tiles: (PDF, PNG, ZIP)
-        let files = if self.shelf.files.is_empty() {
-            ShelfView::demo().files
-        } else {
-            self.shelf.files.clone()
-        };
+        // 3 file tiles (up to the three parked paths).
+        let files = self.shelf.files.clone();
 
         for (i, file) in files.iter().take(3).enumerate() {
             let tx = ox + 16.0 + i as f32 * 120.0;
@@ -1232,8 +1325,8 @@ impl FlyoutWindow {
             None,
         );
 
-        // Time digits inside ring ("12:40")
-        let time_str = if self.timer.title.is_empty() { "12:40" } else { &self.timer.title };
+        // Time digits inside the ring.
+        let time_str: &str = &self.timer.title;
         let time_w: Vec<u16> = time_str.encode_utf16().collect();
         self.draw_text(
             &time_w,
@@ -1242,7 +1335,7 @@ impl FlyoutWindow {
             &text_brush,
         );
 
-        // Label: "Study session", status: "Running"
+        // Label + status
         let label_w: Vec<u16> = self.timer.label.encode_utf16().collect();
         self.draw_text(
             &label_w,

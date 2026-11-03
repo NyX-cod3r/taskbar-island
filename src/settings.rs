@@ -9,12 +9,14 @@
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
-    RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_OPTION_NON_VOLATILE,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
     REG_VALUE_TYPE,
 };
 
 pub const APP_KEY: PCWSTR = w!("Software\\TaskbarIsland");
+const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+const RUN_VALUE: PCWSTR = w!("TaskbarIsland");
 
 pub const FILL_MIN: u32 = 4;
 pub const FILL_MAX: u32 = 20;
@@ -101,12 +103,48 @@ pub fn set_dword(name: PCWSTR, value: u32) -> bool {
 
 /// Removes an override (used by "Accent: System").
 pub fn clear_value(name: PCWSTR) -> bool {
+    clear_registry_value(APP_KEY, name)
+}
+
+/// Returns whether Windows will launch the installed application at sign-in.
+pub fn autostart_enabled() -> bool {
+    read_string(RUN_KEY, RUN_VALUE).is_some()
+}
+
+/// Enables or disables launch at sign-in for the current user.
+pub fn set_autostart(enabled: bool) -> bool {
+    if !enabled {
+        return clear_registry_value(RUN_KEY, RUN_VALUE);
+    }
+
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let mut command = exe.as_os_str().to_string_lossy().into_owned();
+    command.insert(0, '"');
+    command.push('"');
+    let mut data: Vec<u16> = command.encode_utf16().collect();
+    data.push(0);
+    let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2) };
+
     unsafe {
         let mut key = HKEY::default();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, APP_KEY, Some(0), KEY_SET_VALUE, &mut key).is_err() {
+        if RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            Some(0),
+            PCWSTR::null(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        )
+        .is_err()
+        {
             return false;
         }
-        let ok = RegDeleteValueW(key, name).is_ok();
+        let ok = RegSetValueExW(key, RUN_VALUE, Some(0), REG_SZ, Some(bytes)).is_ok();
         let _ = RegCloseKey(key);
         ok
     }
@@ -134,5 +172,52 @@ fn read_dword(path: PCWSTR, value: PCWSTR) -> Option<u32> {
             return None;
         }
         Some(u32::from_le_bytes(data))
+    }
+}
+
+fn read_string(path: PCWSTR, value: PCWSTR) -> Option<String> {
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, path, Some(0), KEY_READ, &mut key).is_err() {
+            return None;
+        }
+        let mut kind = REG_VALUE_TYPE::default();
+        let mut size = 0u32;
+        if RegQueryValueExW(key, value, None, Some(&mut kind), None, Some(&mut size)).is_err()
+            || kind != REG_SZ
+            || size < 2
+        {
+            let _ = RegCloseKey(key);
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        let result = RegQueryValueExW(
+            key,
+            value,
+            None,
+            Some(&mut kind),
+            Some(data.as_mut_ptr()),
+            Some(&mut size),
+        );
+        let _ = RegCloseKey(key);
+        if result.is_err() || kind != REG_SZ {
+            return None;
+        }
+        let words = std::slice::from_raw_parts(data.as_ptr() as *const u16, size as usize / 2);
+        String::from_utf16(words)
+            .ok()
+            .map(|value| value.trim_end_matches('\0').to_owned())
+    }
+}
+
+fn clear_registry_value(path: PCWSTR, name: PCWSTR) -> bool {
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, path, Some(0), KEY_SET_VALUE, &mut key).is_err() {
+            return true;
+        }
+        let result = RegDeleteValueW(key, name);
+        let _ = RegCloseKey(key);
+        result.is_ok()
     }
 }
