@@ -1,229 +1,155 @@
-//! Countdown-timer state. Scheduling is owned by the UI's WM_TIMER (a
-//! 1-second tick while a countdown runs — never faster, and killed on end or
-//! cancel); this module never spins or polls on its own.
+//! timer.rs — the app-internal countdown. Time is derived from an `Instant`
+//! base; the UI only asks for a redraw once per second while running.
 
 use std::time::{Duration, Instant};
 
-use crate::state::{Activity, ActivityId, Priority};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TimerMode {
-    Stopwatch,
-    Countdown,
-}
-
-pub struct TimerActivity {
-    mode: TimerMode,
-    started: Option<Instant>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct Countdown {
+    pub name: String,
+    pub total: Duration,
+    started_at: Option<Instant>,
+    /// Seconds elapsed before the current run segment (pause support).
     accumulated: Duration,
-    countdown: Duration,
-    ended: bool,
-    label: String,
+    pub finished: bool,
 }
 
-impl Default for TimerActivity {
+impl Default for Countdown {
     fn default() -> Self {
         Self {
-            mode: TimerMode::Stopwatch,
-            started: None,
+            name: "Timer".into(),
+            total: Duration::ZERO,
+            started_at: None,
             accumulated: Duration::ZERO,
-            countdown: Duration::ZERO,
-            ended: false,
-            label: "Timer".into(),
+            finished: false,
         }
     }
 }
 
-impl TimerActivity {
-    #[allow(dead_code)]
-    pub fn start_stopwatch(&mut self, now: Instant) {
-        self.mode = TimerMode::Stopwatch;
-        self.started = Some(now);
-        self.accumulated = Duration::ZERO;
-        self.ended = false;
-    }
-
-    pub fn start_countdown(&mut self, duration: Duration, now: Instant) {
-        self.mode = TimerMode::Countdown;
-        self.started = Some(now);
-        self.countdown = duration;
-        self.accumulated = Duration::ZERO;
-        self.ended = false;
-    }
-
-    pub fn add_seconds(&mut self, secs: u64) {
-        self.countdown += Duration::from_secs(secs);
-    }
-
-    pub fn toggle_pause(&mut self, now: Instant) {
-        if self.started.is_some() {
-            self.stop(now);
-        } else if self.mode == TimerMode::Countdown && self.countdown > self.accumulated {
-            self.started = Some(now);
+impl Countdown {
+    pub fn start(name: impl Into<String>, total: Duration, now: Instant) -> Self {
+        Self {
+            name: name.into(),
+            total,
+            started_at: Some(now),
+            accumulated: Duration::ZERO,
+            finished: false,
         }
     }
 
-    pub fn stop(&mut self, now: Instant) {
-        self.accumulated = self.elapsed(now);
-        self.started = None;
+    pub fn active(&self) -> bool {
+        self.total > Duration::ZERO
+            && (self.started_at.is_some() || self.accumulated > Duration::ZERO || self.finished)
     }
 
-    pub fn reset(&mut self) {
-        *self = Self::default();
+    pub fn running(&self) -> bool {
+        self.started_at.is_some() && !self.finished
     }
 
     pub fn elapsed(&self, now: Instant) -> Duration {
-        self.accumulated
-            + self
-                .started
-                .map(|start| now.saturating_duration_since(start))
-                .unwrap_or_default()
+        let live = self
+            .started_at
+            .map(|start| now.saturating_duration_since(start))
+            .unwrap_or_default();
+        (self.accumulated + live).min(self.total)
     }
 
-    pub fn remaining(&mut self, now: Instant) -> Duration {
-        if self.mode != TimerMode::Countdown {
-            return Duration::ZERO;
+    pub fn remaining(&self, now: Instant) -> Duration {
+        self.total.saturating_sub(self.elapsed(now))
+    }
+
+    pub fn fraction(&self, now: Instant) -> f32 {
+        if self.total.is_zero() {
+            return 0.0;
         }
-        let remaining = self.countdown.saturating_sub(self.elapsed(now));
-        self.ended = (self.started.is_some() || self.accumulated > Duration::ZERO) && remaining.is_zero();
-        remaining
+        (self.elapsed(now).as_secs_f64() / self.total.as_secs_f64()).clamp(0.0, 1.0) as f32
     }
 
-    pub fn has_ended(&self) -> bool {
-        self.ended
+    pub fn remaining_fraction(&self, now: Instant) -> f32 {
+        1.0 - self.fraction(now)
     }
 
-    pub fn is_running(&self) -> bool {
-        self.started.is_some()
+    /// Update the finished flag; returns true on the transition to finished.
+    pub fn tick(&mut self, now: Instant) -> bool {
+        if !self.finished && self.total > Duration::ZERO && self.remaining(now).is_zero() {
+            self.accumulated = self.total;
+            self.started_at = None;
+            self.finished = true;
+            return true;
+        }
+        false
     }
-}
 
-impl Activity for TimerActivity {
-    fn id(&self) -> ActivityId {
-        ActivityId::Timer
-    }
-    fn priority(&self) -> Priority {
-        if self.ended {
-            Priority::TimerEnding
-        } else {
-            Priority::Idle
+    pub fn toggle_pause(&mut self, now: Instant) {
+        if self.finished {
+            return;
+        }
+        if self.started_at.is_some() {
+            self.accumulated = self.elapsed(now);
+            self.started_at = None;
+        } else if self.accumulated < self.total {
+            self.started_at = Some(now);
         }
     }
-    fn active(&self) -> bool {
-        self.started.is_some() || self.ended
-    }
-}
 
-/// Display strings for the timer, rebuilt per tick.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct TimerView {
-    pub title: String,
-    pub artist: String,
-    pub ended: bool,
-    pub label: String,
-    pub running: bool,
-    pub remaining_secs: u64,
-    pub total_secs: u64,
-}
+    pub fn add_minute(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.total += Duration::from_secs(60);
+    }
 
-pub fn view(timer: &mut TimerActivity, now: Instant) -> Option<TimerView> {
-    if !timer.active() {
-        return None;
+    pub fn stop(&mut self) {
+        *self = Self::default();
     }
-    timer.remaining(now);
-    if timer.has_ended() {
-        return Some(TimerView {
-            title: "Timer done".into(),
-            artist: "click to dismiss".into(),
-            ended: true,
-            label: timer.label.clone(),
-            running: false,
-            remaining_secs: 0,
-            total_secs: timer.countdown.as_secs(),
-        });
-    }
-    let remaining = timer.remaining(now);
-    let whole = remaining.as_secs() + u64::from(remaining.subsec_millis() > 0);
-    let minutes = whole / 60;
-    let seconds = whole % 60;
-    Some(TimerView {
-        title: format!("{minutes}:{seconds:02}"),
-        artist: if timer.is_running() { "Running".into() } else { "Paused".into() },
-        ended: false,
-        label: timer.label.clone(),
-        running: timer.is_running(),
-        remaining_secs: whole,
-        total_secs: timer.countdown.as_secs(),
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn countdown() -> (TimerActivity, Instant) {
+    #[test]
+    fn countdown_ticks_and_finishes() {
         let now = Instant::now();
-        let mut timer = TimerActivity::default();
-        timer.start_countdown(Duration::from_secs(300), now);
-        (timer, now)
-    }
-
-    #[test]
-    fn countdown_ends_and_is_promoted() {
-        let (mut timer, now) = countdown();
+        let mut t = Countdown::start("Study session", Duration::from_secs(300), now);
         assert_eq!(
-            timer.remaining(now + Duration::from_secs(4)),
-            Duration::from_secs(296)
+            t.remaining(now + Duration::from_secs(20)),
+            Duration::from_secs(280)
         );
-        assert_eq!(
-            timer.remaining(now + Duration::from_secs(300)),
-            Duration::ZERO
-        );
-        assert!(timer.has_ended());
-        assert_eq!(timer.priority(), Priority::TimerEnding);
+        assert!(!t.tick(now + Duration::from_secs(299)));
+        assert!(t.tick(now + Duration::from_secs(300)));
+        assert!(t.finished);
+        assert!(!t.running());
+        assert!(t.remaining(now + Duration::from_secs(999)).is_zero());
     }
 
     #[test]
-    fn running_countdown_yields_to_media_priority() {
-        let (timer, _now) = countdown();
-        assert!(timer.is_running());
-        assert!(timer.active());
-        assert_eq!(timer.priority(), Priority::Idle);
-    }
-
-    #[test]
-    fn view_formats_m_ss_and_rounds_up() {
-        let (mut timer, now) = countdown();
-        let view = view(&mut timer, now + Duration::from_millis(1000)).unwrap();
-        assert_eq!(view.title, "4:59");
-        assert_eq!(view.artist, "Running");
-        assert!(!view.ended);
-    }
-
-    #[test]
-    fn view_at_zero_shows_done_banner() {
-        let (mut timer, now) = countdown();
-        let view = view(&mut timer, now + Duration::from_secs(300)).unwrap();
-        assert_eq!(view.title, "Timer done");
-        assert_eq!(view.artist, "click to dismiss");
-        assert!(view.ended);
-    }
-
-    #[test]
-    fn view_is_none_when_reset() {
-        let (mut timer, now) = countdown();
-        timer.reset();
-        assert!(view(&mut timer, now).is_none());
-        assert!(!timer.active());
-        assert_eq!(timer.priority(), Priority::Idle);
-    }
-
-    #[test]
-    fn stopwatch_mode_has_no_countdown() {
+    fn pause_freezes_elapsed() {
         let now = Instant::now();
-        let mut timer = TimerActivity::default();
-        timer.start_stopwatch(now);
-        assert_eq!(timer.remaining(now + Duration::from_secs(5)), Duration::ZERO);
-        assert!(!timer.has_ended());
+        let mut t = Countdown::start("Timer", Duration::from_secs(600), now);
+        t.toggle_pause(now + Duration::from_secs(10));
+        assert!(!t.running());
+        let paused = t.elapsed(now + Duration::from_secs(50));
+        assert_eq!(paused, Duration::from_secs(10));
+        t.toggle_pause(now + Duration::from_secs(60));
+        assert!(t.running());
+        assert_eq!(
+            t.elapsed(now + Duration::from_secs(65)),
+            Duration::from_secs(15)
+        );
+    }
+
+    #[test]
+    fn add_minute_extends_total() {
+        let now = Instant::now();
+        let mut t = Countdown::start("Timer", Duration::from_secs(60), now);
+        t.add_minute();
+        assert_eq!(t.total, Duration::from_secs(120));
+        assert_eq!(t.remaining(now), Duration::from_secs(120));
+    }
+
+    #[test]
+    fn empty_timer_is_inactive() {
+        let t = Countdown::default();
+        assert!(!t.active());
     }
 }

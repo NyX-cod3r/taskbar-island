@@ -12,14 +12,13 @@ use std::rc::Rc;
 
 use windows::core::{Interface, Result};
 use windows::Win32::Graphics::Direct2D::{D2D1CreateDevice, ID2D1Device};
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;use windows::Win32::Graphics::Direct3D11::{
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION,
 };
-use windows::Win32::Graphics::DirectComposition::{
-    DCompositionCreateDevice, IDCompositionDevice,
-};
+use windows::Win32::Graphics::DirectComposition::{DCompositionCreateDevice, IDCompositionDevice};
 use windows::Win32::Graphics::DirectWrite::{
-    DWriteCreateFactory, DWRITE_FACTORY_TYPE_SHARED, IDWriteFactory,
+    DWriteCreateFactory, IDWriteFactory, DWRITE_FACTORY_TYPE_SHARED,
 };
 use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGIFactory2};
 

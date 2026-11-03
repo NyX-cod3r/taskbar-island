@@ -1,202 +1,269 @@
-//! anchor.rs — all taskbar-geometry logic lives here (AGENTS.md rule).
-//!
-//! Finds `Shell_TrayWnd`, measures the tray area, and computes the pill's
-//! and flyout's on-screen rectangle. Also owns the "should we hide?" policy:
-//! fullscreen/presentation mode, auto-hidden taskbar, explorer restarts.
+//! anchor.rs — all taskbar/tray geometry and visibility policy.
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{HWND, POINT, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::UI::Shell::{
-    SHAppBarMessage, SHQueryUserNotificationState, ABM_NEW, APPBARDATA, QUNS_PRESENTATION_MODE,
-    QUNS_RUNNING_D3D_FULL_SCREEN,
+    SHAppBarMessage, SHQueryUserNotificationState, ABM_GETSTATE, ABM_NEW, ABS_AUTOHIDE, APPBARDATA,
+    QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, GetWindowRect, IsWindowVisible,
+    FindWindowExW, FindWindowW, GetCursorPos, GetWindowRect, IsWindowVisible,
 };
 
-/// Logical (96-DPI) metrics per activity — the visual spec.
-///
-/// Vertical thickness is intentionally NOT 32 DIP: the owner asked for the
-/// original chunky band (the first build's ~62 px pill at 125%), so the height
-/// follows the tray and starts a few DIP below its top. The width stays fixed.
-pub const PILL_Y_OFFSET_DIP: f32 = 4.0;
+use crate::design::{
+    RectD, BUBBLE, BUBBLE_GAP, FLY_H, FLY_W, GAP_TASKBAR, GAP_TRAY, PILL_W, WINDOW_TOP_PAD,
+    WINDOW_W,
+};
 
-/// The compact pill has one stable width so activity changes never move or
-/// resize the taskbar surface. This also leaves enough room for every compact
-/// activity layout at all supported DPI scales.
-pub const COMPACT_WIDTH_DIP: f32 = 224.0;
+const TASKBAR_CLASS: PCWSTR = w!("Shell_TrayWnd");
+const TRAY_CLASS: PCWSTR = w!("TrayNotifyWnd");
+const FALLBACK_TRAY_RESERVE_DIP: f32 = 280.0;
 
-// Expanded flyout sizes per activity (width, height in DIP)
-pub const MUSIC_EXPANDED_SIZE_DIP: (f32, f32) = (384.0, 164.0);
-pub const CALL_EXPANDED_SIZE_DIP: (f32, f32) = (384.0, 136.0);
-pub const SHELF_EXPANDED_SIZE_DIP: (f32, f32) = (384.0, 176.0);
-pub const TIMER_EXPANDED_SIZE_DIP: (f32, f32) = (320.0, 124.0);
-
-// Anchoring margins
-pub const GAP_LEFT_OF_TRAY_DIP: f32 = 12.0; // 12 px left of the tray
-pub const FLYOUT_GAP_ABOVE_TASKBAR_DIP: f32 = 12.0; // 12 px above the taskbar
-
-/// Where (and whether) the pill should be right now.
+/// Everything the app needs to place its one window and its surfaces.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Placement {
-    /// Pill rectangle in physical pixels, screen coordinates.
-    pub rect: RECT,
-    /// `false` → the caller should hide the pill (fullscreen, auto-hidden taskbar, …).
+pub struct Anchor {
+    pub taskbar: RECT,
+    pub work: RECT,
+    pub window: RECT,
+    pub dpi: u32,
+    pub scale: f32,
+    /// Screen coordinates in DIPs.
+    pub pill: RectD,
+    pub bubble: RectD,
+    /// Final resting place of the flyout, in screen DIPs.
+    pub flyout: RectD,
+    /// Screen DIP origin of the window's client area.
+    pub origin: (f32, f32),
+    pub taskbar_height_dip: f32,
     pub visible: bool,
+    pub insufficient_space: bool,
 }
 
-/// Class name of the primary (per-monitor: primary) taskbar window.
-const TASKBAR_CLASS: PCWSTR = w!("Shell_TrayWnd");
-/// Class name of the notification-area child inside the taskbar.
-const TRAY_CLASS: PCWSTR = w!("TrayNotifyWnd");
+impl Anchor {
+    pub fn compute(taskbar: HWND, dpi: u32, slot_offset_dip: i32) -> Option<Self> {
+        let mut tb = RECT::default();
+        // SAFETY: GetWindowRect writes one RECT to a valid stack pointer.
+        unsafe { GetWindowRect(taskbar, &mut tb) }.ok()?;
+        if tb.right <= tb.left || tb.bottom <= tb.top {
+            return None;
+        }
+        let fallback_tray = RECT {
+            left: tb.right - ((FALLBACK_TRAY_RESERVE_DIP * dpi.max(96) as f32 / 96.0).round() as i32),
+            top: tb.top,
+            right: tb.right,
+            bottom: tb.bottom,
+        };
+        let tray = tray_rect(taskbar, fallback_tray);
+        let monitor = unsafe { MonitorFromWindow(taskbar, MONITOR_DEFAULTTOPRIMARY) };
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: mi.cbSize is set and mi is writable.
+        let work = if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
+            mi.rcWork
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: tb.right,
+                bottom: tb.top,
+            }
+        };
+        let monitor_rect = if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
+            mi.rcMonitor
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: tb.right,
+                bottom: tb.bottom,
+            }
+        };
+        let mut anchor = Self::layout(tb, tray, work, dpi, slot_offset_dip);
+        anchor.visible =
+            is_allowed() && taskbar_is_shown(tb, monitor_rect) && !anchor.insufficient_space;
+        Some(anchor)
+    }
 
-/// Find the primary taskbar window.
+    /// Deterministic geometry for `--snapshot` (no Explorer required).
+    pub fn synthetic(dpi: u32, screen_w: i32, screen_h: i32, taskbar_h: i32) -> Self {
+        let tb = RECT {
+            left: 0,
+            top: screen_h - taskbar_h,
+            right: screen_w,
+            bottom: screen_h,
+        };
+        let scale = dpi as f32 / 96.0;
+        let tray_left = screen_w - (280.0 * scale) as i32;
+        let tray = RECT {
+            left: tray_left,
+            top: tb.top,
+            right: screen_w,
+            bottom: tb.bottom,
+        };
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: screen_w,
+            bottom: tb.top,
+        };
+        let mut anchor = Self::layout(tb, tray, work, dpi, 0);
+        anchor.visible = true;
+        anchor
+    }
+
+    pub fn layout(taskbar: RECT, tray: RECT, work: RECT, dpi: u32, slot_offset_dip: i32) -> Self {
+        let scale = dpi.max(96) as f32 / 96.0;
+        let tb_left = taskbar.left as f32 / scale;
+        let tb_top = taskbar.top as f32 / scale;
+        let tb_bottom = taskbar.bottom as f32 / scale;
+        let t = (taskbar.bottom - taskbar.top) as f32 / scale;
+        let tray_left = if tray.right > tray.left {
+            tray.left as f32 / scale
+        } else {
+            taskbar.right as f32 / scale - FALLBACK_TRAY_RESERVE_DIP
+        };
+
+        let pill_right = tray_left - GAP_TRAY - (BUBBLE + BUBBLE_GAP) + slot_offset_dip as f32;
+        let pill_left = pill_right - PILL_W;
+        let pill_h = t + 2.0;
+        let pill_top = tb_top + 4.0;
+        let pill = RectD::new(pill_left, pill_top, PILL_W, pill_h);
+        let bubble = RectD::new(pill_right + BUBBLE_GAP, pill_top, BUBBLE, BUBBLE);
+
+        let work_left = work.left as f32 / scale;
+        let work_right = work.right as f32 / scale;
+        let mut fly_left = pill.center_x() - FLY_W / 2.0;
+        let min_left = work_left + 12.0;
+        let max_left = (work_right - 12.0 - FLY_W).max(min_left);
+        fly_left = fly_left.clamp(min_left, max_left);
+        let fly_bottom = tb_top - GAP_TASKBAR;
+        let flyout = RectD::new(fly_left, fly_bottom - FLY_H, FLY_W, FLY_H);
+
+        let win_w = WINDOW_W;
+        let win_h = t + GAP_TASKBAR + FLY_H + WINDOW_TOP_PAD;
+        let win_left = pill.center_x() - win_w / 2.0;
+        let win_top = tb_bottom - win_h;
+        let window = RECT {
+            left: (win_left * scale).round() as i32,
+            top: (win_top * scale).round() as i32,
+            right: ((win_left + win_w) * scale).round() as i32,
+            bottom: (tb_bottom * scale).round() as i32,
+        };
+
+        let insufficient_space = pill_left < tb_left + 12.0;
+        Self {
+            taskbar,
+            work,
+            window,
+            dpi,
+            scale,
+            pill,
+            bubble,
+            flyout,
+            origin: (win_left, win_top),
+            taskbar_height_dip: t,
+            visible: !insufficient_space,
+            insufficient_space,
+        }
+    }
+
+    /// Convert a screen-DIP rect to window-local DIPs.
+    pub fn local(&self, r: RectD) -> RectD {
+        RectD::new(r.x - self.origin.0, r.y - self.origin.1, r.w, r.h)
+    }
+
+    pub fn physical(&self, r: RectD) -> RECT {
+        RECT {
+            left: (r.x * self.scale).round() as i32,
+            top: (r.y * self.scale).round() as i32,
+            right: ((r.x + r.w) * self.scale).round() as i32,
+            bottom: ((r.y + r.h) * self.scale).round() as i32,
+        }
+    }
+
+    /// Local DIP point of the cursor, if the app window exists.
+    pub fn cursor_local(&self) -> Option<(f32, f32)> {
+        let mut pt = POINT::default();
+        // SAFETY: GetCursorPos writes one POINT.
+        unsafe { GetCursorPos(&mut pt) }.ok()?;
+        Some((
+            pt.x as f32 / self.scale - self.origin.0,
+            pt.y as f32 / self.scale - self.origin.1,
+        ))
+    }
+
+    pub fn screen_client_rect(&self) -> RectD {
+        RectD::new(
+            0.0,
+            0.0,
+            (self.window.right - self.window.left) as f32 / self.scale,
+            (self.window.bottom - self.window.top) as f32 / self.scale,
+        )
+    }
+}
+
 pub fn taskbar_window() -> Option<HWND> {
-    let hwnd = unsafe { FindWindowW(TASKBAR_CLASS, PCWSTR::null()).ok()? };
+    // SAFETY: class lookup only.
+    let hwnd = unsafe { FindWindowW(TASKBAR_CLASS, PCWSTR::null()) }.ok()?;
     (!hwnd.0.is_null()).then_some(hwnd)
 }
 
-/// Compute where the pill should be. `fallback` is used (hidden) when the
-/// taskbar is unavailable, e.g. mid-way through an explorer restart.
-pub fn compute(taskbar: HWND, dpi: u32, fallback: RECT, width_dip: f32) -> Placement {
-    // 1. Fullscreen 3D app / game / presentation mode / fullscreen store app → hide.
-    if is_suppressed() {
-        return Placement {
-            rect: fallback,
-            visible: false,
-        };
-    }
-
-    // 2. Taskbar rect. Auto-hidden taskbars are invisible or slid off-screen.
-    let mut tb = RECT::default();
-    if unsafe { GetWindowRect(taskbar, &mut tb) }.is_err()
-        || !unsafe { IsWindowVisible(taskbar) }.as_bool()
-    {
-        return Placement {
-            rect: fallback,
-            visible: false,
-        };
-    }
-
-    // 3. If the taskbar no longer intersects its monitor at all it is fully
-    //    slid away (auto-hide); hide with it.
-    let monitor = unsafe { MonitorFromRect(&tb, MONITOR_DEFAULTTONEAREST) };
-    let mut mi = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
+fn tray_rect(taskbar: HWND, fallback: RECT) -> RECT {
+    // SAFETY: child lookup only; the result is checked before use.
+    let tray = unsafe { FindWindowExW(Some(taskbar), None, TRAY_CLASS, PCWSTR::null()) }.ok();
+    let Some(tray) = tray else {
+        return fallback;
     };
-    if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() && !rects_intersect(tb, mi.rcMonitor)
-    {
-        return Placement {
-            rect: fallback,
-            visible: false,
-        };
+    if tray.0.is_null() {
+        return fallback;
     }
-
-    // 4. Geometry: restore the original vertical thickness. The pill starts
-    //    4 DIP below the tray top and is 2 px taller than the tray, matching
-    //    the first build's band (62 px at 125%). Horizontally it stays 12 DIP
-    //    left of the tray.
-    let scale = dpi.max(96) as f32 / 96.0;
-    let tray = tray_rect(taskbar).unwrap_or(tb);
-
-    let w = (width_dip * scale).round() as i32;
-    let h = (tray.bottom - tray.top + 2).max(1);
-
-    let right = tray.left - (GAP_LEFT_OF_TRAY_DIP * scale).round() as i32;
-    let mut left = right - w;
-    let min_left = tb.left + (12.0 * scale).round() as i32;
-    if left < min_left {
-        left = min_left;
-    }
-
-    let top = tray.top + (PILL_Y_OFFSET_DIP * scale).round() as i32;
-    let bottom = top + h;
-
-    Placement {
-        rect: RECT {
-            left,
-            top,
-            right: left + w,
-            bottom,
-        },
-        visible: true,
-    }
-}
-
-/// Compute where the expanded flyout should be in screen coordinates.
-/// "Opens 12 px above the taskbar, centered over the pill, like Quick Settings.
-/// It never covers the tray."
-pub fn compute_flyout(
-    taskbar: HWND,
-    dpi: u32,
-    pill_screen_rect: RECT,
-    flyout_size_dip: (f32, f32),
-) -> RECT {
-    let mut tb = RECT::default();
-    if unsafe { GetWindowRect(taskbar, &mut tb) }.is_err() {
-        return RECT::default();
-    }
-    let tray = tray_rect(taskbar).unwrap_or(tb);
-    let scale = dpi.max(96) as f32 / 96.0;
-
-    let w = (flyout_size_dip.0 * scale).round() as i32;
-    let h = (flyout_size_dip.1 * scale).round() as i32;
-
-    let bottom = tb.top - (FLYOUT_GAP_ABOVE_TASKBAR_DIP * scale).round() as i32;
-    let top = bottom - h;
-
-    let pill_center_x = (pill_screen_rect.left + pill_screen_rect.right) / 2;
-    let mut left = pill_center_x - w / 2;
-    let mut right = left + w;
-
-    // Never cover the tray area: ensure right edge doesn't push into the tray,
-    // or clamp to tray.right / monitor right.
-    let monitor = unsafe { MonitorFromRect(&tb, MONITOR_DEFAULTTONEAREST) };
-    let mut mi = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    let monitor_right = if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
-        mi.rcWork.right - (12.0 * scale).round() as i32
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(tray, &mut rect) }.is_err() || rect.right <= rect.left {
+        fallback
     } else {
-        tray.right
-    };
-
-    if right > monitor_right {
-        let diff = right - monitor_right;
-        left -= diff;
-        right -= diff;
-    }
-    let min_left = tb.left + (12.0 * scale).round() as i32;
-    if left < min_left {
-        left = min_left;
-        right = left + w;
-    }
-
-    RECT {
-        left,
-        top,
-        right,
-        bottom,
+        rect
     }
 }
 
-/// `SHQueryUserNotificationState`: are we allowed to be seen?
-pub fn is_suppressed() -> bool {
+pub fn is_allowed() -> bool {
     let Ok(state) = (unsafe { SHQueryUserNotificationState() }) else {
-        return false;
+        return true;
     };
-    matches!(
+    !matches!(
         state,
-        QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE
+        QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE
     )
 }
 
-/// Register with the shell as an appbar so we receive `ABN_POSCHANGED`.
+fn taskbar_is_shown(tb: RECT, monitor: RECT) -> bool {
+    if !unsafe { IsWindowVisible(find_taskbar_hwnd()).as_bool() } {
+        return false;
+    }
+    let mut data = APPBARDATA {
+        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: APPBARDATA is initialized with its size.
+    let state = unsafe { SHAppBarMessage(ABM_GETSTATE, &mut data) } as u32;
+    if state & ABS_AUTOHIDE == 0 {
+        return true;
+    }
+    // An auto-hidden taskbar slides off the monitor leaving a 1-2 px lip.
+    let w = (tb.right - tb.left).min(monitor.right) - tb.left.max(monitor.left);
+    let h = (tb.bottom - tb.top).min(monitor.bottom) - tb.top.max(monitor.top);
+    w > 3 && h > 3
+}
+
+fn find_taskbar_hwnd() -> HWND {
+    // SAFETY: class lookup only.
+    unsafe { FindWindowW(TASKBAR_CLASS, PCWSTR::null()) }.unwrap_or_default()
+}
+
 pub fn register_appbar(hwnd: HWND, callback_msg: u32) -> bool {
     let mut data = APPBARDATA {
         cbSize: std::mem::size_of::<APPBARDATA>() as u32,
@@ -204,53 +271,95 @@ pub fn register_appbar(hwnd: HWND, callback_msg: u32) -> bool {
         uCallbackMessage: callback_msg,
         ..Default::default()
     };
+    // SAFETY: APPBARDATA has a valid hwnd and size.
     unsafe { SHAppBarMessage(ABM_NEW, &mut data) != 0 }
-}
-
-/// The notification area (`TrayNotifyWnd`).
-fn tray_rect(taskbar: HWND) -> Option<RECT> {
-    let tray = unsafe { FindWindowExW(Some(taskbar), None, TRAY_CLASS, PCWSTR::null()).ok()? };
-    if tray.0.is_null() {
-        return None;
-    }
-    let mut rect = RECT::default();
-    unsafe { GetWindowRect(tray, &mut rect) }.ok()?;
-    Some(rect)
-}
-
-pub fn rects_intersect(a: RECT, b: RECT) -> bool {
-    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::design;
+
+    fn rect(l: i32, t: i32, r: i32, b: i32) -> RECT {
+        RECT {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        }
+    }
 
     #[test]
-    fn rects_intersect_works() {
-        let a = RECT {
-            left: 0,
-            top: 0,
-            right: 10,
-            bottom: 10,
-        };
-        assert!(rects_intersect(
-            a,
-            RECT {
-                left: 5,
-                top: 5,
-                right: 15,
-                bottom: 15
-            }
-        ));
-        assert!(!rects_intersect(
-            a,
-            RECT {
-                left: 10,
-                top: 10,
-                right: 20,
-                bottom: 20
-            }
-        ));
+    fn pill_is_208x32_and_uses_the_reserved_bubble_slot() {
+        let a = Anchor::layout(
+            rect(0, 1040, 1920, 1080),
+            rect(1600, 1040, 1920, 1080),
+            rect(0, 0, 1920, 1040),
+            96,
+            0,
+        );
+        assert_eq!(a.pill.w, design::PILL_W);
+        assert_eq!(a.pill.h, a.taskbar_height_dip + 2.0);
+        assert_eq!(a.pill.right(), 1600.0 - 12.0 - 40.0);
+        assert_eq!(a.bubble.x, a.pill.right() + 8.0);
+        assert_eq!(a.flyout.h, design::FLY_H);
+        assert_eq!(a.flyout.bottom(), 1040.0 - 12.0);
+    }
+
+    #[test]
+    fn window_never_moves_with_activity_changes() {
+        let a = Anchor::layout(
+            rect(0, 1040, 1920, 1080),
+            rect(1600, 1040, 1920, 1080),
+            rect(0, 0, 1920, 1040),
+            96,
+            0,
+        );
+        let b = Anchor::layout(
+            rect(0, 1040, 1920, 1080),
+            rect(1600, 1040, 1920, 1080),
+            rect(0, 0, 1920, 1040),
+            96,
+            24,
+        );
+        assert_eq!(
+            a.window.right - a.window.left,
+            b.window.right - b.window.left
+        );
+        assert_ne!(a.pill.x, b.pill.x);
+    }
+
+    #[test]
+    fn flyout_is_clamped_not_the_pill() {
+        let a = Anchor::layout(
+            rect(0, 1040, 1920, 1080),
+            rect(100, 1040, 320, 1080),
+            rect(0, 0, 1920, 1040),
+            96,
+            0,
+        );
+        assert!(a.flyout.x >= 12.0);
+        assert!(a.insufficient_space);
+        assert!(a.pill.x < 12.0);
+    }
+
+    #[test]
+    fn dpi_scales_window_and_surfaces() {
+        let a = Anchor::layout(
+            rect(0, 1300, 2400, 1350),
+            rect(2000, 1300, 2400, 1350),
+            rect(0, 0, 2400, 1300),
+            120,
+            0,
+        );
+        assert_eq!(a.scale, 1.25);
+        assert_eq!(
+            a.window.right - a.window.left,
+            (design::WINDOW_W * 1.25).round() as i32
+        );
+        assert_eq!(
+            a.window.bottom - a.window.top,
+            ((50.0_f64 / 1.25 + 12.0 + 192.0 + 40.0) * 1.25).round() as i32
+        );
     }
 }

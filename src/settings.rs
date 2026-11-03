@@ -1,223 +1,318 @@
-//! User tweaks persisted under `HKCU\Software\TaskbarIsland`.
-//!
-//! The design spec calls for a Tweaks panel (fill 4–20%, radius, accent) and a
-//! configurable timer length. The pill is a taskbar child window, so a full
-//! settings window would be heavier than the feature; instead the same values
-//! are stored in the registry and exposed through the pill's right-click menu.
-//! Values are clamped on read, so a hand-edited registry can never break the
-//! pill's geometry.
+//! settings.rs — JSON settings, autostart registry and data paths.
+
+use std::path::PathBuf;
 
 use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
-    HKEY, HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
-    REG_VALUE_TYPE,
+    RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
+    HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ,
 };
 
-pub const APP_KEY: PCWSTR = w!("Software\\TaskbarIsland");
-const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-const RUN_VALUE: PCWSTR = w!("TaskbarIsland");
-
-pub const FILL_MIN: u32 = 4;
-pub const FILL_MAX: u32 = 20;
-pub const RADIUS_MIN: u32 = 4;
-pub const RADIUS_MAX: u32 = 16;
-pub const TIMER_MIN_MINUTES: u32 = 1;
-pub const TIMER_MAX_MINUTES: u32 = 60;
+use crate::design::ActivityKind;
+use crate::json::{self, Json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Enabled {
+    pub music: bool,
+    pub call: bool,
+    pub shelf: bool,
+    pub timer: bool,
+    pub volume: bool,
+}
+
+impl Default for Enabled {
+    fn default() -> Self {
+        Self {
+            music: true,
+            call: true,
+            shelf: true,
+            timer: true,
+            volume: true,
+        }
+    }
+}
+
+impl Enabled {
+    pub fn allows(self, kind: ActivityKind) -> bool {
+        match kind {
+            ActivityKind::Music => self.music,
+            ActivityKind::Call => self.call,
+            ActivityKind::Shelf => self.shelf,
+            ActivityKind::Timer => self.timer,
+            ActivityKind::Volume => self.volume,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
-    /// Compact fill opacity in percent (4–20).
-    pub fill_percent: u32,
-    /// Pill corner radius in DIP (4–16).
-    pub radius_dip: u32,
-    /// Override accent as 0x00BBGGRR (COLORREF), or None for the system accent.
-    pub accent_abgr: Option<u32>,
-    /// Default countdown length for Ctrl+Alt+T, in minutes.
-    pub timer_minutes: u32,
+    pub slot_offset_dip: i32,
+    pub run_at_startup: bool,
+    pub call_app_allowlist: Vec<String>,
+    pub enabled: Enabled,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            fill_percent: 9,
-            radius_dip: 10,
-            accent_abgr: None,
-            timer_minutes: 5,
+            slot_offset_dip: 0,
+            run_at_startup: false,
+            call_app_allowlist: vec![
+                "Teams".into(),
+                "Zoom".into(),
+                "WhatsApp".into(),
+                "Discord".into(),
+                "Skype".into(),
+                "Slack".into(),
+            ],
+            enabled: Enabled::default(),
         }
     }
 }
 
 impl Settings {
-    pub fn current() -> Self {
-        let d = Self::default();
-        Self {
-            fill_percent: read_dword(APP_KEY, w!("FillPercent"))
-                .unwrap_or(d.fill_percent)
-                .clamp(FILL_MIN, FILL_MAX),
-            radius_dip: read_dword(APP_KEY, w!("Radius"))
-                .unwrap_or(d.radius_dip)
-                .clamp(RADIUS_MIN, RADIUS_MAX),
-            accent_abgr: read_dword(APP_KEY, w!("Accent")).map(|v| v & 0x00FF_FFFF),
-            timer_minutes: read_dword(APP_KEY, w!("TimerMinutes"))
-                .unwrap_or(d.timer_minutes)
-                .clamp(TIMER_MIN_MINUTES, TIMER_MAX_MINUTES),
+    pub fn load() -> Self {
+        let path = settings_path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Self::default();
+        };
+        let Ok(json) = json::parse(&text) else {
+            return Self::default();
+        };
+        let mut settings = Self::default();
+        if let Some(v) = json.get("slotOffsetDip").and_then(Json::as_i32) {
+            settings.slot_offset_dip = v.clamp(-240, 240);
         }
-    }
-
-    /// Converts a COLORREF (0x00BBGGRR) to linear-ish RGBA floats.
-    pub fn accent_rgb(abgr: u32) -> (f32, f32, f32, f32) {
-        let r = (abgr & 0xFF) as f32 / 255.0;
-        let g = ((abgr >> 8) & 0xFF) as f32 / 255.0;
-        let b = ((abgr >> 16) & 0xFF) as f32 / 255.0;
-        (r, g, b, 1.0)
-    }
-}
-
-/// Persists a DWORD under the app key. Best-effort: tweaks are a convenience,
-/// never a startup requirement.
-pub fn set_dword(name: PCWSTR, value: u32) -> bool {
-    unsafe {
-        let mut key = HKEY::default();
-        if RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            APP_KEY,
-            Some(0),
-            PCWSTR::null(),
-            REG_OPTION_NON_VOLATILE,
-            KEY_SET_VALUE,
-            None,
-            &mut key,
-            None,
-        )
-        .is_err()
-        {
-            return false;
+        if let Some(v) = json.get("runAtStartup").and_then(Json::as_bool) {
+            settings.run_at_startup = v;
         }
-        let bytes = value.to_le_bytes();
-        let ok = RegSetValueExW(key, name, Some(0), REG_DWORD, Some(&bytes)).is_ok();
-        let _ = RegCloseKey(key);
-        ok
+        if let Some(list) = json.get("callAppAllowlist").and_then(Json::as_array) {
+            let values: Vec<String> = list
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect();
+            if !values.is_empty() {
+                settings.call_app_allowlist = values;
+            }
+        }
+        if let Some(enabled) = json.get("enabled") {
+            settings.enabled = Enabled {
+                music: enabled
+                    .get("music")
+                    .and_then(Json::as_bool)
+                    .unwrap_or(settings.enabled.music),
+                call: enabled
+                    .get("call")
+                    .and_then(Json::as_bool)
+                    .unwrap_or(settings.enabled.call),
+                shelf: enabled
+                    .get("shelf")
+                    .and_then(Json::as_bool)
+                    .unwrap_or(settings.enabled.shelf),
+                timer: enabled
+                    .get("timer")
+                    .and_then(Json::as_bool)
+                    .unwrap_or(settings.enabled.timer),
+                volume: enabled
+                    .get("volume")
+                    .and_then(Json::as_bool)
+                    .unwrap_or(settings.enabled.volume),
+            };
+        }
+        settings
+    }
+
+    pub fn save(&self) {
+        let path = settings_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let enabled = Json::Obj(vec![
+            ("music".into(), Json::Bool(self.enabled.music)),
+            ("call".into(), Json::Bool(self.enabled.call)),
+            ("shelf".into(), Json::Bool(self.enabled.shelf)),
+            ("timer".into(), Json::Bool(self.enabled.timer)),
+            ("volume".into(), Json::Bool(self.enabled.volume)),
+        ]);
+        let doc = Json::Obj(vec![
+            (
+                "slotOffsetDip".into(),
+                Json::Num(self.slot_offset_dip as f64),
+            ),
+            ("runAtStartup".into(), Json::Bool(self.run_at_startup)),
+            (
+                "callAppAllowlist".into(),
+                Json::Arr(
+                    self.call_app_allowlist
+                        .iter()
+                        .map(|s| Json::Str(s.clone()))
+                        .collect(),
+                ),
+            ),
+            ("enabled".into(), enabled),
+        ]);
+        let _ = std::fs::write(path, json::to_string_pretty(&doc));
     }
 }
 
-/// Removes an override (used by "Accent: System").
-pub fn clear_value(name: PCWSTR) -> bool {
-    clear_registry_value(APP_KEY, name)
+pub fn data_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("TaskbarIsland")
 }
 
-/// Returns whether Windows will launch the installed application at sign-in.
+pub fn appdata_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("TaskbarIsland")
+}
+
+pub fn settings_path() -> PathBuf {
+    appdata_dir().join("settings.json")
+}
+
+pub fn shelf_path() -> PathBuf {
+    data_dir().join("shelf.json")
+}
+
+pub fn log_path() -> PathBuf {
+    data_dir().join("log.txt")
+}
+
 pub fn autostart_enabled() -> bool {
-    read_string(RUN_KEY, RUN_VALUE).is_some()
+    read_run_value().is_some()
 }
 
-/// Enables or disables launch at sign-in for the current user.
 pub fn set_autostart(enabled: bool) -> bool {
-    if !enabled {
-        return clear_registry_value(RUN_KEY, RUN_VALUE);
-    }
-
-    let Ok(exe) = std::env::current_exe() else {
-        return false;
-    };
-    let mut command = exe.as_os_str().to_string_lossy().into_owned();
-    command.insert(0, '"');
-    command.push('"');
-    let mut data: Vec<u16> = command.encode_utf16().collect();
-    data.push(0);
-    let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 2) };
-
-    unsafe {
-        let mut key = HKEY::default();
-        if RegCreateKeyExW(
+    let mut key = HKEY::default();
+    // SAFETY: key handles are always closed before returning.
+    if unsafe {
+        RegOpenKeyExW(
             HKEY_CURRENT_USER,
-            RUN_KEY,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
             Some(0),
-            PCWSTR::null(),
-            REG_OPTION_NON_VOLATILE,
-            KEY_SET_VALUE,
-            None,
+            KEY_READ | KEY_SET_VALUE,
             &mut key,
-            None,
         )
-        .is_err()
-        {
-            return false;
-        }
-        let ok = RegSetValueExW(key, RUN_VALUE, Some(0), REG_SZ, Some(bytes)).is_ok();
-        let _ = RegCloseKey(key);
-        ok
     }
+    .is_err()
+    {
+        return false;
+    }
+    let result = if enabled {
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(_) => {
+                let _ = unsafe { RegCloseKey(key) };
+                return false;
+            }
+        };
+        let command = format!("\"{}\"", exe.display());
+        let wide: Vec<u16> = command.encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: wide is a NUL-terminated UTF-16 string with the byte length we pass.
+        unsafe {
+            RegSetValueExW(
+                key,
+                w!("TaskbarIsland"),
+                Some(0),
+                REG_SZ,
+                Some(std::slice::from_raw_parts(
+                    wide.as_ptr() as *const u8,
+                    wide.len() * 2,
+                )),
+            )
+        }
+        .is_ok()
+    } else {
+        // SAFETY: key is valid; deleting an absent value is harmless.
+        let status = unsafe { RegDeleteValueW(key, w!("TaskbarIsland")) };
+        status.is_ok() || status == ERROR_FILE_NOT_FOUND
+    };
+    // SAFETY: key was opened above.
+    let _ = unsafe { RegCloseKey(key) };
+    result
 }
 
-fn read_dword(path: PCWSTR, value: PCWSTR) -> Option<u32> {
-    unsafe {
-        let mut key = HKEY::default();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, path, Some(0), KEY_READ, &mut key).is_err() {
-            return None;
-        }
-        let mut kind = REG_VALUE_TYPE::default();
-        let mut data = [0u8; 4];
-        let mut size = data.len() as u32;
-        let result = RegQueryValueExW(
+fn read_run_value() -> Option<String> {
+    let mut key = HKEY::default();
+    // SAFETY: key handles are closed below on every path.
+    if unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+            Some(0),
+            KEY_READ,
+            &mut key,
+        )
+    }
+    .is_err()
+    {
+        return None;
+    }
+    let mut size = 0u32;
+    // SAFETY: size-only query with no buffer.
+    let first =
+        unsafe { RegQueryValueExW(key, w!("TaskbarIsland"), None, None, None, Some(&mut size)) };
+    if first.is_err() || size == 0 {
+        let _ = unsafe { RegCloseKey(key) };
+        return None;
+    }
+    let mut data = vec![0u8; size as usize];
+    // SAFETY: data is sized to the value length returned above.
+    let result = unsafe {
+        RegQueryValueExW(
             key,
-            value,
+            w!("TaskbarIsland"),
             None,
-            Some(&mut kind),
+            None,
             Some(data.as_mut_ptr()),
             Some(&mut size),
-        );
-        let _ = RegCloseKey(key);
-        if result.is_err() || size != 4 || kind != REG_DWORD {
-            return None;
-        }
-        Some(u32::from_le_bytes(data))
+        )
+    };
+    let _ = unsafe { RegCloseKey(key) };
+    if result.is_err() {
+        return None;
     }
+    let wide: Vec<u16> = data
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .take_while(|c| *c != 0)
+        .collect();
+    Some(String::from_utf16_lossy(&wide))
 }
 
-fn read_string(path: PCWSTR, value: PCWSTR) -> Option<String> {
-    unsafe {
-        let mut key = HKEY::default();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, path, Some(0), KEY_READ, &mut key).is_err() {
-            return None;
-        }
-        let mut kind = REG_VALUE_TYPE::default();
-        let mut size = 0u32;
-        if RegQueryValueExW(key, value, None, Some(&mut kind), None, Some(&mut size)).is_err()
-            || kind != REG_SZ
-            || size < 2
-        {
-            let _ = RegCloseKey(key);
-            return None;
-        }
-        let mut data = vec![0u8; size as usize];
-        let result = RegQueryValueExW(
-            key,
-            value,
-            None,
-            Some(&mut kind),
-            Some(data.as_mut_ptr()),
-            Some(&mut size),
-        );
-        let _ = RegCloseKey(key);
-        if result.is_err() || kind != REG_SZ {
-            return None;
-        }
-        let words = std::slice::from_raw_parts(data.as_ptr() as *const u16, size as usize / 2);
-        String::from_utf16(words)
-            .ok()
-            .map(|value| value.trim_end_matches('\0').to_owned())
-    }
+#[allow(dead_code)]
+pub fn module_path() -> Option<PathBuf> {
+    let mut buffer = [0u16; 1024];
+    // SAFETY: buffer is a fixed, writable UTF-16 buffer.
+    let len = unsafe { GetModuleFileNameW(None, &mut buffer) } as usize;
+    (len > 0).then(|| PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
 }
 
-fn clear_registry_value(path: PCWSTR, name: PCWSTR) -> bool {
-    unsafe {
-        let mut key = HKEY::default();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, path, Some(0), KEY_SET_VALUE, &mut key).is_err() {
-            return true;
-        }
-        let result = RegDeleteValueW(key, name);
-        let _ = RegCloseKey(key);
-        result.is_ok()
+#[allow(dead_code)]
+fn _pcwstr_marker(_: PCWSTR) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enabled_gates_activities() {
+        let mut e = Enabled::default();
+        e.music = false;
+        assert!(!e.allows(ActivityKind::Music));
+        assert!(e.allows(ActivityKind::Call));
+    }
+
+    #[test]
+    fn defaults_are_sane() {
+        let s = Settings::default();
+        assert_eq!(s.slot_offset_dip, 0);
+        assert!(s.enabled.volume);
+        assert!(s.call_app_allowlist.iter().any(|v| v == "Teams"));
     }
 }

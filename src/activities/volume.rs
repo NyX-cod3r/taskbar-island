@@ -1,9 +1,6 @@
-//! Volume HUD activity: transient HUD when the system volume changes.
-//! Never expands. Dismisses after 1.8 s.
-//!
-//! The listener is a real WASAPI endpoint callback, not a keyboard hook: it
-//! fires for every volume change (media keys, mixer, apps) and blocks on a
-//! channel between events, so idle costs no CPU.
+//! volume.rs — transient HUD state plus the event-driven default-render volume
+//! listener. The listener is a real WASAPI endpoint callback (media keys,
+//! mixer, apps); it blocks on a channel between events, so idle costs nothing.
 
 use std::time::Instant;
 
@@ -15,61 +12,65 @@ use windows::Win32::Media::Audio::Endpoints::{
 use windows::Win32::Media::Audio::{
     eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator, AUDIO_VOLUME_NOTIFICATION_DATA,
 };
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
-};
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
-use crate::state::{Activity, ActivityId, Priority};
+use crate::activities::audio;
 
-/// Posts the new level in `wparam` to the pill.
+/// `wparam` low byte = level 0..100, bit 8 = muted.
 pub const WM_APP_VOLUME: u32 = WM_APP + 5;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct VolumeActivity {
+pub const VOLUME_MUTED_BIT: usize = 1 << 8;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolumeHud {
     pub active: bool,
-    pub level: u32, // 0..100
-    pub last_active: Option<Instant>,
+    pub level: u32,
+    pub muted: bool,
+    pub last_change: Option<Instant>,
 }
 
-impl VolumeActivity {
-    pub fn trigger(&mut self, level: u32) {
+impl Default for VolumeHud {
+    fn default() -> Self {
+        Self {
+            active: false,
+            level: 0,
+            muted: false,
+            last_change: None,
+        }
+    }
+}
+
+impl VolumeHud {
+    pub fn trigger(&mut self, level: u32, muted: bool, now: Instant) {
         self.active = true;
         self.level = level.min(100);
-        self.last_active = Some(Instant::now());
+        self.muted = muted;
+        self.last_change = Some(now);
     }
 
     pub fn dismiss(&mut self) {
         self.active = false;
-        self.last_active = None;
+        self.last_change = None;
     }
 
-    #[allow(dead_code)]
-    pub fn check_dismiss(&mut self, now: Instant) -> bool {
-        if let Some(last) = self.last_active {
-            if now.duration_since(last).as_millis() >= 1800 {
-                self.dismiss();
-                return true;
-            }
-        }
-        false
-    }
-}
-
-impl Activity for VolumeActivity {
-    fn id(&self) -> ActivityId {
-        ActivityId::Volume
-    }
-    fn priority(&self) -> Priority {
-        Priority::VolumeHud
-    }
-    fn active(&self) -> bool {
+    pub fn expired(&self, now: Instant) -> bool {
         self.active
+            && self
+                .last_change
+                .map(|t| now.saturating_duration_since(t).as_millis() >= 1800)
+                .unwrap_or(true)
     }
 }
 
-/// WASAPI callback. Runs on the COM worker thread; the only thing it does is
-/// post a compact level message to the UI thread.
+pub fn decode(wparam: usize) -> (u32, bool) {
+    ((wparam & 0xFF) as u32, wparam & VOLUME_MUTED_BIT != 0)
+}
+
+pub fn encode(level: u32, muted: bool) -> usize {
+    (level.min(100) as usize) | if muted { VOLUME_MUTED_BIT } else { 0 }
+}
+
 #[implement(IAudioEndpointVolumeCallback)]
 struct VolumeCallback {
     hwnd: isize,
@@ -80,19 +81,17 @@ impl IAudioEndpointVolumeCallback_Impl for VolumeCallback_Impl {
         if notify.is_null() {
             return Ok(());
         }
-        // SAFETY: WASAPI passes a valid notification for the duration of the
-        // call; we only read the two fields we need.
+        // SAFETY: WASAPI owns the notification for the duration of the call;
+        // only two fields are read.
         let data = unsafe { &*notify };
-        let level = if data.bMuted.as_bool() {
-            0
-        } else {
-            (data.fMasterVolume * 100.0).round().clamp(0.0, 100.0) as u32
-        };
+        let muted = data.bMuted.as_bool();
+        let level = (data.fMasterVolume * 100.0).round().clamp(0.0, 100.0) as u32;
+        // SAFETY: posting to our own window.
         unsafe {
             let _ = PostMessageW(
                 Some(HWND(self.hwnd as *mut _)),
                 WM_APP_VOLUME,
-                WPARAM(level as usize),
+                WPARAM(encode(level, muted)),
                 LPARAM(0),
             );
         }
@@ -100,40 +99,42 @@ impl IAudioEndpointVolumeCallback_Impl for VolumeCallback_Impl {
     }
 }
 
-/// Subscribes to the default render endpoint's volume changes. The worker
-/// parks on a channel for the process lifetime, keeping the endpoint and the
-/// callback alive without polling.
+/// Subscribes to the default console render endpoint. The worker parks on a
+/// channel for the process lifetime, keeping the endpoint and callback alive.
 pub fn subscribe(hwnd: HWND) -> windows::core::Result<()> {
     let hwnd_value = hwnd.0 as isize;
     std::thread::Builder::new()
         .name("taskbar-island-volume".into())
         .spawn(move || {
-            unsafe {
-                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-                let Ok(enumerator) = CoCreateInstance::<_, IMMDeviceEnumerator>(
-                    &MMDeviceEnumerator,
-                    None,
-                    CLSCTX_ALL,
-                ) else {
-                    return;
-                };
-                let Ok(device) = enumerator.GetDefaultAudioEndpoint(eRender, eConsole) else {
-                    return;
-                };
-                let Ok(endpoint) = device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None)
-                else {
-                    return;
-                };
-                let callback: IAudioEndpointVolumeCallback =
-                    VolumeCallback { hwnd: hwnd_value }.into();
-                if endpoint.RegisterControlChangeNotify(&callback).is_err() {
-                    return;
-                }
-
-                // Park forever; the endpoint + callback stay alive in scope.
-                let (_tx, rx) = std::sync::mpsc::channel::<()>();
-                let _ = rx.recv();
+            if audio::init_mta().is_err() {
+                return;
             }
+            // SAFETY: COM is initialized on this worker above.
+            let Ok(enumerator) = (unsafe {
+                CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            }) else {
+                return;
+            };
+            // SAFETY: enumerator is a live COM object on this worker.
+            let Ok(device) = (unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) })
+            else {
+                return;
+            };
+            // SAFETY: standard endpoint activation on a live device.
+            let Ok(endpoint) =
+                (unsafe { device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) })
+            else {
+                return;
+            };
+            let callback: IAudioEndpointVolumeCallback = VolumeCallback { hwnd: hwnd_value }.into();
+            // SAFETY: callback is held alive for the worker's lifetime.
+            if unsafe { endpoint.RegisterControlChangeNotify(&callback) }.is_err() {
+                return;
+            }
+
+            // Park forever; the endpoint + callback stay alive in scope.
+            let (_tx, rx) = std::sync::mpsc::channel::<()>();
+            let _ = rx.recv();
         })
         .map(|_| ())
         .map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))
@@ -144,13 +145,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn trigger_clamps_level_and_marks_active() {
-        let mut volume = VolumeActivity::default();
-        volume.trigger(250);
-        assert!(volume.active());
-        assert_eq!(volume.level, 100);
-        volume.dismiss();
-        assert!(!volume.active());
-        assert_eq!(volume.level, 100);
+    fn hud_triggers_clamps_and_expires() {
+        let now = Instant::now();
+        let mut hud = VolumeHud::default();
+        hud.trigger(250, false, now);
+        assert!(hud.active);
+        assert_eq!(hud.level, 100);
+        assert!(!hud.expired(now + std::time::Duration::from_millis(1799)));
+        assert!(hud.expired(now + std::time::Duration::from_millis(1800)));
+        hud.dismiss();
+        assert!(!hud.active);
+    }
+
+    #[test]
+    fn wparam_round_trip() {
+        assert_eq!(decode(encode(42, false)), (42, false));
+        assert_eq!(decode(encode(0, true)), (0, true));
     }
 }

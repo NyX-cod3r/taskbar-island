@@ -1,24 +1,23 @@
-//! Windows personalization state used by the renderer.
+//! theme.rs — dark/light mode, accent color and reduced-motion from Windows.
 
-use crate::settings;
-use windows::core::{w, Result};
+use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_VALUE_TYPE,
 };
+use windows::Win32::UI::WindowsAndMessaging::{
+    SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+};
 
-#[allow(dead_code)]
-pub const PILL_RADIUS_DIP: f32 = 10.0;
-pub const FLYOUT_RADIUS_DIP: f32 = 8.0;
-#[allow(dead_code)]
-pub const BUTTON_RADIUS_DIP: f32 = 6.0;
+use crate::design::{self, Color};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Theme {
-    pub light: bool,
-    pub accent: (f32, f32, f32, f32),
-    /// Compact fill opacity from the Tweaks setting (4–20%).
+    pub dark: bool,
+    pub accent: Color,
+    pub has_accent: bool,
+    pub reduced_motion: bool,
     pub fill_percent: f32,
-    /// Pill corner radius in DIP from the Tweaks setting.
     pub radius_dip: f32,
 }
 
@@ -30,114 +29,212 @@ impl Theme {
         )
         .unwrap_or(0)
             != 0;
-
-        // Accent: Tweaks override first, then the DWM accent, then #60CDFF.
-        let tweaks = settings::Settings::current();
-        let accent = tweaks
-            .accent_abgr
-            .map(settings::Settings::accent_rgb)
+        let accent_raw = read_dword(w!("Software\\TaskbarIsland"), w!("Accent"))
             .or_else(|| {
-                read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor"))
-                    .ok()
-                    .map(settings::Settings::accent_rgb)
-            })
-            .unwrap_or((0x60 as f32 / 255.0, 0xCD as f32 / 255.0, 1.0, 1.0));
+                read_dword(
+                    w!("Software\\Microsoft\\Windows\\DWM"),
+                    w!("AccentColor"),
+                )
+            });
+        let has_accent = accent_raw.is_some();
+        let fill_percent = read_dword(
+            w!("Software\\TaskbarIsland"),
+            w!("FillPercent"),
+        )
+        .unwrap_or(9)
+        .clamp(4, 20) as f32;
+        let radius_dip = read_dword(w!("Software\\TaskbarIsland"), w!("Radius"))
+            .unwrap_or(10)
+            .clamp(4, 16) as f32;
+        // DWM stores 0xAABBGGRR.
+        let accent = accent_raw.map(accent_color).unwrap_or(design::SHELF_BLUE);
 
         Self {
-            light,
+            dark: !light,
             accent,
-            fill_percent: tweaks.fill_percent as f32,
-            radius_dip: tweaks.radius_dip as f32,
+            has_accent,
+            reduced_motion: !animations_enabled(),
+            fill_percent,
+            radius_dip,
         }
     }
 
-    /// Compact fill: white at the Tweaks percentage in dark mode; light mode
-    /// keeps the spec's 5% black so contrast stays correct on a light taskbar.
-    pub fn fill(self) -> (f32, f32, f32, f32) {
-        if self.light {
-            (0.0, 0.0, 0.0, 0.05)
+    pub fn pill_fill(self) -> Color {
+        if self.dark {
+            design::white(self.fill_percent / 100.0)
         } else {
-            (1.0, 1.0, 1.0, self.fill_percent / 100.0)
+            design::black(design::LIGHT_PILL_FILL_A)
         }
     }
 
-    /// Compact border: 1 px, one point above the fill.
-    pub fn border(self) -> (f32, f32, f32, f32) {
-        if self.light {
-            (0.0, 0.0, 0.0, 0.08)
+    pub fn pill_fill_hover(self) -> Color {
+        if self.dark {
+            design::white(((self.fill_percent + 6.0) / 100.0).min(1.0))
         } else {
-            (1.0, 1.0, 1.0, ((self.fill_percent + 1.0) / 100.0).min(1.0))
+            design::black(design::LIGHT_PILL_FILL_HOVER_A)
         }
     }
 
-    /// Hover fill: fill + 6 points (spec: 9% → 15%).
-    pub fn hover_fill(self) -> (f32, f32, f32, f32) {
-        if self.light {
-            (0.0, 0.0, 0.0, 0.09)
+    pub fn pill_fill_press(self) -> Color {
+        if self.dark {
+            design::white((self.fill_percent / 100.0).min(1.0))
         } else {
-            (1.0, 1.0, 1.0, ((self.fill_percent + 6.0) / 100.0).min(1.0))
+            design::black(0.03)
         }
     }
 
-    /// Hover border: hover fill + 5 points (spec: 15% → 20%).
-    pub fn hover_border(self) -> (f32, f32, f32, f32) {
-        if self.light {
-            (0.0, 0.0, 0.0, 0.15)
+    pub fn pill_border_rest(self) -> Color {
+        if self.dark {
+            design::white(design::PILL_BORDER_REST_A)
         } else {
-            (1.0, 1.0, 1.0, ((self.fill_percent + 11.0) / 100.0).min(1.0))
+            design::black(design::LIGHT_PILL_BORDER_A)
         }
     }
 
-    /// Primary text: white 100%.
-    pub fn text(self) -> (f32, f32, f32, f32) {
-        if self.light {
-            (0.0, 0.0, 0.0, 1.0)
+    pub fn fly_fill(self) -> Color {
+        let c = if self.dark {
+            design::FLY_FILL
         } else {
-            (1.0, 1.0, 1.0, 1.0)
-        }
+            design::LIGHT_FLY_FILL
+        };
+        c.with_alpha(design::FLY_FILL_A)
     }
 
-    /// Secondary text: white 70%.
-    pub fn secondary_text(self) -> (f32, f32, f32, f32) {
-        if self.light {
-            (0.0, 0.0, 0.0, 0.70)
+    pub fn fly_border(self) -> Color {
+        if self.dark {
+            design::white(design::FLY_BORDER_A)
         } else {
-            (1.0, 1.0, 1.0, 0.70)
+            design::black(design::LIGHT_FLY_BORDER_A)
         }
     }
 
-    /// Flyout fill: rgb(40, 40, 40) at 95%.
-    pub fn flyout_fill(self) -> (f32, f32, f32, f32) {
-        (40.0 / 255.0, 40.0 / 255.0, 40.0 / 255.0, 0.95)
+    pub fn text_primary(self) -> Color {
+        if self.dark {
+            design::white(design::TEXT_PRIMARY_A)
+        } else {
+            design::LIGHT_TEXT
+        }
     }
 
-    /// Flyout border: 1 px, white 9%.
-    pub fn flyout_border(self) -> (f32, f32, f32, f32) {
-        (1.0, 1.0, 1.0, 0.09)
+    pub fn text_pill_label(self) -> Color {
+        if self.dark {
+            design::white(design::TEXT_PILL_LABEL_A)
+        } else {
+            design::LIGHT_TEXT
+        }
     }
 
-    /// System accent color (#60CDFF default).
-    pub fn accent_color(self) -> (f32, f32, f32, f32) {
-        self.accent
+    pub fn text_secondary(self) -> Color {
+        if self.dark {
+            design::white(design::TEXT_SECONDARY_A)
+        } else {
+            design::black(design::LIGHT_TEXT_SECONDARY_A)
+        }
     }
 
-    /// Status color for call active: #6CCB5F.
-    pub fn call_color() -> (f32, f32, f32, f32) {
-        (0x6C as f32 / 255.0, 0xCB as f32 / 255.0, 0x5F as f32 / 255.0, 1.0)
+    pub fn text_tertiary(self) -> Color {
+        if self.dark {
+            design::white(design::TEXT_TERTIARY_A)
+        } else {
+            design::black(0.50)
+        }
     }
 
-    /// Status color for End button: #C42B1C.
-    pub fn end_color() -> (f32, f32, f32, f32) {
-        (0xC4 as f32 / 255.0, 0x2B as f32 / 255.0, 0x1C as f32 / 255.0, 1.0)
+    pub fn surface_button(self) -> Color {
+        if self.dark {
+            design::white(design::SURFACE_BUTTON_A)
+        } else {
+            design::black(design::LIGHT_SURFACE_BUTTON_A)
+        }
+    }
+
+    pub fn surface_button_hover(self) -> Color {
+        if self.dark {
+            design::white(design::SURFACE_BUTTON_HOVER_A)
+        } else {
+            design::black(0.10)
+        }
+    }
+
+    pub fn surface_button_press(self) -> Color {
+        if self.dark {
+            design::white(design::SURFACE_BUTTON_PRESS_A)
+        } else {
+            design::black(0.03)
+        }
+    }
+
+    pub fn track(self) -> Color {
+        if self.dark {
+            design::white(design::TRACK_A)
+        } else {
+            design::black(design::LIGHT_TRACK_A)
+        }
+    }
+
+    pub fn timer_track(self) -> Color {
+        if self.dark {
+            design::white(design::TIMER_TRACK_A)
+        } else {
+            design::black(0.10)
+        }
+    }
+
+    pub fn shadow_alpha(self, base: f32) -> f32 {
+        if self.dark {
+            base
+        } else {
+            base * 0.56
+        }
+    }
+
+    pub fn shelf_color(self) -> Color {
+        if self.has_accent {
+            self.accent
+        } else {
+            design::SHELF_BLUE
+        }
+    }
+
+    pub fn pill_radius(self) -> f32 {
+        self.radius_dip
     }
 }
 
-fn read_dword(path: windows::core::PCWSTR, value: windows::core::PCWSTR) -> Result<u32> {
+fn accent_color(value: u32) -> Color {
+    // DWM stores COLORREF values as 0x00BBGGRR.
+    Color {
+        r: (value & 0xFF) as f32 / 255.0,
+        g: ((value >> 8) & 0xFF) as f32 / 255.0,
+        b: ((value >> 16) & 0xFF) as f32 / 255.0,
+        a: 1.0,
+    }
+}
+
+pub fn animations_enabled() -> bool {
+    let mut enabled = windows::core::BOOL(1);
+    // SAFETY: SPI_GETCLIENTAREAANIMATION copies a BOOL into the provided pointer.
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            Some(&mut enabled as *mut _ as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    ok.is_ok() && enabled.as_bool()
+}
+
+fn read_dword(path: PCWSTR, value: PCWSTR) -> Option<u32> {
     let mut key = HKEY::default();
-    unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, path, Some(0), KEY_READ, &mut key) }.ok()?;
+    // SAFETY: registry handles are closed below on every path.
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, path, Some(0), KEY_READ, &mut key) }.is_err() {
+        return None;
+    }
     let mut kind = REG_VALUE_TYPE::default();
     let mut data = [0u8; 4];
     let mut size = data.len() as u32;
+    // SAFETY: data points to four writable bytes and size is its length.
     let result = unsafe {
         RegQueryValueExW(
             key,
@@ -148,13 +245,32 @@ fn read_dword(path: windows::core::PCWSTR, value: windows::core::PCWSTR) -> Resu
             Some(&mut size),
         )
     };
+    // SAFETY: `key` was opened above and is no longer used.
     let _ = unsafe { RegCloseKey(key) };
-    result.ok()?;
-    if size != 4 {
-        return Err(windows::core::Error::new(
-            windows::core::HRESULT(0x80070057u32 as i32),
-            "unexpected registry value size",
-        ));
+    if result.is_err() {
+        return None;
     }
-    Ok(u32::from_le_bytes(data))
+    (size == 4).then(|| u32::from_le_bytes(data))
+}
+
+/// Unused parameter marker that keeps the signature stable for future per-monitor themes.
+#[allow(dead_code)]
+pub fn _hwnd_marker(_hwnd: HWND) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accent_color_decodes_windows_colorref_order() {
+        assert_eq!(
+            accent_color(0x0030_2010),
+            Color {
+                r: 0x10 as f32 / 255.0,
+                g: 0x20 as f32 / 255.0,
+                b: 0x30 as f32 / 255.0,
+                a: 1.0,
+            }
+        );
+    }
 }
