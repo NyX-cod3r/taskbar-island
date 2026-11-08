@@ -15,6 +15,7 @@ mod settings;
 mod state;
 mod theme;
 mod tokens;
+mod tooltip;
 mod view;
 mod window;
 
