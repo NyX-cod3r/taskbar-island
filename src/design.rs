@@ -47,10 +47,21 @@ pub const LEAD_GLYPH: f32 = 26.0;
 pub const RAIL_W: f32 = 56.0;
 pub const RAIL_DIVIDER: f32 = 1.0;
 pub const CARD_CONTENT_X: f32 = RAIL_W + RAIL_DIVIDER;
-pub const CARD_PAD_X: f32 = 16.0;
-pub const CARD_PAD_Y: f32 = 14.0;
-pub const CARD_CONTENT_W: f32 = FLY_W - CARD_CONTENT_X - CARD_PAD_X * 2.0;
-pub const CARD_CONTENT_H: f32 = FLY_H - CARD_PAD_Y * 2.0;
+/// Uniform inner padding for every card: 7 DIP (design tokens; was 12).
+pub const CARD_PAD: f32 = 7.0;
+/// Gap between stacked content sections inside a card: 8 DIP (design tokens; was 12).
+pub const CARD_GAP: f32 = 8.0;
+/// Inner content rectangle of an expanded card: the 400×192 card minus the 56 DIP rail
+/// and 1 px divider, minus CARD_PAD on all four sides. Every card computes its content
+/// area with this single function — no card keeps its own padding constant.
+pub fn card_content_rect(fly: RectD) -> RectD {
+    RectD::new(
+        fly.x + CARD_CONTENT_X + CARD_PAD,
+        fly.y + CARD_PAD,
+        FLY_W - CARD_CONTENT_X - CARD_PAD * 2.0,
+        FLY_H - CARD_PAD * 2.0,
+    )
+}
 /// v0.7 rail: five 32 DIP tiles with 5 DIP gaps (180 DIP) centred in the card.
 pub const RAIL_BTN: f32 = 32.0;
 pub const RAIL_GAP: f32 = 5.0;
@@ -65,8 +76,6 @@ pub const RAIL_IND_DY: f32 = 8.0;
 pub const HEADER_H: f32 = 28.0;
 pub const HEADER_TILE: f32 = 28.0;
 pub const HEADER_GAP: f32 = 10.0;
-/// Gap between the standard header and the first content row.
-pub const CARD_GAP: f32 = 12.0;
 
 // Music card
 pub const MUSIC_ART: f32 = 64.0;
@@ -674,14 +683,38 @@ mod tests {
     }
 
     /// The v0.4 interior is derived, so guard the numbers the artboards use.
-    /// v0.7 keeps the 56 DIP rail and now fits five tiles.
+    /// v0.8: card padding is 7 DIP, so the content rect is the card (400×192)
+    /// minus the 56 DIP rail + 1 px divider minus CARD_PAD on all sides.
     #[test]
-    fn card_interior_matches_v04() {
+    fn card_interior_matches_v08() {
         assert_eq!(CARD_CONTENT_X, 57.0);
-        assert_eq!(CARD_CONTENT_W, 311.0);
-        assert_eq!(CARD_CONTENT_H, 164.0);
+        assert_eq!(CARD_PAD, 7.0);
+        assert_eq!(CARD_GAP, 8.0);
+        let content = card_content_rect(RectD::new(0.0, 0.0, 400.0, 192.0));
+        assert_eq!(content.x, 64.0);
+        assert_eq!(content.y, 7.0);
+        assert_eq!(content.w, 329.0);
+        assert_eq!(content.h, 178.0);
         assert_eq!(RAIL_INSET, 6.0);
         assert_eq!(RAIL_BTN * 5.0 + RAIL_GAP * 4.0 + RAIL_INSET * 2.0, FLY_H);
+    }
+
+    /// card_content_rect() derives from the fixed values at every DPI: padding
+    /// and rail are constant DIP, so the rect is the card inner minus rail
+    /// minus padding, computed the same way everywhere.
+    #[test]
+    fn card_content_rect_derives_from_fixed_values() {
+        for (fly_x, fly_y) in [(0.0, 0.0), (100.0, 200.0), (1000.0, 300.0)] {
+            let fly = RectD::new(fly_x, fly_y, FLY_W, FLY_H);
+            let content = card_content_rect(fly);
+            assert_eq!(content.x, fly_x + CARD_CONTENT_X + CARD_PAD);
+            assert_eq!(content.y, fly_y + CARD_PAD);
+            assert_eq!(content.w, FLY_W - CARD_CONTENT_X - CARD_PAD * 2.0);
+            assert_eq!(content.h, FLY_H - CARD_PAD * 2.0);
+            assert!(content.x >= fly_x + CARD_CONTENT_X);
+            assert!(content.right() <= fly_x + FLY_W);
+            assert!(content.bottom() <= fly_y + FLY_H);
+        }
     }
 
     /// v0.7 rail: five 32 x 32 tiles with 5 DIP gaps, 18 DIP glyphs and a

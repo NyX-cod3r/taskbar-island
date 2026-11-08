@@ -399,6 +399,22 @@
   - `window.rs` now holds the last snapshot on `None` (`media_gone`): one-shot
     `MEDIA_CLEAR_TIMER_ID` clears it after `design::MEDIA_CLEAR_MS` (3 s), and
     `note_media_command` stretches that deadline to `design::MEDIA_COMMAND_HOLD_MS` (6 s) after one
+
+## Version naming (x.y.z)
+
+Current version: `0.8.0` → `x = 0`, `y = 8`, `z = 0`.
+
+| Part | Meaning | When to bump |
+|------|---------|--------------|
+| `x` (major) | A **huge overhaul upgrade** — the whole app / all cards reworked at once. | Only when *every* card is at its peak **and I (the owner) approve** moving to the next major. The first public release will be `1.0.0` (not before). |
+| `y` (minor) | An **upgrade on a single feature** plus small incremental upgrades that come with it — e.g. one card gets a complete overhaul or a large new capability. | Bump `y` (and reset `z` to 0) when a card or feature is materially upgraded/overhauled. |
+| `z` (patch) | **Minor bug fixes** and tiny changes. | Bump `z` for small bug fixes, minor tweaks, and small changes that do not overhaul a card. |
+
+Rules:
+- Never hardcode the version in multiple places. It lives in `Cargo.toml` (`version = "x.y.z"`), the installer `AppVersion`, the Windows resource/version info, and About/tray text. One `version_consistency` test asserts they all match.
+- Before `1.0.0` we stay at `x = 0`. `1.0.0` is the first public release, gated on all cards being perfect and owner approval.
+- Example flow from here: small bug fix → `0.8.1`; a card overhaul → `0.9.0`; owner-approved public launch → `1.0.0`.
+
     of our transport clicks because a slow track load can outlast the normal grace. A returning
     snapshot cancels the timer; a real session end still clears when the window passes. Still
     event-driven: one timer per gap, killed in `WM_DESTROY`.

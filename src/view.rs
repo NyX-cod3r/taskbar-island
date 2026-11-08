@@ -1060,14 +1060,10 @@ pub fn is_image(path: &str) -> bool {
 }
 
 /// Interior of the expanded card: the content column after the rail and the
-/// 1 DIP divider, inset by the card padding.
+/// 1 DIP divider, inset by the card padding. Delegates to the single source of
+/// truth, `design::card_content_rect()`.
 pub fn content_rect(fly: RectD) -> RectD {
-    RectD::new(
-        fly.x + design::CARD_CONTENT_X + design::CARD_PAD_X,
-        fly.y + design::CARD_PAD_Y,
-        design::CARD_CONTENT_W,
-        design::CARD_CONTENT_H,
-    )
+    design::card_content_rect(fly)
 }
 
 #[cfg(test)]

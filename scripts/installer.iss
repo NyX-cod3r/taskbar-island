@@ -11,7 +11,7 @@
 #endif
 
 #define MyAppName "TaskbarIsland"
-#define MyAppVersion "0.7.0"
+#define MyAppVersion "0.8.0"
 #define MyAppPublisher "TaskbarIsland"
 #define MyAppExeName "taskbar-island.exe"
 #define SetupCopyName "TaskbarIsland-Setup.exe"

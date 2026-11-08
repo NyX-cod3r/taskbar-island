@@ -105,3 +105,65 @@ fn main() {
         eprintln!("message loop failed: {error}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Release gate: the version is declared in exactly one place (Cargo.toml)
+// and every artifact that shows a version must agree with it.
+
+#[cfg(test)]
+mod version_tests {
+    use std::fs;
+
+    fn read(path: &str) -> String {
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"))
+    }
+
+    /// `Cargo.toml` is the single source of truth for the package version.
+    fn cargo_version() -> String {
+        let content = read(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("version = ") {
+                return rest.trim().trim_matches('"').to_string();
+            }
+        }
+        panic!("version not found in Cargo.toml");
+    }
+
+    /// `scripts/installer.iss` → `#define MyAppVersion`.
+    fn installer_version() -> String {
+        let content = read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/scripts/installer.iss"
+        ));
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("#define MyAppVersion ") {
+                return rest.trim().trim_matches('"').to_string();
+            }
+        }
+        panic!("MyAppVersion not found in installer.iss");
+    }
+
+    /// `assets/app.rc` → `VALUE "FileVersion", "..."`.
+    fn resource_version() -> String {
+        let content = read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/app.rc"));
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix(r#"VALUE "FileVersion", "#) {
+                return rest.trim().trim_matches('"').to_string();
+            }
+        }
+        panic!("FileVersion not found in app.rc");
+    }
+
+    #[test]
+    fn version_consistency() {
+        let expected = "0.8.0";
+        assert_eq!(cargo_version(), expected, "Cargo.toml version");
+        assert_eq!(installer_version(), expected, "installer AppVersion");
+        assert_eq!(resource_version(), expected, "resource FileVersion");
+        assert_eq!(cargo_version(), installer_version());
+        assert_eq!(cargo_version(), resource_version());
+    }
+}
