@@ -575,7 +575,7 @@ fn parse(path: &str) -> Vec<Subpath> {
     let mut open: Option<Subpath> = None;
     // Reflect the previous cubic's second control point for `S`/`s`.
     let mut prev_ctrl: Option<Vector2> = None;
-    let mut cmd = b'M';
+    let mut cmd;
 
     while let Some(c) = lex.command() {
         cmd = c;

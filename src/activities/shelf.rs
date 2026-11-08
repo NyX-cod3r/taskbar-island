@@ -29,7 +29,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::Shell::{DragQueryFileW, SHCreateStdEnumFmtEtc, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
-use crate::json::{self, Json};
+use crate::json::{self};
 use crate::settings;
 
 pub const WM_APP_SHELF: u32 = WM_APP + 4;
@@ -132,16 +132,6 @@ impl ShelfStore {
         overflow
     }
 
-    /// Removes parked references only. The files on disk are never touched.
-    pub fn remove(&mut self, index: usize) -> Option<String> {
-        if index >= self.paths.len() {
-            return None;
-        }
-        let removed = self.paths.remove(index);
-        self.save();
-        Some(removed)
-    }
-
     /// Removes several parked references at once; indices may arrive in any
     /// order and duplicates are ignored.
     pub fn remove_indices(&mut self, indices: &[usize]) {
@@ -207,7 +197,12 @@ impl ShelfStore {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let doc = Json::Arr(self.paths.iter().map(|p| Json::Str(p.clone())).collect());
+            let doc = json::Json::Arr(
+                self.paths
+                    .iter()
+                    .map(|p| json::Json::Str(p.clone()))
+                    .collect(),
+            );
             let _ = std::fs::write(path, json::to_string_pretty(&doc));
         }
     }
@@ -503,7 +498,7 @@ impl IDataObject_Impl for FileDataObject_Impl {
         // SAFETY: OLE passes a valid FORMATETC pointer.
         let format = unsafe { &*format };
         if format.cfFormat != windows::Win32::System::Ole::CF_HDROP.0
-            || (format.tymed as u32 & TYMED_HGLOBAL.0 as u32) == 0
+            || (format.tymed & TYMED_HGLOBAL.0 as u32) == 0
         {
             return Err(Error::from_hresult(
                 windows::Win32::Foundation::DV_E_FORMATETC,
@@ -526,7 +521,7 @@ impl IDataObject_Impl for FileDataObject_Impl {
         // SAFETY: OLE passes a valid FORMATETC pointer.
         let format = unsafe { &*format };
         if format.cfFormat == windows::Win32::System::Ole::CF_HDROP.0
-            && (format.tymed as u32 & TYMED_HGLOBAL.0 as u32) != 0
+            && (format.tymed & TYMED_HGLOBAL.0 as u32) != 0
         {
             HRESULT(0)
         } else {
@@ -670,6 +665,7 @@ pub fn open(path: &str) -> bool {
 }
 
 /// Folder that contains the file, for the single-file subtitle.
+#[allow(dead_code)] // The Convert card's single-file subtitle (B2).
 pub fn parent_name(path: &str) -> Option<String> {
     Path::new(path)
         .parent()
@@ -678,6 +674,7 @@ pub fn parent_name(path: &str) -> Option<String> {
 }
 
 /// A stable display key for the tray/menu and tests.
+#[allow(dead_code)] // Tray/menu display key; tests also use it.
 pub fn file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -700,8 +697,9 @@ mod tests {
         let b = dir.join("b.txt");
         std::fs::write(&a, b"a").unwrap();
         std::fs::write(&b, b"b").unwrap();
-        let mut store = ShelfStore::default();
-        store.paths = vec![a.display().to_string(), b.display().to_string()];
+        let mut store = ShelfStore {
+            paths: vec![a.display().to_string(), b.display().to_string()],
+        };
         store.add(vec![a.display().to_string()]);
         assert_eq!(store.len(), 2);
         assert!(store.paths()[0].ends_with("a.txt"));

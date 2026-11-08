@@ -1,16 +1,16 @@
 //! anchor.rs — all taskbar/tray geometry and visibility policy.
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::UI::Shell::{
-    SHAppBarMessage, SHQueryUserNotificationState, ABM_GETSTATE, ABM_NEW, ABS_AUTOHIDE, APPBARDATA,
+    SHAppBarMessage, SHQueryUserNotificationState, ABM_GETSTATE, ABS_AUTOHIDE, APPBARDATA,
     QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowExW, FindWindowW, GetCursorPos, GetWindowRect, IsWindowVisible,
+    FindWindowExW, FindWindowW, GetWindowRect, IsWindowVisible,
 };
 
 use crate::design::{
@@ -90,33 +90,6 @@ impl Anchor {
         Some(anchor)
     }
 
-    /// Deterministic geometry for `--snapshot` (no Explorer required).
-    pub fn synthetic(dpi: u32, screen_w: i32, screen_h: i32, taskbar_h: i32) -> Self {
-        let tb = RECT {
-            left: 0,
-            top: screen_h - taskbar_h,
-            right: screen_w,
-            bottom: screen_h,
-        };
-        let scale = dpi as f32 / 96.0;
-        let tray_left = screen_w - (280.0 * scale) as i32;
-        let tray = RECT {
-            left: tray_left,
-            top: tb.top,
-            right: screen_w,
-            bottom: tb.bottom,
-        };
-        let work = RECT {
-            left: 0,
-            top: 0,
-            right: screen_w,
-            bottom: tb.top,
-        };
-        let mut anchor = Self::layout(tb, tray, work, dpi, 0);
-        anchor.visible = true;
-        anchor
-    }
-
     pub fn layout(taskbar: RECT, tray: RECT, work: RECT, dpi: u32, slot_offset_dip: i32) -> Self {
         let scale = dpi.max(96) as f32 / 96.0;
         let tb_left = taskbar.left as f32 / scale;
@@ -184,26 +157,6 @@ impl Anchor {
     /// Convert a screen-DIP rect to window-local DIPs.
     pub fn local(&self, r: RectD) -> RectD {
         RectD::new(r.x - self.origin.0, r.y - self.origin.1, r.w, r.h)
-    }
-
-    /// Local DIP point of the cursor, if the app window exists.
-    pub fn cursor_local(&self) -> Option<(f32, f32)> {
-        let mut pt = POINT::default();
-        // SAFETY: GetCursorPos writes one POINT.
-        unsafe { GetCursorPos(&mut pt) }.ok()?;
-        Some((
-            pt.x as f32 / self.scale - self.origin.0,
-            pt.y as f32 / self.scale - self.origin.1,
-        ))
-    }
-
-    pub fn screen_client_rect(&self) -> RectD {
-        RectD::new(
-            0.0,
-            0.0,
-            (self.window.right - self.window.left) as f32 / self.scale,
-            (self.window.bottom - self.window.top) as f32 / self.scale,
-        )
     }
 }
 
@@ -273,17 +226,6 @@ fn taskbar_is_shown(tb: RECT, monitor: RECT) -> bool {
 fn find_taskbar_hwnd() -> HWND {
     // SAFETY: class lookup only.
     unsafe { FindWindowW(TASKBAR_CLASS, PCWSTR::null()) }.unwrap_or_default()
-}
-
-pub fn register_appbar(hwnd: HWND, callback_msg: u32) -> bool {
-    let mut data = APPBARDATA {
-        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
-        hWnd: hwnd,
-        uCallbackMessage: callback_msg,
-        ..Default::default()
-    };
-    // SAFETY: APPBARDATA has a valid hwnd and size.
-    unsafe { SHAppBarMessage(ABM_NEW, &mut data) != 0 }
 }
 
 #[cfg(test)]

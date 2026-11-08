@@ -249,6 +249,7 @@ impl SourceFormat {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Dimensions/EXIF surface in the Convert header (B2).
 pub struct ImageInfo {
     pub format: SourceFormat,
     pub width: u32,
@@ -304,6 +305,7 @@ impl ProbeKind {
 pub struct Probe {
     pub path: String,
     pub name: String,
+    #[allow(dead_code)] // File size in the Convert header meta line (B2).
     pub bytes: u64,
     pub kind: ProbeKind,
 }
@@ -333,6 +335,7 @@ impl Probe {
     }
 
     /// "2.4 MB · 4032 × 3024" for the Convert header.
+    #[allow(dead_code)] // The Convert header draws it with the card (B2).
     pub fn meta_line(&self) -> String {
         match &self.kind {
             ProbeKind::Image(info) => format!(

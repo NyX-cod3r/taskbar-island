@@ -227,7 +227,7 @@ impl TooltipWindow {
         let sub_h = px(design::TOOLTIP_SUB_LINE);
 
         // SAFETY: measuring text on a screen DC with a temporary font.
-        let (mut text_w, mut text_h, dc, font, sub_font) = unsafe {
+        let (mut text_w, text_h, _dc, font, sub_font) = unsafe {
             let screen = GetDC(None);
             let dc = CreateCompatibleDC(Some(screen));
             ReleaseDC(None, screen);
@@ -250,9 +250,8 @@ impl TooltipWindow {
             let mut w = rc.right;
             let h_title = rc.bottom.max(title_h);
             let mut h = h_title;
-            let mut detail = Vec::new();
             if let Some(detail_text) = request.detail {
-                detail = HSTRING::from(detail_text).to_vec();
+                let mut detail = HSTRING::from(detail_text).to_vec();
                 let mut rc2 = RECT {
                     left: 0,
                     top: 0,

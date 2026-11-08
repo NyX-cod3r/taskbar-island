@@ -124,10 +124,12 @@ impl Countdown {
         }
     }
 
+    #[allow(dead_code)] // Timer +1 button (A-scope); tests also use it.
     pub fn add_minute(&mut self) {
         self.add_minutes(1);
     }
 
+    #[allow(dead_code)] // N-minute presets (A-scope).
     pub fn add_minutes(&mut self, minutes: u32) {
         if self.finished || minutes == 0 {
             return;

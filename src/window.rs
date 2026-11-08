@@ -557,7 +557,7 @@ pub fn create(
             rect.bottom - rect.top,
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )?;
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
     let settings = crate::settings::Settings::load();
     let (media_tx, media_command_rx) = mpsc::channel();
@@ -686,7 +686,7 @@ pub fn message_loop() -> Result<()> {
         }
         // SAFETY: message was populated by GetMessageW.
         unsafe {
-            TranslateMessage(&message);
+            let _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }
@@ -946,7 +946,7 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 crate::log::log_err("window.paint", &error);
             }
             // SAFETY: balanced with BeginPaint above.
-            unsafe { EndPaint(hwnd, &paint) };
+            let _ = unsafe { EndPaint(hwnd, &paint) };
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
@@ -1459,14 +1459,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                             surface.retract_drag_convert();
                         }
                     }
-                    SHELF_DRAG_AT => {
-                        if surface.drag_convert {
-                            let (px, py) = unpack_point(lparam);
-                            let hover = surface
-                                .hit_pointer_at_screen(px, py)
-                                .filter(|element| matches!(element, Element::ConvertOption(_)));
-                            surface.set_hover(hover, Instant::now());
-                        }
+                    SHELF_DRAG_AT if surface.drag_convert => {
+                        let (px, py) = unpack_point(lparam);
+                        let hover = surface
+                            .hit_pointer_at_screen(px, py)
+                            .filter(|element| matches!(element, Element::ConvertOption(_)));
+                        surface.set_hover(hover, Instant::now());
                     }
                     _ => {}
                 }
@@ -1715,16 +1713,13 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             with_surface(|surface| {
                 let mut changed = false;
                 let now = std::time::Instant::now();
-                if surface.timer.running() {
-                    if surface.timer.tick(now) {
-                        surface.apply_timer(now);
-                        changed = true;
-                    } else if surface.view.main.as_ref().map(|view| view.kind)
-                        == Some(ActivityKind::Timer)
-                    {
-                        surface.apply_timer(now);
-                        changed = true;
-                    }
+                if surface.timer.running()
+                    && (surface.timer.tick(now)
+                        || surface.view.main.as_ref().map(|view| view.kind)
+                            == Some(ActivityKind::Timer))
+                {
+                    surface.apply_timer(now);
+                    changed = true;
                 }
                 if surface.wave_animating() {
                     surface.advance_wave(now);
@@ -1775,8 +1770,8 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let _ = KillTimer(Some(hwnd), CLIP_SWEEP_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_POP_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_CONFIRM_TIMER_ID);
-                UnregisterHotKey(Some(hwnd), TIMER_HOTKEY_ID);
-                UnregisterHotKey(Some(hwnd), TIMER_FALLBACK_HOTKEY_ID);
+                let _ = UnregisterHotKey(Some(hwnd), TIMER_HOTKEY_ID);
+                let _ = UnregisterHotKey(Some(hwnd), TIMER_FALLBACK_HOTKEY_ID);
             }
             // SAFETY: the drop target belongs to this UI thread and window.
             unsafe {
@@ -1805,6 +1800,7 @@ impl Surface {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new(
         hwnd: HWND,
         width: u32,
@@ -5393,7 +5389,7 @@ mod tests {
     /// was copied; if the user switched away the keystroke is dropped (5.7).
     #[test]
     fn paste_only_fires_for_the_window_that_was_copied_for() {
-        let first = HWND(1usize as *mut _);
+        let first = HWND(std::ptr::dangling_mut());
         let second = HWND(2usize as *mut _);
         assert!(paste_is_due(first, first));
         assert!(!paste_is_due(first, second));

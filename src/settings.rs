@@ -35,6 +35,7 @@ impl Default for Enabled {
 }
 
 impl Enabled {
+    #[allow(dead_code)] // Activity gating lands with the pill/activity work (A).
     pub fn allows(self, kind: ActivityKind) -> bool {
         match kind {
             ActivityKind::Music => self.music,
@@ -186,10 +187,6 @@ pub fn shelf_path() -> PathBuf {
     data_dir().join("shelf.json")
 }
 
-pub fn log_path() -> PathBuf {
-    data_dir().join("log.txt")
-}
-
 pub fn autostart_enabled() -> bool {
     read_run_value().is_some()
 }
@@ -285,7 +282,9 @@ fn read_run_value() -> Option<String> {
         return None;
     }
     let wide: Vec<u16> = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .take_while(|c| *c != 0)
         .collect();
@@ -309,8 +308,10 @@ mod tests {
 
     #[test]
     fn enabled_gates_activities() {
-        let mut e = Enabled::default();
-        e.music = false;
+        let e = Enabled {
+            music: false,
+            ..Enabled::default()
+        };
         assert!(!e.allows(ActivityKind::Music));
         assert!(e.allows(ActivityKind::Call));
     }

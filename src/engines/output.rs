@@ -634,7 +634,7 @@ mod tests {
         fs::write(&wrong, b"not a png").unwrap();
         assert!(verify(&wrong, TargetFormat::Image(ImageFormat::Png)).is_err());
         let right = workspace.join("right.png");
-        fs::write(&right, &[0x89, b'P', b'N', b'G', 0, 0, 0]).unwrap();
+        fs::write(&right, [0x89, b'P', b'N', b'G', 0, 0, 0]).unwrap();
         assert!(verify(&right, TargetFormat::Image(ImageFormat::Png)).is_ok());
     }
 }

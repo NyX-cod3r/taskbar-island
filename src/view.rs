@@ -15,6 +15,7 @@ pub enum IconId {
     Clock,
     Speaker,
     SpeakerMuted,
+    #[allow(dead_code)] // Dropdown chrome lands with the Convert card (B2).
     DownArrow,
     Mic,
     MicMuted,
@@ -40,10 +41,13 @@ pub enum IconId {
     Compress,
     Resize,
     EyeOff,
+    #[allow(dead_code)] // Overflow menus land with the Convert card (B2).
     More,
     Copy,
     Undo,
+    #[allow(dead_code)] // "Add files" lands with the Convert card (B2).
     Plus,
+    #[allow(dead_code)] // Card back action lands with the Convert card (B2).
     Back,
     SelectAll,
     Trash,
@@ -71,6 +75,7 @@ pub enum IconId {
 pub enum Element {
     Pill,
     Bubble,
+    #[allow(dead_code)] // Switch-chip hover/hit lands with the pill states (A).
     SwitchChip,
     ShelfTile(usize),
     ShelfRemove(usize),
@@ -119,6 +124,7 @@ pub enum Element {
 #[derive(Debug, Clone)]
 pub struct ConvertTabView {
     pub tab: Tab,
+    #[allow(dead_code)] // Tab labels land with the Convert card (B2).
     pub label: String,
 }
 
@@ -198,6 +204,7 @@ pub enum Trailing {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // Subtitle line lands with the music card (B2).
 pub struct Subtitle {
     pub prefix: String,
     pub accent: Option<String>,
@@ -240,6 +247,7 @@ pub struct CallBody {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // size/badge/image line lands with the shelf tile UI (B2).
 pub struct FileTileView {
     /// Index in the whole shelf, not just the visible window.
     pub index: usize,
@@ -287,6 +295,7 @@ pub struct ShelfBody {
     pub max_scroll: f32,
     pub content_h: f32,
     /// The soft cap dropped the oldest entries; the count tooltip says so.
+    #[allow(dead_code)] // Overflow tooltip lands with the shelf toolbar (B2).
     pub overflow: bool,
     /// Files are on their way to the converter; the toolbar stays visual only.
     pub converting: bool,
@@ -325,6 +334,7 @@ pub struct ConvertOptionView {
     pub format: Option<String>,
     pub icon: Option<IconId>,
     /// Tooltip and accessibility name.
+    #[allow(dead_code)] // Option tooltips land with the Convert card (B2).
     pub label: String,
 }
 
@@ -354,6 +364,7 @@ pub struct WorkingView {
     pub source_color: Color,
     pub target_badge: String,
     /// Dashed target tile until the file lands.
+    #[allow(dead_code)] // Target tile color lands with the working state (B2).
     pub target_color: Color,
     /// 0=reading, 1=converting, 2=saving; earlier stages show a green check
     /// and later ones stay gray.
@@ -381,6 +392,7 @@ pub struct ConvertBody {
     pub title: String,
     /// Type badge text and color for the 24 DIP header tile when there is no
     /// thumbnail.
+    #[allow(dead_code)] // Header badge lands with the Convert card (B2).
     pub badge: String,
     pub badge_color: Color,
     pub icon: IconId,
@@ -471,11 +483,13 @@ pub struct ClipRowView {
     /// Code-like text previews use the mono font.
     pub mono: bool,
     pub link: bool,
+    #[allow(dead_code)] // Row image chip lands with the clipboard card (B1).
     pub image: bool,
     pub thumb: Option<Arc<AlbumArt>>,
     pub age: String,
     /// Last 24 h of retention: the age turns amber.
     pub expiring: bool,
+    #[allow(dead_code)] // Pin marker lands with the clipboard card (B1).
     pub pinned: bool,
     /// Every path of a file row is gone.
     pub dimmed: bool,
@@ -522,6 +536,7 @@ pub struct FlyoutView {
     pub leading: Leading,
     pub title: String,
     /// Music only: `Artist · App`.
+    #[allow(dead_code)] // Subtitle line lands with the music card (B2).
     pub subtitle: Subtitle,
     /// Right-aligned header status.
     pub status: String,
@@ -543,6 +558,7 @@ pub struct ActivityView {
 pub struct SecondView {
     pub accent: Color,
     pub icon: IconId,
+    #[allow(dead_code)] // Second-pill label lands with the pill states (A).
     pub label: String,
 }
 
@@ -736,7 +752,7 @@ pub fn shelf_scroll(len: usize, scroll: f32) -> ShelfScroll {
     let first_row = (scroll / row_h).floor() as usize;
     let offset = scroll - first_row as f32 * row_h;
     let rows = ((design::SHELF_VIEW_H + offset) / row_h).ceil() as usize + 1;
-    let rows = rows.min(rows_total.saturating_sub(first_row)).max(0);
+    let rows = rows.min(rows_total.saturating_sub(first_row));
     ShelfScroll {
         first_row,
         rows,

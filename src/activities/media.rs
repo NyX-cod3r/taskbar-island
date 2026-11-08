@@ -34,12 +34,14 @@ use crate::view::{AlbumArt, MediaControls, RepeatMode};
 pub struct MediaSnapshot {
     pub title: String,
     pub artist: String,
+    #[allow(dead_code)] // Album line in the media pill (not drawn yet).
     pub album: String,
     pub source_app: String,
     pub playing: bool,
     pub position: f64,
     pub duration: f64,
     /// True when the session exposes a real start/end timeline.
+    #[allow(dead_code)] // Live-radio badge (not drawn yet).
     pub live: bool,
     pub shuffle: bool,
     pub repeat: RepeatMode,
@@ -73,6 +75,7 @@ pub enum MediaCommand {
     Next,
     ToggleShuffle,
     CycleRepeat,
+    #[allow(dead_code)] // Seek bar lands with the media card (B2/A).
     Seek(f64),
     Refresh,
     /// The current GSMTC session object itself changed; re-hook its handlers.
@@ -160,6 +163,9 @@ fn deliver(notify: isize, sender: &Sender<Option<MediaSnapshot>>, snapshot: Opti
     }
 }
 
+// Held for the worker's lifetime so the GSMTC event subscriptions stay
+// registered; the fields are never read back.
+#[allow(dead_code)]
 struct SessionHandlers {
     playback:
         TypedEventHandler<GlobalSystemMediaTransportControlsSession, PlaybackInfoChangedEventArgs>,
@@ -446,7 +452,7 @@ fn decode_thumbnail(
             return None;
         }
         let reader = DataReader::CreateDataReader(&stream).ok()?;
-        let loaded = reader.LoadAsync(length).ok()?.join().ok()? as u32;
+        let loaded = reader.LoadAsync(length).ok()?.join().ok()?;
         let mut bytes = vec![0u8; loaded as usize];
         reader.ReadBytes(&mut bytes).ok()?;
 

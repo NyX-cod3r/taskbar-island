@@ -84,7 +84,7 @@ fn main() {
     engines::start_background_probe();
     // `Anchor::compute` works in physical pixels and needs the display's real
     // DPI. Hard-coding 96 made the whole surface 20 % small at 125 % scaling.
-    let dpi = unsafe { anchor::dpi_for_window(taskbar) };
+    let dpi = anchor::dpi_for_window(taskbar);
     let Some(anchor) = anchor::Anchor::compute(taskbar, dpi, settings.slot_offset_dip) else {
         eprintln!("unable to compute taskbar anchor");
         return;

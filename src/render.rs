@@ -47,8 +47,10 @@ const MASKED_PREVIEW: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u
 #[derive(Debug, Clone, Copy)]
 pub struct ProgressVisual {
     /// Elapsed fraction 0..1.
+    #[allow(dead_code)] // Progress visuals land with the convert/media cards (B2).
     pub fraction: f32,
     pub phase: f32,
+    #[allow(dead_code)] // Progress visuals land with the convert/media cards (B2).
     pub amplitude: f32,
 }
 
@@ -60,6 +62,7 @@ pub struct WaveVisual {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // Icon swap animation lands with the pill states (A).
 pub struct IconSwap {
     pub from_playing: bool,
     pub t: f32,
@@ -96,6 +99,7 @@ pub struct RenderInput<'a> {
     pub progress: Option<ProgressVisual>,
     /// Wave state of the compact pill's progress line (music/timer).
     pub pill_wave: Option<WaveVisual>,
+    #[allow(dead_code)] // Pill icon swap animation lands with pill states (A).
     pub icon_swap: Option<IconSwap>,
     /// Selected rail button, which may run ahead of the fading content while
     /// an activity swap is in flight.
@@ -187,6 +191,7 @@ struct LayoutKey {
     ellipsis: bool,
 }
 
+#[derive(Default)]
 pub struct Painter {
     formats: HashMap<FormatKey, IDWriteTextFormat>,
     layouts: HashMap<LayoutKey, IDWriteTextLayout>,
@@ -204,27 +209,6 @@ pub struct Painter {
     /// (a track id or a path/mtime hash).
     art: HashMap<u64, ID2D1Bitmap>,
     placeholder: Option<ID2D1LinearGradientBrush>,
-}
-
-impl Default for Painter {
-    fn default() -> Self {
-        Self {
-            formats: HashMap::new(),
-            layouts: HashMap::new(),
-            icons: HashMap::new(),
-            app_icons: HashMap::new(),
-            app_fills: HashMap::new(),
-            app_shines: HashMap::new(),
-            ellipsis: None,
-            round_stroke: None,
-            dash_stroke: None,
-            target_key: 0,
-            brushes: HashMap::new(),
-            art_target: 0,
-            art: HashMap::new(),
-            placeholder: None,
-        }
-    }
 }
 
 impl Painter {
@@ -370,7 +354,7 @@ impl Painter {
         let rr = round_rect(r, radius);
         // SAFETY: ordinary stroke call. The style is owned by the painter.
         unsafe {
-            let _ = rt.DrawRoundedRectangle(&rr, &brush, width, style.as_ref());
+            rt.DrawRoundedRectangle(&rr, &brush, width, style.as_ref());
         }
     }
 
@@ -706,10 +690,10 @@ impl Painter {
             rt.SetTransform(&matrix);
             let spec = icons::spec(icon);
             if spec.filled {
-                let _ = rt.FillGeometry(&geometry, &brush, None);
+                rt.FillGeometry(&geometry, &brush, None);
             } else {
                 let style = self.solid_style(rt).ok();
-                let _ = rt.DrawGeometry(
+                rt.DrawGeometry(
                     &geometry,
                     &brush,
                     if stroke_units > 0.0 {
@@ -729,6 +713,7 @@ impl Painter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn icon_center(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -900,7 +885,7 @@ impl Painter {
         unsafe {
             rt.SetTransform(&matrix);
             if let Some(brush) = self.app_gradient(rt, icon) {
-                let _ = brush.SetOpacity(alpha);
+                brush.SetOpacity(alpha);
                 let rr = D2D1_ROUNDED_RECT {
                     rect: square,
                     radiusX: spec.radius,
@@ -910,7 +895,7 @@ impl Painter {
             }
             if spec.shine > 0.0 {
                 if let Some(brush) = self.app_shine(rt, icon) {
-                    let _ = brush.SetOpacity(alpha);
+                    brush.SetOpacity(alpha);
                     // The SVG's sheen is its own rounded rect; a square one
                     // would poke outside the tile's top corners.
                     let rr = D2D1_ROUNDED_RECT {
@@ -927,12 +912,12 @@ impl Painter {
                 };
                 if layer.fill > 0.0 {
                     if let Ok(brush) = self.brush(rt, design::white(alpha * layer.fill)) {
-                        let _ = rt.FillGeometry(&geometry, &brush, None);
+                        rt.FillGeometry(&geometry, &brush, None);
                     }
                 }
                 if layer.stroke > 0.0 {
                     if let Ok(brush) = self.brush(rt, design::white(alpha)) {
-                        let _ = rt.DrawGeometry(&geometry, &brush, layer.stroke, style.as_ref());
+                        rt.DrawGeometry(&geometry, &brush, layer.stroke, style.as_ref());
                     }
                 }
             }
@@ -963,12 +948,9 @@ impl Painter {
         let px = 1.0 / input.scale;
         let accent = accent_of(input.view);
         let open = input.flyout.is_some();
-        let hovered = matches!(input.hover, Some(Element::Pill | Element::Bubble));
         let pressed = input.pressed_amount(Element::Pill).is_some();
         let active_mix = if open || pressed {
             1.0
-        } else if hovered {
-            input.hover_mix.clamp(0.0, 1.0)
         } else {
             input.hover_mix.clamp(0.0, 1.0)
         };
@@ -1088,7 +1070,7 @@ impl Painter {
                                         ) {
                                             // SAFETY: path/brush/style are alive.
                                             unsafe {
-                                                let _ = rt.DrawGeometry(
+                                                rt.DrawGeometry(
                                                     &path,
                                                     &fill,
                                                     design::PILL_WAVE_STROKE,
@@ -1226,7 +1208,7 @@ impl Painter {
 
         // Hover sheen: flat strips, no gradient, clipped by the rounded pill.
         if let Some(t) = input.sheen {
-            if active_mix > 0.0 && t >= 0.0 && t <= 1.0 {
+            if active_mix > 0.0 && (0.0..=1.0).contains(&t) {
                 let clip = rounded_layer(rt, r, design::R_SURFACE);
                 if let Some(_clip) = &clip {
                     let w = r.w;
@@ -2085,7 +2067,7 @@ impl Painter {
             let dest = d2d_rect(r);
             // SAFETY: bitmap is alive and the target is valid.
             unsafe {
-                let _ = rt.DrawBitmap(
+                rt.DrawBitmap(
                     &bitmap,
                     Some(&dest),
                     1.0,
@@ -2098,6 +2080,8 @@ impl Painter {
         true
     }
 
+    #[allow(dead_code)] // A's shelf toolbar calls it; ours draws flat buttons.
+    #[allow(clippy::too_many_arguments)]
     fn draw_small_button(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -2137,6 +2121,7 @@ impl Painter {
 
     // --------------------------------------------------------------- bodies
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_music_card(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -2421,8 +2406,8 @@ impl Painter {
             let clip = rounded_layer(rt, rect, design::R_ART);
             // SAFETY: the cached brush and local transform are valid.
             unsafe {
-                let _ = brush.SetOpacity(alpha);
-                let _ = brush.SetTransform(&Matrix3x2 {
+                brush.SetOpacity(alpha);
+                brush.SetTransform(&Matrix3x2 {
                     M11: rect.w,
                     M22: rect.h,
                     M31: rect.x,
@@ -2435,7 +2420,7 @@ impl Painter {
                     radiusY: 0.0,
                 };
                 rt.FillRoundedRectangle(&unit, &brush);
-                let _ = brush.SetTransform(&Matrix3x2::identity());
+                brush.SetTransform(&Matrix3x2::identity());
             }
             drop_rounded_layer(rt, clip);
         }
@@ -2503,8 +2488,7 @@ impl Painter {
                 if let Ok(brush) = self.brush(rt, accent_of(input.view).with_alpha(alpha)) {
                     // SAFETY: path/brush/style are alive.
                     unsafe {
-                        let _ =
-                            rt.DrawGeometry(&path, &brush, design::MUSIC_WAVE_STROKE, Some(&style));
+                        rt.DrawGeometry(&path, &brush, design::MUSIC_WAVE_STROKE, Some(&style));
                     }
                 }
             }
@@ -2526,6 +2510,7 @@ impl Painter {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn flat_icon_button(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -2855,6 +2840,7 @@ impl Painter {
         self.draw_shelf_scrollbar(rt, input, s, inner, viewport, alpha, hits);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn shelf_tool_button(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -2947,6 +2933,7 @@ impl Painter {
         hits.add(Element::ConvertButton, rect, design::SHELF_CONVERT_R);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_shelf_scrollbar(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -3200,7 +3187,7 @@ impl Painter {
         let dest = d2d_rect(r);
         // SAFETY: bitmap is alive and the target is valid.
         unsafe {
-            let _ = rt.DrawBitmap(
+            rt.DrawBitmap(
                 &bitmap,
                 Some(&dest),
                 alpha,
@@ -3856,6 +3843,7 @@ impl Painter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_convert_failed(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -4329,6 +4317,7 @@ fn rail_icon(kind: ActivityKind) -> IconId {
     }
 }
 
+#[allow(dead_code)] // Rail hover labels land with the rail interaction (A).
 fn rail_label(kind: ActivityKind) -> &'static str {
     match kind {
         ActivityKind::Music => "Music",
@@ -4421,15 +4410,13 @@ mod tests {
         assert!(matches!(stage_icon(9), IconId::Save));
     }
 
-    #[test]
-    fn working_and_done_layouts_fit_the_inner_card() {
-        use crate::design as d;
-        // Tiles 18..74, bar 96..104, stage dots 116..142 of a 168 DIP column.
-        assert!(18.0 + d::CONVERT_STAGE_TILE < 96.0);
-        assert!(96.0 + d::CONVERT_PROGRESS_H < 116.0);
-        assert!(116.0 + d::CONVERT_STAGE_ICON < d::CONVERT_INNER_H);
-        // Done: check row, then buttons, then the countdown line.
-        assert!(78.0 + d::CONVERT_DONE_BTN_H < d::CONVERT_INNER_H - 18.0);
-        assert!((d::CONVERT_INNER_W - 12.0) / 3.0 > d::CONVERT_DONE_BTN_H * 2.0);
-    }
+    // Working and done layouts fit the inner card: tiles 18..74, bar 96..104,
+    // stage dots 116..142 of a 168 DIP column, and the done state's check row,
+    // buttons and countdown line. Checked at compile time.
+    use crate::design as d;
+    const _: () = assert!(18.0 + d::CONVERT_STAGE_TILE < 96.0);
+    const _: () = assert!(96.0 + d::CONVERT_PROGRESS_H < 116.0);
+    const _: () = assert!(116.0 + d::CONVERT_STAGE_ICON < d::CONVERT_INNER_H);
+    const _: () = assert!(78.0 + d::CONVERT_DONE_BTN_H < d::CONVERT_INNER_H - 18.0);
+    const _: () = assert!((d::CONVERT_INNER_W - 12.0) / 3.0 > d::CONVERT_DONE_BTN_H * 2.0);
 }

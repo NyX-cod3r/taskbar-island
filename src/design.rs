@@ -1,4 +1,4 @@
-//! design.rs — every size, timing and color from the TaskbarIsland v1.0 spec.
+//! design.rs â€” every size, timing and color from the TaskbarIsland v1.0 spec.
 //!
 //! This is the single source of truth. No other module may introduce a magic
 //! dimension, duration or token color.
@@ -15,11 +15,6 @@ pub const BUBBLE: f32 = 32.0;
 pub const BUBBLE_GAP: f32 = 8.0;
 pub const FLY_W: f32 = 400.0;
 pub const FLY_H: f32 = 192.0;
-pub const FLY_PAD: f32 = 16.0;
-pub const TOP_ROW_H: f32 = 56.0;
-pub const ROW_GAP: f32 = 12.0;
-pub const BODY_H: f32 = 92.0;
-pub const LEAD_TILE: f32 = 56.0;
 pub const PILL_TILE: f32 = 24.0;
 /// Equal horizontal padding: the leading tile's gap to the left edge must
 /// match the text's gap to the right edge.
@@ -195,7 +190,7 @@ pub const CLIP_EMPTY_STROKE: f32 = 2.0;
 pub const CLIP_PAUSED_DOT: f32 = 6.0;
 /// The pill shows "+N" for this long after a new copy, then the idle look.
 pub const CLIP_POP_MS: u32 = 2000;
-/// Two-step Clear (spec 3.3): the trash swaps for a red ✓ and a ✕ for this
+/// Two-step Clear (spec 3.3): the trash swaps for a red âœ“ and a âœ• for this
 /// long, then the confirm auto-cancels.
 pub const CLIP_CLEAR_CONFIRM_MS: u32 = 4000;
 /// Danger tint of the armed Clear check.
@@ -226,8 +221,6 @@ pub const CLIP_FILTER_GLYPH: f32 = 14.0;
 pub const CLIP_FILTER_ACTIVE: Color = rgba(0x5F, 0xD0, 0xC5, 0.24);
 pub const CLIP_TOOL_BTN: f32 = 28.0;
 pub const CLIP_TOOL_GAP: f32 = 6.0;
-pub const CLIP_TOOL_GLYPH: f32 = 16.0;
-pub const CLIP_COUNT_FONT: f32 = 11.0;
 /// History rows: 32 DIP tall, 2 DIP gap, radius 6.
 pub const CLIP_ROW_H: f32 = 32.0;
 pub const CLIP_ROW_GAP: f32 = 2.0;
@@ -242,11 +235,7 @@ pub const CLIP_THUMB_H: f32 = 18.0;
 /// Hover/focus cluster: three 24 DIP icon buttons replace the age.
 pub const CLIP_ACTION_BTN: f32 = 24.0;
 pub const CLIP_ACTION_GAP: f32 = 2.0;
-pub const CLIP_ACTION_GLYPH: f32 = 14.0;
-pub const CLIP_PREVIEW_FONT: f32 = 12.0;
-pub const CLIP_AGE_FONT: f32 = 11.0;
 pub const CLIP_AGE_W: f32 = 30.0;
-pub const CLIP_PIN_GLYPH: f32 = 12.0;
 pub const CLIP_LINK: Color = rgb(0x8F, 0xB8, 0xFF);
 /// Row-preview tooltips cap the quoted text at ~200 characters.
 pub const CLIP_TIP_CHARS: usize = 200;
@@ -262,7 +251,6 @@ pub const FONT_MONO_FALLBACK: &str = "Consolas";
 
 /// Segmented, icon-only tab strip: 2 DIP padding around 24 DIP tabs.
 pub const CONVERT_TABS_H: f32 = 28.0;
-pub const CONVERT_TAB_PAD: f32 = 2.0;
 pub const CONVERT_TAB: f32 = 24.0;
 pub const CONVERT_TAB_GAP: f32 = 2.0;
 pub const CONVERT_TAB_GLYPH: f32 = 15.0;
@@ -270,7 +258,6 @@ pub const CONVERT_TAB_GLYPH: f32 = 15.0;
 /// Options: 5 columns x 2 rows of 40 DIP tiles with a 6 DIP gap.
 pub const CONVERT_OPTIONS_H: f32 = 86.0;
 pub const CONVERT_OPTION_COLS: usize = 5;
-pub const CONVERT_OPTION_COUNT: usize = CONVERT_OPTION_COLS * 2;
 pub const CONVERT_OPTION_H: f32 = 40.0;
 pub const CONVERT_OPTION_GAP: f32 = 6.0;
 pub const CONVERT_OPTION_R: f32 = 6.0;
@@ -284,22 +271,6 @@ pub const CONVERT_OPTION_W: f32 = (CONVERT_INNER_W
 pub const CONVERT_MAX_OPTIONS: usize = 10;
 
 // v0.5 header/actions still used by the provisional Working/Done states.
-pub const CONVERT_ROW_GAP: f32 = 8.0;
-pub const CONVERT_GRID_GAP: f32 = 6.0;
-pub const CONVERT_TILE_H: f32 = 44.0;
-pub const CONVERT_TILE_R: f32 = 8.0;
-pub const CONVERT_TITLE_FONT: f32 = 16.0;
-pub const CONVERT_TITLE_LINE: f32 = 20.0;
-pub const CONVERT_SUB_FONT: f32 = 11.0;
-pub const CONVERT_SUB_LINE: f32 = 15.0;
-pub const CONVERT_GLYPH: f32 = 16.0;
-/// Shelf header "Convert" chip.
-pub const CONVERT_BTN_W: f32 = 84.0;
-pub const CONVERT_BTN_H: f32 = 26.0;
-pub const CONVERT_BTN_R: f32 = 6.0;
-pub const CONVERT_BTN_GAP: f32 = 6.0;
-pub const CONVERT_BTN_GLYPH: f32 = 15.0;
-pub const CONVERT_BTN_FONT: f32 = 13.0;
 /// Hint row under the grid, same height as the shelf hint.
 pub const CONVERT_HINT_H: f32 = 15.0;
 // Converting / done states
@@ -321,9 +292,6 @@ pub const CONVERT_DONE_BTN_R: f32 = 8.0;
 pub const CONVERT_DONE_COUNTDOWN_H: f32 = 3.0;
 pub const CONVERT_DONE_ICON: f32 = 18.0;
 pub const CONVERT_COUNTDOWN_MS: u32 = 5000;
-/// The progress row appears once a job outlives this; short jobs go straight
-/// to the result without a flash.
-pub const CONVERT_PROGRESS_DELAY_MS: u32 = 250;
 
 // Card motion. The 160 ms indicator uses ease-out (0.2, 0, 0, 1).
 pub const RAIL_MOVE_MS: u32 = 160;
@@ -347,44 +315,8 @@ pub const TOOLTIP_MAX_W: f32 = 280.0;
 /// Fill/border/text from the ShelfTip artboard.
 pub const TOOLTIP_FILL: Color = rgb(0x2C, 0x2C, 0x2C);
 pub const TOOLTIP_BORDER: Color = rgb(0x4A, 0x4A, 0x4A);
-pub const TOOLTIP_TEXT: Color = rgb(0xF2, 0xF2, 0xF2);
-pub const TOOLTIP_SUB: Color = rgb(0xA8, 0xA8, 0xA8);
 
 // ------------------------------------------------------- flyout internals
-pub const FLY_CONTENT_W: f32 = FLY_W - FLY_PAD * 2.0;
-pub const CHIP_H: f32 = 30.0;
-pub const CHIP_TILE: f32 = 20.0;
-pub const R_CHIP_TILE: f32 = 5.0;
-pub const CHIP_PAD_L: f32 = 6.0;
-pub const CHIP_PAD_R: f32 = 10.0;
-pub const CHIP_TILE_GAP: f32 = 6.0;
-pub const TRAILING_GAP: f32 = 8.0;
-/// Space either side of the middot between subtitle prefix and accent.
-pub const SUBTITLE_SEP_GAP: f32 = 4.0;
-pub const BUTTON_H: f32 = 40.0;
-pub const BUTTON_H_SMALL: f32 = 36.0;
-pub const BUTTON_PREV: f32 = 40.0;
-pub const BUTTON_PLAY: f32 = 48.0;
-pub const BUTTON_CALL: f32 = 44.0;
-pub const BUTTON_GAP: f32 = 8.0;
-pub const CONTROL_GLYPH_SMALL: f32 = 17.0;
-pub const CONTROL_GLYPH: f32 = 20.0;
-pub const CONTROL_GLYPH_PLAY: f32 = 22.0;
-pub const CONTROL_GLYPH_CLOSE: f32 = 16.0;
-pub const PROGRESS_LABEL_ELAPSED: f32 = 32.0;
-pub const PROGRESS_LABEL_REMAIN: f32 = 36.0;
-pub const PROGRESS_LABEL_GAP: f32 = 10.0;
-pub const PROGRESS_H: f32 = 20.0;
-pub const PROGRESS_STROKE: f32 = 3.0;
-pub const MUSIC_BODY_H: f32 = 72.0;
-pub const MUSIC_ROW_GAP: f32 = 12.0;
-pub const CALL_BODY_TOP: f32 = 20.0;
-pub const CALL_BODY_GAP: f32 = 12.0;
-pub const CALL_BODY_H: f32 = 76.0;
-pub const BADGE_PAD_X: f32 = 6.0;
-pub const TIMER_BODY_H: f32 = 72.0;
-pub const TIMER_TOGGLE_W: f32 = 48.0;
-pub const TIMER_STOP_W: f32 = 40.0;
 pub const SHEEN_ALPHA: f32 = 0.12;
 pub const SHADOW_1_DY: f32 = 16.0;
 pub const SHADOW_1_BLUR: f32 = 40.0;
@@ -399,14 +331,11 @@ pub const SHADOW_STEPS: usize = 12;
 pub const SHADOW_HALO: f32 = 44.0;
 pub const ICON_STROKE: f32 = 2.3;
 pub const FOCUS_RING_W: f32 = 2.0;
-pub const FOCUS_RING_GAP: f32 = 2.0;
-pub const BADGE_H: f32 = 18.0;
 pub const FRAME_MS: u32 = 16;
 
 // ----------------------------------------------------------------- radii
 pub const R_SURFACE: f32 = 8.0;
 pub const R_CONTROL: f32 = 6.0;
-pub const R_BADGE: f32 = 4.0;
 pub const R_TILE_PILL: f32 = 6.0;
 pub const R_TILE_LEAD: f32 = 8.0;
 pub const R_THUMB: f32 = 2.0;
@@ -414,10 +343,7 @@ pub const R_THUMB: f32 = 2.0;
 // ------------------------------------------------------------------ wave
 pub const WAVE_LEN: f32 = 20.0;
 pub const WAVE_AMP: f32 = 3.0;
-pub const WAVE_STROKE: f32 = 3.0;
 pub const WAVE_FLAT: f32 = 0.02;
-pub const THUMB_W: f32 = 4.0;
-pub const THUMB_H: f32 = 18.0;
 
 // --------------------------------------------------------------- timings
 /// Approved flyout motion: 180 ms fade, 220 ms scale/rise, 110 ms close.
@@ -436,7 +362,6 @@ pub const MEDIA_CLEAR_MS: u32 = 3000;
 /// player loads the next track (and possibly an ad). Hold the old snapshot
 /// for this long instead, so the card never closes mid-interaction.
 pub const MEDIA_COMMAND_HOLD_MS: u32 = 6000;
-pub const HUD_MS: u32 = 1800;
 pub const TIMER_FLASH_MS: u32 = 600;
 pub const TIMER_FLASHES: u32 = 3;
 
@@ -553,7 +478,6 @@ pub const SURFACE_BUTTON_A: f32 = 0.08;
 pub const SURFACE_BUTTON_HOVER_A: f32 = 0.15;
 pub const SURFACE_BUTTON_PRESS_A: f32 = 0.06;
 pub const TRACK_A: f32 = 0.22;
-pub const CHIP_FILL_A: f32 = 0.08;
 pub const SHELF_TILE_A: f32 = 0.06;
 pub const SHELF_TILE_BORDER_A: f32 = 0.06;
 pub const SHELF_TILE_HOVER_A: f32 = 0.11;
@@ -574,11 +498,7 @@ pub const LIGHT_SURFACE_BUTTON_A: f32 = 0.05;
 pub const CONVERT_ACCENT: Color = rgb(0xA9, 0xC1, 0xF0);
 pub const CONVERT_ACCENT_LIGHT: Color = rgb(0x46, 0x5E, 0x99);
 pub const CONVERT_ON_ACCENT: Color = rgb(0x24, 0x2F, 0x49);
-pub const CONVERT_TILE_A: f32 = 0.06;
 pub const CONVERT_TILE_BORDER_A: f32 = 0.05;
-pub const CONVERT_TILE_HOVER_A: f32 = 0.10;
-pub const CONVERT_TILE_PRESS_A: f32 = 0.14;
-pub const CONVERT_TILE_DISABLED_A: f32 = 0.03;
 pub const CONVERT_DONE: Color = CALL_GREEN;
 /// The Undo glyph is the only warm control in the Done footer.
 pub const CONVERT_UNDO: Color = rgb(0xE8, 0x9C, 0x9C);
@@ -606,18 +526,12 @@ pub const LIGHT_CONVERT_TAB_ACTIVE: Color = Color {
     a: 0.20,
 };
 
-// Expanded card surfaces (v0.4 §3.1). The card shell keeps its existing
+// Expanded card surfaces (v0.4 Â§3.1). The card shell keeps its existing
 // material; only the rail and divider are new.
 pub const CARD_RAIL: Color = rgb(0x21, 0x21, 0x21);
 pub const CARD_DIVIDER: Color = rgb(0x34, 0x34, 0x34);
-pub const CARD_BORDER: Color = rgb(0x3C, 0x3C, 0x3C);
 pub const LIGHT_CARD_RAIL: Color = rgb(0xEA, 0xEA, 0xEA);
 pub const LIGHT_CARD_DIVIDER: Color = rgb(0xDC, 0xDC, 0xDC);
-pub const LIGHT_CARD_BORDER: Color = rgb(0xD6, 0xD6, 0xD6);
-pub const CARD_HOVER_A: f32 = 0.08;
-pub const CARD_PRESS_A: f32 = 0.14;
-pub const CARD_ACTIVE_A: f32 = 0.14;
-pub const CARD_GHOST_A: f32 = 0.06;
 
 // Typography (section 4.3)
 pub const FONT_FAMILY: &str = "Segoe UI Variable Text";
@@ -626,17 +540,12 @@ pub const FONT_PILL_LABEL: f32 = 12.0;
 pub const FONT_PILL_VALUE: f32 = 12.0;
 pub const FONT_FLY_TITLE: f32 = 15.0;
 pub const FONT_FLY_SUBTITLE: f32 = 12.0;
-pub const FONT_TIMER_BIG: f32 = 22.0;
 pub const FONT_TIME_LABEL: f32 = 11.0;
 pub const FONT_BUTTON: f32 = 12.5;
 pub const FONT_HINT: f32 = 11.0;
 pub const FONT_FILE_NAME: f32 = 12.0;
-pub const FONT_FILE_SIZE: f32 = 11.0;
-pub const FONT_BADGE: f32 = 10.0;
 pub const LINE_PILL: f32 = 16.0;
 pub const LINE_FLY_TITLE: f32 = 20.0;
-pub const LINE_FLY_SUBTITLE: f32 = 18.0;
-pub const LINE_TIMER_BIG: f32 = 28.0;
 pub const LINE_TIME: f32 = 14.0;
 pub const LINE_HINT: f32 = 14.0;
 
@@ -652,7 +561,6 @@ pub const FONT_CALL_TITLE: f32 = 18.0;
 pub const LINE_CALL_TITLE: f32 = 24.0;
 pub const FONT_CHIP: f32 = 12.0;
 pub const FONT_OPEN_CALL: f32 = 13.0;
-pub const LINE_CARD_HINT: f32 = 15.0;
 
 // ------------------------------------------------------------ activity ids
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -664,7 +572,7 @@ pub enum ActivityKind {
     Clipboard,
 }
 
-// Rail accent per activity (v0.4 §3.1). Card-only: the compact pill keeps its
+// Rail accent per activity (v0.4 Â§3.1). Card-only: the compact pill keeps its
 // existing activity colors above.
 pub const RAIL_MUSIC: Color = rgb(0xF0, 0x61, 0x7F);
 pub const RAIL_TIMER: Color = rgb(0xFF, 0xB5, 0x47);
@@ -853,7 +761,6 @@ mod tests {
         assert_eq!(CLIP_LINK, rgb(0x8F, 0xB8, 0xFF));
         assert_eq!(CLIP_SCROLL_W, 4.0);
         assert_eq!(CLIP_TIP_CHARS, 200);
-        assert_eq!(CLIP_COUNT_FONT, 11.0);
     }
 
     /// v0.6 shelf geometry: 12 DIP padding, a 28 DIP toolbar and a
@@ -899,7 +806,6 @@ mod tests {
         assert_eq!(CONVERT_OPTIONS_H, 86.0);
         assert_eq!(CONVERT_STACK_GAP, 10.0);
         assert_eq!(CONVERT_STACK_H, 162.0);
-        assert!(CONVERT_STACK_H <= 166.0);
         assert_eq!(CONVERT_OPTION_COLS, 5);
         assert_eq!(
             CONVERT_OPTION_H * 2.0 + CONVERT_OPTION_GAP,

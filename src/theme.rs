@@ -351,34 +351,6 @@ impl Theme {
         }
     }
 
-    pub fn card_tip_fill(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_WINDOW)
-        } else if self.dark {
-            design::rgb(0x2B, 0x2B, 0x2B)
-        } else {
-            design::rgb(0xFF, 0xFF, 0xFF)
-        }
-    }
-
-    pub fn card_tip_border(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_WINDOWTEXT)
-        } else if self.dark {
-            design::white(0.10)
-        } else {
-            design::black(0.10)
-        }
-    }
-
-    pub fn card_tip_text(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_WINDOWTEXT)
-        } else {
-            self.text_primary()
-        }
-    }
-
     pub fn card_status(self, accent: Color, use_accent: bool) -> Color {
         if use_accent {
             if self.high_contrast {
@@ -578,16 +550,6 @@ impl Theme {
         }
     }
 
-    pub fn convert_tile_fill(self) -> Color {
-        if self.high_contrast {
-            Color::TRANSPARENT
-        } else if self.dark {
-            design::white(design::CONVERT_TILE_A)
-        } else {
-            design::black(0.05)
-        }
-    }
-
     pub fn convert_tile_border(self) -> Color {
         if self.high_contrast {
             sys_color(COLOR_WINDOWTEXT)
@@ -595,42 +557,6 @@ impl Theme {
             design::white(design::CONVERT_TILE_BORDER_A)
         } else {
             design::black(0.06)
-        }
-    }
-
-    pub fn convert_tile_hover(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_HIGHLIGHT)
-        } else if self.dark {
-            design::white(design::CONVERT_TILE_HOVER_A)
-        } else {
-            design::black(0.08)
-        }
-    }
-
-    pub fn convert_tile_press(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_HIGHLIGHT)
-        } else if self.dark {
-            design::white(design::CONVERT_TILE_PRESS_A)
-        } else {
-            design::black(0.13)
-        }
-    }
-
-    pub fn convert_chip_fill(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_HIGHLIGHT)
-        } else {
-            design::CONVERT_ACCENT
-        }
-    }
-
-    pub fn convert_chip_text(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_HIGHLIGHTTEXT)
-        } else {
-            design::CONVERT_ON_ACCENT
         }
     }
 }

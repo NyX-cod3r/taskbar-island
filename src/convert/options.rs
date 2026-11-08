@@ -600,18 +600,10 @@ pub const TABLE: &[OptionDef] = &[
 /// format is then omitted, exactly as the artboards show.
 pub fn is_own_format(action: &Action, sources: &[SourceKind]) -> bool {
     match *action {
-        Action::ImageConvert(target) => sources
-            .iter()
-            .any(|source| *source == SourceKind::Image(target)),
-        Action::VideoConvert(target) => sources
-            .iter()
-            .any(|source| *source == SourceKind::Video(target)),
-        Action::AudioConvert(target) => sources
-            .iter()
-            .any(|source| *source == SourceKind::Audio(target)),
-        Action::DocumentConvert(target) => sources
-            .iter()
-            .any(|source| *source == SourceKind::Document(target)),
+        Action::ImageConvert(target) => sources.contains(&SourceKind::Image(target)),
+        Action::VideoConvert(target) => sources.contains(&SourceKind::Video(target)),
+        Action::AudioConvert(target) => sources.contains(&SourceKind::Audio(target)),
+        Action::DocumentConvert(target) => sources.contains(&SourceKind::Document(target)),
         _ => false,
     }
 }

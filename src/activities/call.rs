@@ -37,6 +37,7 @@ const MIC_CONSENT_KEY: PCWSTR =
 pub struct CallDetect {
     pub app_name: String,
     /// Registry key (decoded path or package family) used for "Open app".
+    #[allow(dead_code)] // Read by the Call card's "Open app" action (A-scope).
     pub launch: String,
     pub started: Instant,
     /// Duration at the moment the snapshot was produced; the UI adds the
@@ -54,6 +55,7 @@ pub struct CallRuntime {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioCommand {
+    #[allow(dead_code)] // Sent when the Call card re-reads the audio state.
     Refresh,
     ToggleMic,
     ToggleOutput,
@@ -417,6 +419,7 @@ fn filetime_now() -> u64 {
 
 /// Best-effort "Open app" for the detected call app. Returns whether the
 /// shell accepted the request; it never pretends a failed launch worked.
+#[allow(dead_code)] // The Call card's "Open app" button lands with A-scope.
 pub fn open_app(launch: &str) -> bool {
     use windows::core::HSTRING;
     use windows::Win32::UI::Shell::ShellExecuteW;
@@ -455,7 +458,7 @@ mod tests {
 
     #[test]
     fn allowlist_matching_is_case_insensitive_and_not_browser_default() {
-        let list = vec!["Teams".to_string(), "WhatsApp".to_string()];
+        let list = ["Teams".to_string(), "WhatsApp".to_string()];
         assert!(list.iter().any(|v| "MicrosoftTeams_8wekyb3d8bbwe"
             .to_ascii_lowercase()
             .contains(&v.to_ascii_lowercase())));

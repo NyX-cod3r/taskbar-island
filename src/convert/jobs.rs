@@ -39,6 +39,7 @@ use super::detect::{self, SourceFormat};
 use super::{MAX_DECODE_BYTES, MAX_FILE_BYTES, MAX_INPUTS, MAX_PIXELS};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // input/format fields feed the Done list (B2).
 pub struct Created {
     pub input: String,
     pub input_name: String,
@@ -54,6 +55,7 @@ pub struct Created {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // input fields feed the Failed list (B2).
 pub struct Failure {
     pub input: String,
     pub input_name: String,
@@ -124,6 +126,7 @@ pub fn preview_name(input: &str, action: Action, target: TargetFormat) -> String
 /// per file. A cancelled batch keeps the files it already produced. `progress`
 /// reports per-file boundaries; `on_engine` forwards the running engine's own
 /// stage and fraction.
+#[allow(clippy::too_many_arguments)]
 pub fn run_batch(
     inputs: &[String],
     action: Action,
@@ -267,7 +270,8 @@ fn path_bytes(path: &Path) -> u64 {
 }
 
 /// Converts exactly one file with the Native engine. `Err` is a user-facing
-/// reason. Tests and the router both use it; external engines never do.
+/// reason. Tests use it; the router runs batches through `run_batch`.
+#[allow(dead_code)] // Single-file native path kept for tests.
 pub fn run_one(path: &str, action: Action) -> Result<Created, String> {
     let (image, source, input_bytes) = decode(path)?;
     let format = native_output_format(action, source)
@@ -758,6 +762,7 @@ fn verify(bytes: &[u8], format: ImageFormat) -> Result<(), String> {
 /// starting collisions at `(2)` as the spec says. Nothing is ever overwritten
 /// or deleted: the temp file is moved with a no-replace flag, so losing a race
 /// still fails safely.
+#[allow(dead_code)] // Reached only through run_one (tests).
 fn write_beside(
     input: &str,
     action: Action,
