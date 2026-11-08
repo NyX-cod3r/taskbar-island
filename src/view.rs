@@ -408,17 +408,13 @@ pub fn file_tiles(paths: &[String]) -> Vec<FileTileView> {
 
 /// Splits the flyout's content box into the top row and body sections.
 pub fn content_boxes(fly: RectD) -> (RectD, RectD) {
-    let top = RectD::new(
-        fly.x + design::FLY_PAD,
-        fly.y + design::FLY_PAD,
-        design::FLY_W - design::FLY_PAD * 2.0,
-        design::TOP_ROW_H,
-    );
+    let content = design::card_content_rect(fly);
+    let top = RectD::new(content.x, content.y, content.w, design::TOP_ROW_H);
     let body = RectD::new(
-        fly.x + design::FLY_PAD,
-        fly.y + design::FLY_PAD + design::TOP_ROW_H + design::ROW_GAP,
-        design::FLY_W - design::FLY_PAD * 2.0,
-        design::BODY_H,
+        content.x,
+        top.bottom() + design::CARD_GAP,
+        content.w,
+        (content.bottom() - top.bottom() - design::CARD_GAP).max(0.0),
     );
     (top, body)
 }

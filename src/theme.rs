@@ -30,19 +30,11 @@ impl Theme {
         .unwrap_or(0)
             != 0;
         let accent_raw = read_dword(w!("Software\\TaskbarIsland"), w!("Accent"))
-            .or_else(|| {
-                read_dword(
-                    w!("Software\\Microsoft\\Windows\\DWM"),
-                    w!("AccentColor"),
-                )
-            });
+            .or_else(|| read_dword(w!("Software\\Microsoft\\Windows\\DWM"), w!("AccentColor")));
         let has_accent = accent_raw.is_some();
-        let fill_percent = read_dword(
-            w!("Software\\TaskbarIsland"),
-            w!("FillPercent"),
-        )
-        .unwrap_or(9)
-        .clamp(4, 20) as f32;
+        let fill_percent = read_dword(w!("Software\\TaskbarIsland"), w!("FillPercent"))
+            .unwrap_or(9)
+            .clamp(4, 20) as f32;
         let radius_dip = read_dword(w!("Software\\TaskbarIsland"), w!("Radius"))
             .unwrap_or(10)
             .clamp(4, 16) as f32;

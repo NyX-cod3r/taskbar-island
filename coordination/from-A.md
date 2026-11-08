@@ -6,11 +6,19 @@
   Agent A worktree.
 - Read the v0.8 design system and token contract.
 - Added `docs/CONTRACTS.md` describing the actual baseline module map.
+- Added the checked-in v0.8 token source, token validation, shared content
+  geometry, and anchor tests for the 4-DIP pill inset / 6-DIP card gap.
+- Completed the read-only Phone Link spike. Detection, banner suppression, and
+  call controls are NO-GO without a linked real-phone validation; audio is
+  PARTIAL. See `docs/spikes/phone-link.md`.
+- Added pure call lifecycle/provider seams with a simulator and privacy-safe
+  number masking. The release Phone Link provider reports unsupported controls
+  instead of inventing success.
 
 ## Next
 
-- Establish the v0.8 shared token, layout, and tooltip foundation.
-- Run the Phone Link feasibility spike before call UI work.
+- Finish tooltip and pill-priority integration on the actual renderer.
+- Integrate only Phone Link capabilities that pass a real-device validation.
 
 ## Requests to the other agent
 
@@ -21,5 +29,8 @@
 
 ## Blocked
 
-- No Phone Link hardware or consent state has been established for the required
-  real-device spike.
+- Real Phone Link detection/control remains blocked on a linked phone and
+  explicit user-approved manual call testing. The implementation is gated off.
+- The requested strict Clippy gate is also blocked by the v0.1 baseline: it
+  currently reports 161 errors across shared and Agent-B-owned files. This is
+  recorded for release triage; no `ready-A-*` marker has been issued.

@@ -14,8 +14,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::design::{
-    RectD, BUBBLE, BUBBLE_GAP, FLY_H, FLY_W, GAP_TASKBAR, GAP_TRAY, PILL_W, WINDOW_TOP_PAD,
-    WINDOW_W,
+    RectD, BUBBLE, BUBBLE_GAP, FLY_BOTTOM_GAP, FLY_H, FLY_W, GAP_TRAY, PILL_BAND_INSET, PILL_W,
+    WINDOW_TOP_PAD, WINDOW_W,
 };
 
 const TASKBAR_CLASS: PCWSTR = w!("Shell_TrayWnd");
@@ -51,7 +51,8 @@ impl Anchor {
             return None;
         }
         let fallback_tray = RECT {
-            left: tb.right - ((FALLBACK_TRAY_RESERVE_DIP * dpi.max(96) as f32 / 96.0).round() as i32),
+            left: tb.right
+                - ((FALLBACK_TRAY_RESERVE_DIP * dpi.max(96) as f32 / 96.0).round() as i32),
             top: tb.top,
             right: tb.right,
             bottom: tb.bottom,
@@ -130,8 +131,8 @@ impl Anchor {
 
         let pill_right = tray_left - GAP_TRAY - (BUBBLE + BUBBLE_GAP) + slot_offset_dip as f32;
         let pill_left = pill_right - PILL_W;
-        let pill_h = t + 2.0;
-        let pill_top = tb_top + 4.0;
+        let pill_h = (t - PILL_BAND_INSET * 2.0).max(0.0);
+        let pill_top = tb_top + PILL_BAND_INSET;
         let pill = RectD::new(pill_left, pill_top, PILL_W, pill_h);
         let bubble = RectD::new(pill_right + BUBBLE_GAP, pill_top, BUBBLE, BUBBLE);
 
@@ -141,11 +142,11 @@ impl Anchor {
         let min_left = work_left + 12.0;
         let max_left = (work_right - 12.0 - FLY_W).max(min_left);
         fly_left = fly_left.clamp(min_left, max_left);
-        let fly_bottom = tb_top - GAP_TASKBAR;
+        let fly_bottom = tb_top - FLY_BOTTOM_GAP;
         let flyout = RectD::new(fly_left, fly_bottom - FLY_H, FLY_W, FLY_H);
 
         let win_w = WINDOW_W;
-        let win_h = t + GAP_TASKBAR + FLY_H + WINDOW_TOP_PAD;
+        let win_h = t + FLY_BOTTOM_GAP + FLY_H + WINDOW_TOP_PAD;
         let win_left = pill.center_x() - win_w / 2.0;
         let win_top = tb_bottom - win_h;
         let window = RECT {
@@ -290,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn pill_is_208x32_and_uses_the_reserved_bubble_slot() {
+    fn pill_uses_the_taskbar_inset_and_reserved_bubble_slot() {
         let a = Anchor::layout(
             rect(0, 1040, 1920, 1080),
             rect(1600, 1040, 1920, 1080),
@@ -299,11 +300,12 @@ mod tests {
             0,
         );
         assert_eq!(a.pill.w, design::PILL_W);
-        assert_eq!(a.pill.h, a.taskbar_height_dip + 2.0);
-        assert_eq!(a.pill.right(), 1600.0 - 12.0 - 40.0);
+        assert_eq!(a.pill.h, a.taskbar_height_dip - 8.0);
+        assert_eq!(a.pill.y, 1044.0);
+        assert_eq!(a.pill.right(), 1600.0 - design::GAP_TRAY - 40.0);
         assert_eq!(a.bubble.x, a.pill.right() + 8.0);
         assert_eq!(a.flyout.h, design::FLY_H);
-        assert_eq!(a.flyout.bottom(), 1040.0 - 12.0);
+        assert_eq!(a.flyout.bottom(), 1040.0 - design::FLY_BOTTOM_GAP);
     }
 
     #[test]
@@ -359,7 +361,10 @@ mod tests {
         );
         assert_eq!(
             a.window.bottom - a.window.top,
-            ((50.0_f64 / 1.25 + 12.0 + 192.0 + 40.0) * 1.25).round() as i32
+            (1080.0_f64 * 1.25).round() as i32
+                - ((1080.0_f64 - (50.0_f64 / 1.25 + design::FLY_BOTTOM_GAP as f64 + 192.0 + 40.0))
+                    * 1.25)
+                    .round() as i32
         );
     }
 }

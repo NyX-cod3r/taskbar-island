@@ -14,6 +14,7 @@ mod render;
 mod settings;
 mod state;
 mod theme;
+mod tokens;
 mod view;
 mod window;
 

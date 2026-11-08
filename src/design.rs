@@ -12,7 +12,21 @@ pub const BUBBLE: f32 = 32.0;
 pub const BUBBLE_GAP: f32 = 8.0;
 pub const FLY_W: f32 = 400.0;
 pub const FLY_H: f32 = 192.0;
-pub const FLY_PAD: f32 = 16.0;
+/// Shared expanded-card content padding from the v0.8 design system.
+pub const CARD_PAD: f32 = 7.0;
+/// Vertical separation between card sections.
+pub const CARD_GAP: f32 = 8.0;
+/// Rail dimensions shared by every expanded card.
+pub const RAIL_W: f32 = 56.0;
+pub const RAIL_DIVIDER: f32 = 1.0;
+pub const RAIL_TILE: f32 = 32.0;
+pub const RAIL_GAP: f32 = 5.0;
+pub const RAIL_ICON: f32 = 18.0;
+pub const RAIL_INDICATOR_W: f32 = 3.0;
+pub const RAIL_INDICATOR_H: f32 = 16.0;
+/// Compatibility alias for pre-v0.8 cards. New layout code must use
+/// `card_content_rect()` rather than deriving dimensions from this value.
+pub const FLY_PAD: f32 = CARD_PAD;
 pub const TOP_ROW_H: f32 = 56.0;
 pub const ROW_GAP: f32 = 12.0;
 pub const BODY_H: f32 = 92.0;
@@ -21,7 +35,10 @@ pub const PILL_TILE: f32 = 24.0;
 pub const PILL_PAD_L: f32 = 4.0;
 pub const PILL_PAD_R: f32 = 10.0;
 pub const GAP_TRAY: f32 = 8.0;
-pub const GAP_TASKBAR: f32 = 12.0;
+/// The pill is inset by 4 DIP from the top and bottom of the taskbar band.
+pub const PILL_BAND_INSET: f32 = 4.0;
+/// Resting distance from the taskbar to the bottom edge of the expanded card.
+pub const FLY_BOTTOM_GAP: f32 = 6.0;
 pub const WINDOW_W: f32 = 520.0;
 pub const WINDOW_TOP_PAD: f32 = 40.0;
 pub const PILL_GAP: f32 = 8.0;
@@ -31,7 +48,7 @@ pub const PILL_GLYPH: f32 = 14.0;
 pub const LEAD_GLYPH: f32 = 26.0;
 
 // ------------------------------------------------------- flyout internals
-pub const FLY_CONTENT_W: f32 = FLY_W - FLY_PAD * 2.0;
+pub const FLY_CONTENT_W: f32 = FLY_W - RAIL_W - RAIL_DIVIDER - CARD_PAD * 2.0;
 pub const CHIP_H: f32 = 30.0;
 pub const CHIP_TILE: f32 = 20.0;
 pub const R_CHIP_TILE: f32 = 5.0;
@@ -400,6 +417,49 @@ impl RectD {
             y,
             w: self.right().max(other.right()) - x,
             h: self.bottom().max(other.bottom()) - y,
+        }
+    }
+}
+
+/// The sole source of expanded-card content geometry. `fly` is normally the
+/// fixed 400 × 192 card, but accepting a rectangle makes DPI/layout tests use
+/// the same rounding-free DIP calculation as rendering.
+pub fn card_content_rect(fly: RectD) -> RectD {
+    RectD::new(
+        fly.x + RAIL_W + RAIL_DIVIDER + CARD_PAD,
+        fly.y + CARD_PAD,
+        (fly.w - RAIL_W - RAIL_DIVIDER - CARD_PAD * 2.0).max(0.0),
+        (fly.h - CARD_PAD * 2.0).max(0.0),
+    )
+}
+
+#[cfg(test)]
+mod v08_tests {
+    use super::*;
+
+    #[test]
+    fn v08_fixed_geometry_and_rail_guard() {
+        assert_eq!(PILL_W, 224.0);
+        assert_eq!((FLY_W, FLY_H), (400.0, 192.0));
+        assert_eq!(
+            (RAIL_W, RAIL_TILE, RAIL_GAP, RAIL_ICON),
+            (56.0, 32.0, 5.0, 18.0)
+        );
+        assert_eq!(RAIL_INDICATOR_H, 16.0);
+        assert_eq!(CARD_PAD, 7.0);
+        assert_eq!((PILL_BAND_INSET, FLY_BOTTOM_GAP), (4.0, 6.0));
+        assert!(RAIL_TILE * 5.0 + RAIL_GAP * 4.0 <= FLY_H - 4.0);
+    }
+
+    #[test]
+    fn card_content_rect_is_dpi_invariant_in_dips() {
+        let dip = card_content_rect(RectD::new(0.0, 0.0, FLY_W, FLY_H));
+        assert_eq!(dip, RectD::new(64.0, 7.0, 329.0, 178.0));
+        for scale in [1.0_f32, 1.25, 1.5, 1.75] {
+            let expected_w = ((FLY_W - RAIL_W - RAIL_DIVIDER - CARD_PAD * 2.0) * scale).round();
+            let expected_h = ((FLY_H - CARD_PAD * 2.0) * scale).round();
+            assert_eq!((dip.w * scale).round(), expected_w);
+            assert_eq!((dip.h * scale).round(), expected_h);
         }
     }
 }

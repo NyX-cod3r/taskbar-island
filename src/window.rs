@@ -28,13 +28,11 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, SetTimer, SetWindowPos,
-    ShowWindow, TranslateMessage,
+    PostQuitMessage, RegisterClassExW, SetTimer, SetWindowPos, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, MSG, SWP_NOACTIVATE,
     SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONUP,
-    WM_NCHITTEST, WM_PAINT,
-    WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    WM_NCHITTEST, WM_PAINT, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER, WNDCLASSEXW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 
 use crate::activities::call::{self, AudioCommand, CallRuntime};
@@ -106,9 +104,7 @@ pub fn create(instance: HINSTANCE, rect: RECT, pill: RectD, flyout: RectD) -> Re
     // SAFETY: the class was registered above and all handles belong to this process.
     let hwnd = unsafe {
         CreateWindowExW(
-            WS_EX_TOOLWINDOW
-                | WS_EX_NOACTIVATE
-                | WS_EX_TOPMOST,
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
             CLASS_NAME,
             w!("Taskbar Island"),
             WS_POPUP,

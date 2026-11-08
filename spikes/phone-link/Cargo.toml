@@ -1,0 +1,10 @@
+[package]
+name = "phone-link-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Deliberately separate from the shipping workspace. Add only the Windows API
+# features that a validated experiment needs; do not promote this dependency
+# into the product before the spike reaches GO.
+
