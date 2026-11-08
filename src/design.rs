@@ -7,7 +7,10 @@
 /// Original compact footprint. The new renderer and flyout use this same
 /// stable footprint so activity changes never create a second-sized pill.
 pub const PILL_W: f32 = 224.0;
-pub const PILL_H: f32 = 32.0;
+/// Vertical gap between the pill and the taskbar edge. It matches the margin
+/// of a taskbar icon's hit box, so the band is fully visible with equal
+/// spacing top and bottom.
+pub const PILL_INSET: f32 = 4.0;
 pub const BUBBLE: f32 = 32.0;
 pub const BUBBLE_GAP: f32 = 8.0;
 pub const FLY_W: f32 = 400.0;
@@ -18,17 +21,334 @@ pub const ROW_GAP: f32 = 12.0;
 pub const BODY_H: f32 = 92.0;
 pub const LEAD_TILE: f32 = 56.0;
 pub const PILL_TILE: f32 = 24.0;
-pub const PILL_PAD_L: f32 = 4.0;
-pub const PILL_PAD_R: f32 = 10.0;
-pub const GAP_TRAY: f32 = 8.0;
-pub const GAP_TASKBAR: f32 = 12.0;
+/// Equal horizontal padding: the leading tile's gap to the left edge must
+/// match the text's gap to the right edge.
+pub const PILL_PAD: f32 = 10.0;
+pub const GAP_TRAY: f32 = 12.0;
+/// The flyout sits closer to the pill than the v1.0 spec's 12 DIP: the taskbar
+/// surface ends at the top of the band, and the owner asked for the card to
+/// come down so it does not read as a detached popup.
+pub const GAP_TASKBAR: f32 = 6.0;
 pub const WINDOW_W: f32 = 520.0;
 pub const WINDOW_TOP_PAD: f32 = 40.0;
-pub const PILL_GAP: f32 = 8.0;
 pub const PILL_TILE_GAP: f32 = 8.0;
 pub const PILL_PROGRESS_H: f32 = 2.0;
+/// Distance from the pill's bottom edge to the progress line. A small inset
+/// keeps the line inside the rounded band at every DPI.
+pub const PILL_PROGRESS_INSET: f32 = 8.0;
+/// Compact-pill wave amplitude and stroke; smaller than the card so it reads
+/// as a ripple on the icon's bottom edge.
+pub const PILL_WAVE_AMP: f32 = 1.6;
+pub const PILL_WAVE_STROKE: f32 = 1.6;
+/// Music and timer pills lift their text this far above centre to leave the
+/// wave its own band.
+pub const PILL_TEXT_DY: f32 = -2.0;
 pub const PILL_GLYPH: f32 = 14.0;
 pub const LEAD_GLYPH: f32 = 26.0;
+
+// ------------------------------------------------ expanded card (v0.4)
+/// Left activity rail. The divider is the rail's right edge, so the content
+/// column starts at 57 DIP.
+pub const RAIL_W: f32 = 56.0;
+pub const RAIL_DIVIDER: f32 = 1.0;
+pub const CARD_CONTENT_X: f32 = RAIL_W + RAIL_DIVIDER;
+pub const CARD_PAD_X: f32 = 16.0;
+pub const CARD_PAD_Y: f32 = 14.0;
+pub const CARD_CONTENT_W: f32 = FLY_W - CARD_CONTENT_X - CARD_PAD_X * 2.0;
+pub const CARD_CONTENT_H: f32 = FLY_H - CARD_PAD_Y * 2.0;
+/// v0.7 rail: five 32 DIP tiles with 5 DIP gaps (180 DIP) centred in the card.
+pub const RAIL_BTN: f32 = 32.0;
+pub const RAIL_GAP: f32 = 5.0;
+pub const RAIL_INSET: f32 = (FLY_H - (RAIL_BTN * 5.0 + RAIL_GAP * 4.0)) * 0.5;
+pub const RAIL_GLYPH: f32 = 18.0;
+pub const RAIL_STROKE: f32 = 1.8;
+pub const RAIL_IND_W: f32 = 3.0;
+pub const RAIL_IND_H: f32 = 16.0;
+pub const RAIL_IND_R: f32 = 2.0;
+/// The indicator is centred on the tile: (32 - 16) / 2 = 8 DIP from its top.
+pub const RAIL_IND_DY: f32 = 8.0;
+pub const HEADER_H: f32 = 28.0;
+pub const HEADER_TILE: f32 = 28.0;
+pub const HEADER_GAP: f32 = 10.0;
+/// Gap between the standard header and the first content row.
+pub const CARD_GAP: f32 = 12.0;
+
+// Music card
+pub const MUSIC_ART: f32 = 64.0;
+pub const R_ART: f32 = 6.0;
+pub const MUSIC_INFO_GAP: f32 = 12.0;
+pub const MUSIC_LINE_GAP: f32 = 3.0;
+pub const MUSIC_PROGRESS_H: f32 = 14.0;
+pub const MUSIC_WAVE_AMP: f32 = 2.0;
+pub const MUSIC_WAVE_LEN: f32 = 14.0;
+pub const MUSIC_WAVE_STROKE: f32 = 2.6;
+pub const MUSIC_TRACK_STROKE: f32 = 3.0;
+pub const MUSIC_THUMB_W: f32 = 3.5;
+pub const MUSIC_THUMB_H: f32 = 14.0;
+pub const MUSIC_TIME_W: f32 = 30.0;
+pub const MUSIC_REMAIN_W: f32 = 34.0;
+pub const MUSIC_TIME_GAP: f32 = 10.0;
+pub const MUSIC_BTN: f32 = 32.0;
+pub const MUSIC_BTN_GAP: f32 = 8.0;
+pub const MUSIC_GLYPH: f32 = 18.0;
+pub const MUSIC_PLAY_W: f32 = 56.0;
+pub const MUSIC_PLAY_H: f32 = 34.0;
+
+// Timer card
+pub const TIMER_CTRL_H: f32 = 34.0;
+pub const TIMER_START_W: f32 = 64.0;
+pub const TIMER_CHIP_W: f32 = 44.0;
+pub const TIMER_CHIP_GAP: f32 = 6.0;
+pub const TIMER_RESET_W: f32 = 34.0;
+pub const TIMER_TRACK_H: f32 = 4.0;
+pub const TIMER_PROGRESS_H: f32 = 14.0;
+pub const TIMER_THUMB_W: f32 = 3.0;
+pub const TIMER_THUMB_H: f32 = 14.0;
+/// Preset chips, in minutes. Idle arms the timer; running adds the minutes.
+pub const TIMER_PRESETS: [u32; 4] = [1, 5, 10, 25];
+
+// Call card
+pub const CALL_STATUS_H: f32 = 52.0;
+pub const CALL_BTN_W: f32 = 48.0;
+pub const CALL_BTN_H: f32 = 40.0;
+pub const CALL_BTN_GAP: f32 = 8.0;
+pub const SIGNAL_W: f32 = 18.0;
+pub const SIGNAL_H: f32 = 16.0;
+
+// Shelf card (v0.6). The shelf owns the whole content column: 12 DIP padding
+// on every side, a 28 DIP toolbar, then a scrolling 4-column grid.
+pub const SHELF_PAD: f32 = 12.0;
+pub const SHELF_INNER_W: f32 = FLY_W - CARD_CONTENT_X - SHELF_PAD * 2.0;
+pub const SHELF_INNER_H: f32 = FLY_H - SHELF_PAD * 2.0;
+pub const SHELF_TOOLBAR_H: f32 = 28.0;
+/// Space between the toolbar and the first grid row.
+pub const SHELF_TOOLBAR_GAP: f32 = 10.0;
+/// The grid viewport fills all remaining height (two full rows + the gap).
+pub const SHELF_VIEW_H: f32 = SHELF_INNER_H - SHELF_TOOLBAR_H - SHELF_TOOLBAR_GAP;
+pub const SHELF_COLS: usize = 4;
+pub const SHELF_TILE_H: f32 = 62.0;
+pub const SHELF_TILE_GAP: f32 = 6.0;
+pub const SHELF_ROW_H: f32 = SHELF_TILE_H + SHELF_TILE_GAP;
+/// Width of one grid cell once the scrollbar column is taken out.
+pub const SHELF_TILE_W: f32 = (SHELF_INNER_W
+    - SHELF_SCROLL_W
+    - SHELF_SCROLL_GAP
+    - SHELF_TILE_GAP * (SHELF_COLS as f32 - 1.0))
+    / SHELF_COLS as f32;
+pub const SHELF_TILE_R: f32 = 8.0;
+pub const SHELF_NAME_H: f32 = 16.0;
+/// Colored type chip for non-image files.
+pub const SHELF_CHIP: f32 = 30.0;
+pub const SHELF_CHIP_R: f32 = 7.0;
+pub const SHELF_CHIP_GLYPH: f32 = 16.0;
+pub const SHELF_DROP_BORDER: f32 = 1.5;
+pub const SHELF_GLYPH: f32 = 22.0;
+/// Thin, draggable scrollbar to the right of the grid.
+pub const SHELF_SCROLL_W: f32 = 4.0;
+pub const SHELF_SCROLL_GAP: f32 = 10.0;
+pub const SHELF_SCROLL_MIN: f32 = 24.0;
+/// One wheel notch moves the grid this far.
+pub const SHELF_SCROLL_STEP: f32 = 60.0;
+/// Selected tile ring and the top-left check badge.
+pub const SHELF_CHECK: f32 = 18.0;
+pub const SHELF_SELECT_RING: f32 = 2.0;
+/// Square icon button on the tile's hover state.
+pub const SHELF_REMOVE: f32 = 18.0;
+pub const SHELF_TOOL_BTN: f32 = 28.0;
+pub const SHELF_TOOL_GAP: f32 = 6.0;
+pub const SHELF_CONVERT_W: f32 = 36.0;
+pub const SHELF_CONVERT_H: f32 = 28.0;
+pub const SHELF_CONVERT_R: f32 = 8.0;
+pub const SHELF_TOOL_GLYPH: f32 = 16.0;
+pub const SHELF_COUNT_GLYPH: f32 = 16.0;
+/// Soft cap: the oldest entry is dropped silently and the count tooltip warns.
+pub const SHELF_SOFT_CAP: usize = 500;
+/// A name strip is painted over the bottom of every tile.
+pub const SHELF_NAME_ALPHA: f32 = 0.72;
+
+// Convert card (v0.6)
+/// The card uses the same 12 DIP padding as the shelf. Stack:
+/// 28 header + 10 + 28 tabs + 10 + 86 options = 162, inside the 166 column.
+pub const CONVERT_PAD: f32 = 12.0;
+pub const CONVERT_INNER_W: f32 = FLY_W - CARD_CONTENT_X - CONVERT_PAD * 2.0;
+pub const CONVERT_INNER_H: f32 = FLY_H - CONVERT_PAD * 2.0;
+pub const CONVERT_STACK_GAP: f32 = 10.0;
+pub const CONVERT_STACK_H: f32 =
+    CONVERT_HEADER_H + CONVERT_STACK_GAP + CONVERT_TABS_H + CONVERT_STACK_GAP + CONVERT_OPTIONS_H;
+
+/// Header: 24 DIP thumb/type tile, one truncated name line, close glyph.
+pub const CONVERT_HEADER_H: f32 = 28.0;
+pub const CONVERT_HEADER_TILE: f32 = 24.0;
+pub const CONVERT_HEADER_GAP: f32 = 8.0;
+pub const CONVERT_NAME_FONT: f32 = 12.0;
+pub const CONVERT_CLOSE: f32 = 20.0;
+
+/// Clipboard card (v0.7). Same 12 DIP padding as the shelf; the toolbar and
+/// list inside are built in a later phase.
+pub const CLIP_PAD: f32 = 12.0;
+pub const CLIP_INNER_W: f32 = FLY_W - CARD_CONTENT_X - CLIP_PAD * 2.0;
+pub const CLIP_INNER_H: f32 = FLY_H - CLIP_PAD * 2.0;
+/// Large muted glyph of the empty Clipboard card.
+pub const CLIP_EMPTY_GLYPH: f32 = 40.0;
+pub const CLIP_EMPTY_STROKE: f32 = 2.0;
+/// Small amber dot that marks capture paused on the pill and empty card.
+pub const CLIP_PAUSED_DOT: f32 = 6.0;
+/// The pill shows "+N" for this long after a new copy, then the idle look.
+pub const CLIP_POP_MS: u32 = 2000;
+/// Two-step Clear (spec 3.3): the trash swaps for a red ✓ and a ✕ for this
+/// long, then the confirm auto-cancels.
+pub const CLIP_CLEAR_CONFIRM_MS: u32 = 4000;
+/// Danger tint of the armed Clear check.
+pub const CLIP_DANGER: Color = rgb(0xF0, 0x61, 0x7F);
+/// History capacity and retention from the v0.7 clipboard spec.
+pub const CLIP_MAX_ITEMS: usize = 30;
+pub const CLIP_RETENTION_DAYS: i64 = 7;
+/// Coalesce bursts of `WM_CLIPBOARDUPDATE` before touching the clipboard.
+pub const CLIP_DEBOUNCE_MS: u32 = 150;
+/// Retention sweep cadence while the app runs.
+pub const CLIP_SWEEP_MS: u32 = 60 * 60 * 1000;
+/// Capture limits: text bytes and image megapixels / payload bytes.
+pub const CLIP_TEXT_MAX_BYTES: usize = 1024 * 1024;
+pub const CLIP_IMAGE_MAX_PIXELS: u64 = 20_000_000;
+pub const CLIP_IMAGE_MAX_BYTES: u64 = 25 * 1024 * 1024;
+/// Longest side of the cached image thumbnail.
+pub const CLIP_THUMB_PX: u32 = 96;
+
+// Clipboard card (v0.7 Phase 3): 28 DIP toolbar + 10 gap + 130 DIP list.
+pub const CLIP_TOOLBAR_H: f32 = 28.0;
+pub const CLIP_TOOLBAR_GAP: f32 = 10.0;
+pub const CLIP_LIST_H: f32 = CLIP_INNER_H - CLIP_TOOLBAR_H - CLIP_TOOLBAR_GAP;
+/// Segmented filter: 2 DIP padding around 26 x 24 icon-only tabs.
+pub const CLIP_FILTER_PAD: f32 = 2.0;
+pub const CLIP_FILTER_TAB_W: f32 = 26.0;
+pub const CLIP_FILTER_TAB_H: f32 = 24.0;
+pub const CLIP_FILTER_GLYPH: f32 = 14.0;
+pub const CLIP_FILTER_ACTIVE: Color = rgba(0x5F, 0xD0, 0xC5, 0.24);
+pub const CLIP_TOOL_BTN: f32 = 28.0;
+pub const CLIP_TOOL_GAP: f32 = 6.0;
+pub const CLIP_TOOL_GLYPH: f32 = 16.0;
+pub const CLIP_COUNT_FONT: f32 = 11.0;
+/// History rows: 32 DIP tall, 2 DIP gap, radius 6.
+pub const CLIP_ROW_H: f32 = 32.0;
+pub const CLIP_ROW_GAP: f32 = 2.0;
+pub const CLIP_ROW_STRIDE: f32 = CLIP_ROW_H + CLIP_ROW_GAP;
+pub const CLIP_ROW_R: f32 = 6.0;
+pub const CLIP_ROW_PAD: f32 = 8.0;
+pub const CLIP_ROW_HOVER: Color = rgba(255, 255, 255, 0.07);
+pub const CLIP_GLYPH_SLOT: f32 = 20.0;
+pub const CLIP_GLYPH: f32 = 16.0;
+pub const CLIP_THUMB_W: f32 = 24.0;
+pub const CLIP_THUMB_H: f32 = 18.0;
+/// Hover/focus cluster: three 24 DIP icon buttons replace the age.
+pub const CLIP_ACTION_BTN: f32 = 24.0;
+pub const CLIP_ACTION_GAP: f32 = 2.0;
+pub const CLIP_ACTION_GLYPH: f32 = 14.0;
+pub const CLIP_PREVIEW_FONT: f32 = 12.0;
+pub const CLIP_AGE_FONT: f32 = 11.0;
+pub const CLIP_AGE_W: f32 = 30.0;
+pub const CLIP_PIN_GLYPH: f32 = 12.0;
+pub const CLIP_LINK: Color = rgb(0x8F, 0xB8, 0xFF);
+/// Row-preview tooltips cap the quoted text at ~200 characters.
+pub const CLIP_TIP_CHARS: usize = 200;
+/// Thin, draggable scrollbar to the right of the list.
+pub const CLIP_SCROLL_W: f32 = 4.0;
+pub const CLIP_SCROLL_GAP: f32 = 8.0;
+pub const CLIP_SCROLL_MIN: f32 = 24.0;
+/// One wheel notch moves the list two rows.
+pub const CLIP_SCROLL_STEP: f32 = CLIP_ROW_STRIDE * 2.0;
+/// Code-like previews render in Cascadia Mono.
+pub const FONT_MONO: &str = "Cascadia Mono";
+pub const FONT_MONO_FALLBACK: &str = "Consolas";
+
+/// Segmented, icon-only tab strip: 2 DIP padding around 24 DIP tabs.
+pub const CONVERT_TABS_H: f32 = 28.0;
+pub const CONVERT_TAB_PAD: f32 = 2.0;
+pub const CONVERT_TAB: f32 = 24.0;
+pub const CONVERT_TAB_GAP: f32 = 2.0;
+pub const CONVERT_TAB_GLYPH: f32 = 15.0;
+
+/// Options: 5 columns x 2 rows of 40 DIP tiles with a 6 DIP gap.
+pub const CONVERT_OPTIONS_H: f32 = 86.0;
+pub const CONVERT_OPTION_COLS: usize = 5;
+pub const CONVERT_OPTION_COUNT: usize = CONVERT_OPTION_COLS * 2;
+pub const CONVERT_OPTION_H: f32 = 40.0;
+pub const CONVERT_OPTION_GAP: f32 = 6.0;
+pub const CONVERT_OPTION_R: f32 = 6.0;
+pub const CONVERT_OPTION_GLYPH: f32 = 18.0;
+pub const CONVERT_OPTION_FONT: f32 = 12.0;
+pub const CONVERT_OPTION_W: f32 = (CONVERT_INNER_W
+    - CONVERT_OPTION_GAP * (CONVERT_OPTION_COLS as f32 - 1.0))
+    / CONVERT_OPTION_COLS as f32;
+/// The card never renders more than one screen of options; the table itself
+/// also pins each tab at ten or fewer.
+pub const CONVERT_MAX_OPTIONS: usize = 10;
+
+// v0.5 header/actions still used by the provisional Working/Done states.
+pub const CONVERT_ROW_GAP: f32 = 8.0;
+pub const CONVERT_GRID_GAP: f32 = 6.0;
+pub const CONVERT_TILE_H: f32 = 44.0;
+pub const CONVERT_TILE_R: f32 = 8.0;
+pub const CONVERT_TITLE_FONT: f32 = 16.0;
+pub const CONVERT_TITLE_LINE: f32 = 20.0;
+pub const CONVERT_SUB_FONT: f32 = 11.0;
+pub const CONVERT_SUB_LINE: f32 = 15.0;
+pub const CONVERT_GLYPH: f32 = 16.0;
+/// Shelf header "Convert" chip.
+pub const CONVERT_BTN_W: f32 = 84.0;
+pub const CONVERT_BTN_H: f32 = 26.0;
+pub const CONVERT_BTN_R: f32 = 6.0;
+pub const CONVERT_BTN_GAP: f32 = 6.0;
+pub const CONVERT_BTN_GLYPH: f32 = 15.0;
+pub const CONVERT_BTN_FONT: f32 = 13.0;
+/// Hint row under the grid, same height as the shelf hint.
+pub const CONVERT_HINT_H: f32 = 15.0;
+// Converting / done states
+pub const CONVERT_STAGE_TILE: f32 = 56.0;
+pub const CONVERT_STAGE_R: f32 = 14.0;
+pub const CONVERT_STAGE_GAP: f32 = 14.0;
+pub const CONVERT_STAGE_ARROW: f32 = 18.0;
+/// Large accent percent at the right of the Converting row.
+pub const CONVERT_PERCENT_FONT: f32 = 26.0;
+/// The three stage dots and the rules that join them.
+pub const CONVERT_STAGE_ICON: f32 = 26.0;
+pub const CONVERT_STAGE_LINK: f32 = 22.0;
+pub const CONVERT_STAGE_LINK_H: f32 = 2.0;
+pub const CONVERT_PROGRESS_H: f32 = 8.0;
+/// Done view: green check, three equal icon buttons, thin countdown.
+pub const CONVERT_DONE_CHECK: f32 = 40.0;
+pub const CONVERT_DONE_BTN_H: f32 = 32.0;
+pub const CONVERT_DONE_BTN_R: f32 = 8.0;
+pub const CONVERT_DONE_COUNTDOWN_H: f32 = 3.0;
+pub const CONVERT_DONE_ICON: f32 = 18.0;
+pub const CONVERT_COUNTDOWN_MS: u32 = 5000;
+/// The progress row appears once a job outlives this; short jobs go straight
+/// to the result without a flash.
+pub const CONVERT_PROGRESS_DELAY_MS: u32 = 250;
+
+// Card motion. The 160 ms indicator uses ease-out (0.2, 0, 0, 1).
+pub const RAIL_MOVE_MS: u32 = 160;
+pub const CONTENT_OUT_MS: u32 = 100;
+pub const CONTENT_IN_MS: u32 = 160;
+pub const CONTENT_SETTLE: f32 = 4.0;
+pub const EASE_RAIL: [f32; 4] = [0.2, 0.0, 0.0, 1.0];
+/// v0.6 tooltips appear after 450 ms of hover/focus. Moving between icon
+/// buttons inside this window shows the next tooltip instantly.
+pub const TOOLTIP_DELAY_MS: u32 = 450;
+pub const TOOLTIP_NEIGHBOR_MS: u32 = 300;
+pub const TOOLTIP_GAP: f32 = 4.0;
+pub const TOOLTIP_PAD_X: f32 = 8.0;
+pub const TOOLTIP_PAD_Y: f32 = 4.0;
+pub const TOOLTIP_R: f32 = 4.0;
+pub const TOOLTIP_FONT: f32 = 12.0;
+pub const TOOLTIP_SUB_FONT: f32 = 11.0;
+pub const TOOLTIP_LINE: f32 = 16.0;
+pub const TOOLTIP_SUB_LINE: f32 = 14.0;
+pub const TOOLTIP_MAX_W: f32 = 280.0;
+/// Fill/border/text from the ShelfTip artboard.
+pub const TOOLTIP_FILL: Color = rgb(0x2C, 0x2C, 0x2C);
+pub const TOOLTIP_BORDER: Color = rgb(0x4A, 0x4A, 0x4A);
+pub const TOOLTIP_TEXT: Color = rgb(0xF2, 0xF2, 0xF2);
+pub const TOOLTIP_SUB: Color = rgb(0xA8, 0xA8, 0xA8);
 
 // ------------------------------------------------------- flyout internals
 pub const FLY_CONTENT_W: f32 = FLY_W - FLY_PAD * 2.0;
@@ -37,16 +357,16 @@ pub const CHIP_TILE: f32 = 20.0;
 pub const R_CHIP_TILE: f32 = 5.0;
 pub const CHIP_PAD_L: f32 = 6.0;
 pub const CHIP_PAD_R: f32 = 10.0;
-pub const CHIP_GAP: f32 = 6.0;
 pub const CHIP_TILE_GAP: f32 = 6.0;
 pub const TRAILING_GAP: f32 = 8.0;
+/// Space either side of the middot between subtitle prefix and accent.
+pub const SUBTITLE_SEP_GAP: f32 = 4.0;
 pub const BUTTON_H: f32 = 40.0;
 pub const BUTTON_H_SMALL: f32 = 36.0;
 pub const BUTTON_PREV: f32 = 40.0;
 pub const BUTTON_PLAY: f32 = 48.0;
 pub const BUTTON_CALL: f32 = 44.0;
 pub const BUTTON_GAP: f32 = 8.0;
-pub const BUTTON_RADIUS: f32 = R_CONTROL;
 pub const CONTROL_GLYPH_SMALL: f32 = 17.0;
 pub const CONTROL_GLYPH: f32 = 20.0;
 pub const CONTROL_GLYPH_PLAY: f32 = 22.0;
@@ -57,27 +377,14 @@ pub const PROGRESS_LABEL_GAP: f32 = 10.0;
 pub const PROGRESS_H: f32 = 20.0;
 pub const PROGRESS_STROKE: f32 = 3.0;
 pub const MUSIC_BODY_H: f32 = 72.0;
-pub const MUSIC_ROW2_H: f32 = 40.0;
 pub const MUSIC_ROW_GAP: f32 = 12.0;
 pub const CALL_BODY_TOP: f32 = 20.0;
 pub const CALL_BODY_GAP: f32 = 12.0;
 pub const CALL_BODY_H: f32 = 76.0;
-pub const SHELF_TILE_H: f32 = 66.0;
-pub const SHELF_TILE_GAP: f32 = 8.0;
-pub const SHELF_TILE_PAD: f32 = 10.0;
-pub const SHELF_HINT_H: f32 = 14.0;
-pub const SHELF_HINT_GAP: f32 = 12.0;
 pub const BADGE_PAD_X: f32 = 6.0;
-pub const BADGE_PAD_Y: f32 = 2.0;
 pub const TIMER_BODY_H: f32 = 72.0;
 pub const TIMER_TOGGLE_W: f32 = 48.0;
 pub const TIMER_STOP_W: f32 = 40.0;
-pub const RING_CENTER: f32 = 28.0;
-pub const RING_RADIUS: f32 = 19.0;
-pub const RING_STROKE: f32 = 4.0;
-pub const VOL_SLIDER_H: f32 = 4.0;
-pub const VOL_VALUE_W: f32 = 22.0;
-pub const VOL_VALUE_GAP: f32 = 8.0;
 pub const SHEEN_ALPHA: f32 = 0.12;
 pub const SHADOW_1_DY: f32 = 16.0;
 pub const SHADOW_1_BLUR: f32 = 40.0;
@@ -93,21 +400,11 @@ pub const SHADOW_HALO: f32 = 44.0;
 pub const ICON_STROKE: f32 = 2.3;
 pub const FOCUS_RING_W: f32 = 2.0;
 pub const FOCUS_RING_GAP: f32 = 2.0;
-pub const CHIP_LABEL_PAD: f32 = 4.0;
-pub const PILL_TILE_Y: f32 = 4.0;
 pub const BADGE_H: f32 = 18.0;
-pub const RING_ARC_CAP: f32 = 0.0;
-pub const SNAPSHOT_BG: Color = rgb(0x1E, 0x1E, 0x1E);
-pub const AUTO_CLOSE_TIMER_MS: u32 = AUTO_CLOSE_MS;
-pub const HUD_TIMER_MS: u32 = HUD_MS;
-pub const TIMER_TICK_MS: u32 = 1000;
 pub const FRAME_MS: u32 = 16;
-pub const OPEN_TOP_FADE_MS: u32 = 280;
-pub const OPEN_TOP_MOVE_MS: u32 = 400;
-pub const OPEN_TRANSLATE: f32 = 8.0;
 
 // ----------------------------------------------------------------- radii
-pub const R_SURFACE: f32 = 6.0;
+pub const R_SURFACE: f32 = 8.0;
 pub const R_CONTROL: f32 = 6.0;
 pub const R_BADGE: f32 = 4.0;
 pub const R_TILE_PILL: f32 = 6.0;
@@ -118,44 +415,33 @@ pub const R_THUMB: f32 = 2.0;
 pub const WAVE_LEN: f32 = 20.0;
 pub const WAVE_AMP: f32 = 3.0;
 pub const WAVE_STROKE: f32 = 3.0;
-pub const WAVE_ROW_H: f32 = 20.0;
-pub const WAVE_SPEED: f32 = 28.57;
 pub const WAVE_FLAT: f32 = 0.02;
-pub const WAVE_EASE_MS: u32 = 320;
 pub const THUMB_W: f32 = 4.0;
 pub const THUMB_H: f32 = 18.0;
 
 // --------------------------------------------------------------- timings
-pub const OPEN_MS: u32 = 460;
-pub const CLOSE_MS: u32 = 260;
-pub const FADE_IN_MS: u32 = 80;
-pub const CONTENT_TOP_DELAY: u32 = 150;
-pub const CONTENT_BODY_DELAY: u32 = 210;
+/// Approved flyout motion: 180 ms fade, 220 ms scale/rise, 110 ms close.
+pub const FLYOUT_OPEN_FADE_MS: u32 = 180;
+pub const FLYOUT_OPEN_MOVE_MS: u32 = 220;
+pub const FLYOUT_CLOSE_MS: u32 = 110;
+pub const FLYOUT_RISE: f32 = 6.0;
+pub const FLYOUT_SCALE: f32 = 0.94;
+pub const EASE_FLYOUT: [f32; 4] = [0.2, 0.8, 0.2, 1.0];
 pub const HOVER_MS: u32 = 160;
-pub const SHEEN_MS: u32 = 800;
-pub const PILL_FADE_MS: u32 = 200;
 pub const AUTO_CLOSE_MS: u32 = 700;
+/// Players drop the GSMTC session for a moment while a track changes. Keep
+/// the last snapshot this long so the card and pill do not flicker.
+pub const MEDIA_CLEAR_MS: u32 = 3000;
+/// After one of our own transport clicks the session can stay away while the
+/// player loads the next track (and possibly an ad). Hold the old snapshot
+/// for this long instead, so the card never closes mid-interaction.
+pub const MEDIA_COMMAND_HOLD_MS: u32 = 6000;
 pub const HUD_MS: u32 = 1800;
-pub const PAUSED_KEEP_MS: u32 = 60_000;
-pub const CONTENT_IN_MS: u32 = 280;
-pub const CONTENT_IN_MOVE_MS: u32 = 400;
-pub const CONTENT_SWAP_OUT_MS: u32 = 80;
-pub const CONTENT_SWAP_MS: u32 = 120;
-pub const PRESS_MS: u32 = 120;
-pub const ICON_SWAP_MS: u32 = 220;
-pub const CLOSE_FADE_START_MS: u32 = 180;
-pub const CLOSE_FADE_MS: u32 = 90;
 pub const TIMER_FLASH_MS: u32 = 600;
 pub const TIMER_FLASHES: u32 = 3;
-pub const DRAG_BOB_MS: u32 = 1000;
-pub const HUD_FADE_MS: u32 = 200;
-pub const PROGRESS_SMOOTH_MS: u32 = 1000;
 
 // ----------------------------------------------------------------- curves
-pub const EASE_OPEN: [f32; 4] = [0.2, 1.1, 0.3, 1.0];
-pub const EASE_CLOSE: [f32; 4] = [0.4, 0.0, 0.2, 1.0];
 pub const EASE_CONTENT: [f32; 4] = [0.2, 0.9, 0.25, 1.0];
-pub const EASE_ICON: [f32; 4] = [0.3, 1.4, 0.5, 1.0];
 
 // ---------------------------------------------------------------- colors
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -206,14 +492,15 @@ impl Color {
     };
 
     pub fn with_alpha(self, a: f32) -> Self {
-        Self { a, ..self }
-    }
-
-    pub fn scale_alpha(self, k: f32) -> Self {
         Self {
-            a: (self.a * k).clamp(0.0, 1.0),
+            a: (self.a * a).clamp(0.0, 1.0),
             ..self
         }
+    }
+
+    /// Replace (not scale) the alpha channel.
+    pub fn set_alpha(self, a: f32) -> Self {
+        Self { a, ..self }
     }
 
     pub fn lerp(a: Self, b: Self, t: f32) -> Self {
@@ -225,11 +512,6 @@ impl Color {
             a: a.a + (b.a - a.a) * t,
         }
     }
-
-    /// Relative luminance (sRGB) used to pick readable glyphs on colored tiles.
-    pub fn luminance(self) -> f32 {
-        0.2126 * self.r + 0.7152 * self.g + 0.0722 * self.b
-    }
 }
 
 // Activity colors (section 4.2)
@@ -239,7 +521,6 @@ pub const SHELF_BLUE: Color = rgb(0x60, 0xCD, 0xFF);
 pub const TIMER_AMBER: Color = rgb(0xFF, 0xB5, 0x47);
 pub const VOLUME_WHITE: Color = rgb(0xFF, 0xFF, 0xFF);
 pub const DARK_GLYPH: Color = rgb(0x0B, 0x0B, 0x0C);
-pub const DANGER_RED: Color = rgb(0xC4, 0x2B, 0x1C);
 
 // File badge colors (section 6.3)
 pub const BADGE_PDF: Color = rgb(0xFF, 0x6B, 0x6B);
@@ -249,18 +530,21 @@ pub const BADGE_DOC: Color = rgb(0x7A, 0xA2, 0xFF);
 pub const BADGE_SHEET: Color = CALL_GREEN;
 pub const BADGE_VIDEO: Color = rgb(0xC7, 0x92, 0xEA);
 pub const BADGE_OTHER: Color = rgb(0xB0, 0xB0, 0xB8);
+/// v0.5 file tiles: identity colors from the ShelfFiles artboard.
+pub const FILE_IMAGE: Color = rgb(0x2F, 0xBF, 0xA0);
+pub const FILE_PDF: Color = rgb(0xFF, 0x5F, 0x57);
+pub const FILE_VIDEO: Color = rgb(0x8B, 0x5C, 0xF6);
+pub const FILE_AUDIO: Color = rgb(0xFF, 0x8A, 0x4C);
+pub const FILE_DOC: Color = rgb(0x7A, 0xA2, 0xFF);
 
 // Dark theme surface tokens (section 4.1)
-pub const PILL_FILL_REST_A: f32 = 0.09;
-pub const PILL_FILL_HOVER_A: f32 = 0.14;
-pub const PILL_FILL_PRESS_A: f32 = 0.06;
 pub const PILL_BORDER_REST_A: f32 = 0.10;
 pub const PILL_BORDER_ACTIVE_A: f32 = 0.55;
 pub const PILL_BORDER_DRAG_A: f32 = 0.90;
 pub const DRAG_FILL_A: f32 = 0.14;
-pub const FLY_FILL: Color = rgb(0x20, 0x20, 0x20);
+pub const FLY_FILL: Color = rgb(0x28, 0x28, 0x28);
 pub const FLY_FILL_A: f32 = 0.95;
-pub const FLY_BORDER_A: f32 = 0.10;
+pub const FLY_BORDER_A: f32 = 0.09;
 pub const TEXT_PRIMARY_A: f32 = 1.0;
 pub const TEXT_PILL_LABEL_A: f32 = 0.94;
 pub const TEXT_SECONDARY_A: f32 = 0.68;
@@ -269,13 +553,10 @@ pub const SURFACE_BUTTON_A: f32 = 0.08;
 pub const SURFACE_BUTTON_HOVER_A: f32 = 0.15;
 pub const SURFACE_BUTTON_PRESS_A: f32 = 0.06;
 pub const TRACK_A: f32 = 0.22;
-pub const TIMER_TRACK_A: f32 = 0.14;
 pub const CHIP_FILL_A: f32 = 0.08;
 pub const SHELF_TILE_A: f32 = 0.06;
 pub const SHELF_TILE_BORDER_A: f32 = 0.06;
 pub const SHELF_TILE_HOVER_A: f32 = 0.11;
-pub const VOLUME_TILE_A: f32 = 0.14;
-pub const VOLUME_TRACK_A: f32 = 0.20;
 
 // Light theme tokens (section 4.4)
 pub const LIGHT_PILL_FILL_A: f32 = 0.05;
@@ -287,6 +568,56 @@ pub const LIGHT_TEXT: Color = rgb(0x1A, 0x1A, 0x1A);
 pub const LIGHT_TEXT_SECONDARY_A: f32 = 0.62;
 pub const LIGHT_TRACK_A: f32 = 0.16;
 pub const LIGHT_SURFACE_BUTTON_A: f32 = 0.05;
+
+// Convert card (v0.5). The periwinkle accent is shared by target titles and the
+// enabled Shelf chip; actions stay neutral white.
+pub const CONVERT_ACCENT: Color = rgb(0xA9, 0xC1, 0xF0);
+pub const CONVERT_ACCENT_LIGHT: Color = rgb(0x46, 0x5E, 0x99);
+pub const CONVERT_ON_ACCENT: Color = rgb(0x24, 0x2F, 0x49);
+pub const CONVERT_TILE_A: f32 = 0.06;
+pub const CONVERT_TILE_BORDER_A: f32 = 0.05;
+pub const CONVERT_TILE_HOVER_A: f32 = 0.10;
+pub const CONVERT_TILE_PRESS_A: f32 = 0.14;
+pub const CONVERT_TILE_DISABLED_A: f32 = 0.03;
+pub const CONVERT_DONE: Color = CALL_GREEN;
+/// The Undo glyph is the only warm control in the Done footer.
+pub const CONVERT_UNDO: Color = rgb(0xE8, 0x9C, 0x9C);
+/// Drag-over tile fill from section 4.4.
+pub const CONVERT_DROP_FILL_A: f32 = 0.28;
+pub const CONVERT_DROP_DIM_A: f32 = 0.45;
+
+// v0.6 option tiles (exact artboard hexes for the dark card).
+pub const CONVERT_OPTION_FILL: Color = rgb(0x30, 0x30, 0x30);
+pub const CONVERT_OPTION_BORDER: Color = rgb(0x3A, 0x3A, 0x3A);
+pub const CONVERT_OPTION_HOVER: Color = rgb(0x3B, 0x3B, 0x3B);
+pub const CONVERT_TAB_ACTIVE: Color = Color {
+    r: 0x8F as f32 / 255.0,
+    g: 0xA6 as f32 / 255.0,
+    b: 0xD6 as f32 / 255.0,
+    a: 0.26,
+};
+pub const LIGHT_CONVERT_OPTION_FILL: Color = rgb(0xEC, 0xEC, 0xEC);
+pub const LIGHT_CONVERT_OPTION_BORDER: Color = rgb(0xDC, 0xDC, 0xDC);
+pub const LIGHT_CONVERT_OPTION_HOVER: Color = rgb(0xE2, 0xE2, 0xE2);
+pub const LIGHT_CONVERT_TAB_ACTIVE: Color = Color {
+    r: 0x46 as f32 / 255.0,
+    g: 0x5E as f32 / 255.0,
+    b: 0x99 as f32 / 255.0,
+    a: 0.20,
+};
+
+// Expanded card surfaces (v0.4 §3.1). The card shell keeps its existing
+// material; only the rail and divider are new.
+pub const CARD_RAIL: Color = rgb(0x21, 0x21, 0x21);
+pub const CARD_DIVIDER: Color = rgb(0x34, 0x34, 0x34);
+pub const CARD_BORDER: Color = rgb(0x3C, 0x3C, 0x3C);
+pub const LIGHT_CARD_RAIL: Color = rgb(0xEA, 0xEA, 0xEA);
+pub const LIGHT_CARD_DIVIDER: Color = rgb(0xDC, 0xDC, 0xDC);
+pub const LIGHT_CARD_BORDER: Color = rgb(0xD6, 0xD6, 0xD6);
+pub const CARD_HOVER_A: f32 = 0.08;
+pub const CARD_PRESS_A: f32 = 0.14;
+pub const CARD_ACTIVE_A: f32 = 0.14;
+pub const CARD_GHOST_A: f32 = 0.06;
 
 // Typography (section 4.3)
 pub const FONT_FAMILY: &str = "Segoe UI Variable Text";
@@ -309,6 +640,20 @@ pub const LINE_TIMER_BIG: f32 = 28.0;
 pub const LINE_TIME: f32 = 14.0;
 pub const LINE_HINT: f32 = 14.0;
 
+// Card typography (v0.4).
+pub const LINE_CARD_STATUS: f32 = 16.0;
+pub const FONT_MUSIC_TITLE: f32 = 16.0;
+pub const LINE_MUSIC_TITLE: f32 = 20.0;
+pub const FONT_MUSIC_META: f32 = 12.0;
+pub const LINE_MUSIC_META: f32 = 16.0;
+pub const FONT_TIMER_READOUT: f32 = 36.0;
+pub const LINE_TIMER_READOUT: f32 = 40.0;
+pub const FONT_CALL_TITLE: f32 = 18.0;
+pub const LINE_CALL_TITLE: f32 = 24.0;
+pub const FONT_CHIP: f32 = 12.0;
+pub const FONT_OPEN_CALL: f32 = 13.0;
+pub const LINE_CARD_HINT: f32 = 15.0;
+
 // ------------------------------------------------------------ activity ids
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ActivityKind {
@@ -316,19 +661,42 @@ pub enum ActivityKind {
     Call,
     Shelf,
     Timer,
-    Volume,
+    Clipboard,
 }
 
-impl ActivityKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Music => "Music",
-            Self::Call => "Call",
-            Self::Shelf => "File shelf",
-            Self::Timer => "Timer",
-            Self::Volume => "Volume",
-        }
+// Rail accent per activity (v0.4 §3.1). Card-only: the compact pill keeps its
+// existing activity colors above.
+pub const RAIL_MUSIC: Color = rgb(0xF0, 0x61, 0x7F);
+pub const RAIL_TIMER: Color = rgb(0xFF, 0xB5, 0x47);
+pub const RAIL_CALL: Color = rgb(0x5B, 0xE3, 0x8F);
+pub const RAIL_SHELF: Color = rgb(0x8F, 0xA6, 0xD6);
+/// v0.7 Clipboard accent.
+pub const RAIL_CLIP: Color = rgb(0x5F, 0xD0, 0xC5);
+
+pub const fn rail_accent(kind: ActivityKind) -> Color {
+    match kind {
+        ActivityKind::Music => RAIL_MUSIC,
+        ActivityKind::Timer => RAIL_TIMER,
+        ActivityKind::Call => RAIL_CALL,
+        ActivityKind::Shelf => RAIL_SHELF,
+        ActivityKind::Clipboard => RAIL_CLIP,
     }
+}
+
+/// Fixed top-to-bottom order of the rail buttons.
+pub const RAIL_ORDER: [ActivityKind; 5] = [
+    ActivityKind::Music,
+    ActivityKind::Timer,
+    ActivityKind::Call,
+    ActivityKind::Shelf,
+    ActivityKind::Clipboard,
+];
+
+pub fn rail_index(kind: ActivityKind) -> usize {
+    RAIL_ORDER
+        .iter()
+        .position(|&item| item == kind)
+        .unwrap_or(0)
 }
 
 // --------------------------------------------------------------- geometry
@@ -381,25 +749,175 @@ impl RectD {
             ..self
         }
     }
+}
 
-    /// Per-edge lerp used by the flyout morph.
-    pub fn lerp(a: Self, b: Self, t: f32) -> Self {
-        Self {
-            x: a.x + (b.x - a.x) * t,
-            y: a.y + (b.y - a.y) * t,
-            w: a.w + (b.w - a.w) * t,
-            h: a.h + (b.h - a.h) * t,
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rule 6 of the v0.4 spec: the pill and the expanded card's outer
+    /// footprint are frozen. Changing any of these must fail the build.
+    #[test]
+    fn frozen_pill_and_card_geometry() {
+        assert_eq!(PILL_W, 224.0);
+        assert_eq!(FLY_W, 400.0);
+        assert_eq!(FLY_H, 192.0);
+        assert_eq!(GAP_TASKBAR, 6.0);
     }
 
-    pub fn union(self, other: Self) -> Self {
-        let x = self.x.min(other.x);
-        let y = self.y.min(other.y);
-        Self {
-            x,
-            y,
-            w: self.right().max(other.right()) - x,
-            h: self.bottom().max(other.bottom()) - y,
-        }
+    /// The v0.4 interior is derived, so guard the numbers the artboards use.
+    /// v0.7 keeps the 56 DIP rail and now fits five tiles.
+    #[test]
+    fn card_interior_matches_v04() {
+        assert_eq!(CARD_CONTENT_X, 57.0);
+        assert_eq!(CARD_CONTENT_W, 311.0);
+        assert_eq!(CARD_CONTENT_H, 164.0);
+        assert_eq!(RAIL_INSET, 6.0);
+        assert_eq!(RAIL_BTN * 5.0 + RAIL_GAP * 4.0 + RAIL_INSET * 2.0, FLY_H);
+    }
+
+    /// v0.7 rail: five 32 x 32 tiles with 5 DIP gaps, 18 DIP glyphs and a
+    /// 3 x 16 indicator 8 DIP below the tile top.
+    #[test]
+    fn rail_fits_five_tiles_matches_v07() {
+        assert_eq!(RAIL_W, 56.0);
+        assert_eq!(RAIL_BTN, 32.0);
+        assert_eq!(RAIL_GAP, 5.0);
+        assert_eq!(RAIL_GLYPH, 18.0);
+        assert_eq!(RAIL_IND_W, 3.0);
+        assert_eq!(RAIL_IND_H, 16.0);
+        assert_eq!(RAIL_IND_DY, 8.0);
+        let stack = RAIL_BTN * 5.0 + RAIL_GAP * 4.0;
+        assert_eq!(stack, 180.0);
+        assert!(FLY_H - stack >= 4.0, "five tiles need at least 4 DIP spare");
+        assert_eq!(RAIL_ORDER.len(), 5);
+        assert_eq!(
+            RAIL_ORDER,
+            [
+                ActivityKind::Music,
+                ActivityKind::Timer,
+                ActivityKind::Call,
+                ActivityKind::Shelf,
+                ActivityKind::Clipboard,
+            ]
+        );
+        assert_eq!(rail_accent(ActivityKind::Clipboard), RAIL_CLIP);
+        assert_eq!(RAIL_CLIP, rgba(0x5F, 0xD0, 0xC5, 1.0));
+    }
+
+    /// v0.7 Clipboard card uses the same column as the shelf.
+    #[test]
+    fn clipboard_card_matches_v07() {
+        assert_eq!(CLIP_PAD, 12.0);
+        assert_eq!(CLIP_INNER_W, 319.0);
+        assert_eq!(CLIP_INNER_H, 168.0);
+        assert_eq!(CLIP_EMPTY_GLYPH, 40.0);
+        assert_eq!(CLIP_POP_MS, 2000);
+        assert_eq!(CLIP_CLEAR_CONFIRM_MS, 4000);
+        assert_eq!(CLIP_DANGER, rgb(0xF0, 0x61, 0x7F));
+        assert_eq!(CLIP_MAX_ITEMS, 30);
+        assert_eq!(CLIP_RETENTION_DAYS, 7);
+        assert_eq!(CLIP_DEBOUNCE_MS, 150);
+        assert_eq!(CLIP_SWEEP_MS, 3_600_000);
+        assert_eq!(CLIP_TEXT_MAX_BYTES, 1_048_576);
+        assert_eq!(CLIP_IMAGE_MAX_PIXELS, 20_000_000);
+        assert_eq!(CLIP_IMAGE_MAX_BYTES, 26_214_400);
+        assert_eq!(CLIP_THUMB_PX, 96);
+    }
+
+    /// v0.7 Phase 3 card: 28 toolbar + 10 + 130 list, 32/2 rows, 26 x 24
+    /// filter tabs in a 2 DIP padded strip, 24 DIP row actions.
+    #[test]
+    fn clipboard_list_matches_v07() {
+        assert_eq!(CLIP_TOOLBAR_H, 28.0);
+        assert_eq!(CLIP_TOOLBAR_GAP, 10.0);
+        assert_eq!(CLIP_LIST_H, 130.0);
+        assert_eq!(
+            CLIP_TOOLBAR_H + CLIP_TOOLBAR_GAP + CLIP_LIST_H,
+            CLIP_INNER_H
+        );
+        assert_eq!(CLIP_FILTER_PAD, 2.0);
+        assert_eq!(CLIP_FILTER_TAB_W, 26.0);
+        assert_eq!(CLIP_FILTER_TAB_H, 24.0);
+        assert_eq!(CLIP_FILTER_TAB_H + CLIP_FILTER_PAD * 2.0, CLIP_TOOLBAR_H);
+        assert_eq!(CLIP_FILTER_ACTIVE, rgba(0x5F, 0xD0, 0xC5, 0.24));
+        assert_eq!(CLIP_ROW_H, 32.0);
+        assert_eq!(CLIP_ROW_GAP, 2.0);
+        assert_eq!(CLIP_ROW_STRIDE, 34.0);
+        assert_eq!(CLIP_ROW_R, 6.0);
+        assert_eq!(CLIP_ROW_HOVER, rgba(255, 255, 255, 0.07));
+        assert_eq!(CLIP_GLYPH_SLOT, 20.0);
+        assert_eq!(CLIP_THUMB_W, 24.0);
+        assert_eq!(CLIP_THUMB_H, 18.0);
+        assert_eq!(CLIP_ACTION_BTN, 24.0);
+        assert_eq!(CLIP_LINK, rgb(0x8F, 0xB8, 0xFF));
+        assert_eq!(CLIP_SCROLL_W, 4.0);
+        assert_eq!(CLIP_TIP_CHARS, 200);
+        assert_eq!(CLIP_COUNT_FONT, 11.0);
+    }
+
+    /// v0.6 shelf geometry: 12 DIP padding, a 28 DIP toolbar and a
+    /// 4-column scrolling grid of 71.75 x 62 tiles with 6 DIP gaps.
+    #[test]
+    fn shelf_grid_matches_v06() {
+        assert_eq!(SHELF_PAD, 12.0);
+        assert_eq!(SHELF_INNER_W, 319.0);
+        assert_eq!(SHELF_INNER_H, 168.0);
+        assert_eq!(SHELF_TOOLBAR_H, 28.0);
+        assert_eq!(SHELF_TOOLBAR_GAP, 10.0);
+        assert_eq!(SHELF_VIEW_H, 130.0);
+        assert_eq!(SHELF_COLS, 4);
+        assert_eq!(SHELF_TILE_H, 62.0);
+        assert_eq!(SHELF_TILE_GAP, 6.0);
+        assert_eq!(SHELF_TILE_W, 71.75);
+        assert_eq!(SHELF_SCROLL_W, 4.0);
+        assert_eq!(SHELF_CONVERT_W, 36.0);
+        assert_eq!(SHELF_CONVERT_H, 28.0);
+        assert_eq!(SHELF_SOFT_CAP, 500);
+    }
+
+    /// Tooltip timing and tokens from the v0.6 shelf spec.
+    #[test]
+    fn tooltip_timing_matches_v06() {
+        assert_eq!(TOOLTIP_DELAY_MS, 450);
+        assert_eq!(TOOLTIP_NEIGHBOR_MS, 300);
+        assert_eq!(TOOLTIP_GAP, 4.0);
+        assert_eq!(TOOLTIP_R, 4.0);
+        assert_eq!(TOOLTIP_FONT, 12.0);
+        assert_eq!(TOOLTIP_SUB_FONT, 11.0);
+    }
+
+    /// v0.6 Convert stack: 12 DIP padding, 28 header + 10 + 28 tabs + 10 +
+    /// 86 options, five 59 DIP tiles per row.
+    #[test]
+    fn convert_stack_matches_v06() {
+        assert_eq!(CONVERT_PAD, 12.0);
+        assert_eq!(CONVERT_INNER_W, 319.0);
+        assert_eq!(CONVERT_INNER_H, 168.0);
+        assert_eq!(CONVERT_HEADER_H, 28.0);
+        assert_eq!(CONVERT_TABS_H, 28.0);
+        assert_eq!(CONVERT_OPTIONS_H, 86.0);
+        assert_eq!(CONVERT_STACK_GAP, 10.0);
+        assert_eq!(CONVERT_STACK_H, 162.0);
+        assert!(CONVERT_STACK_H <= 166.0);
+        assert_eq!(CONVERT_OPTION_COLS, 5);
+        assert_eq!(
+            CONVERT_OPTION_H * 2.0 + CONVERT_OPTION_GAP,
+            CONVERT_OPTIONS_H
+        );
+        assert_eq!(CONVERT_OPTION_W, 59.0);
+        assert_eq!(CONVERT_MAX_OPTIONS, 10);
+    }
+
+    /// Converting/Done geometry from the v0.6 artboards (section 4.5).
+    #[test]
+    fn convert_result_views_match_v06() {
+        assert_eq!(CONVERT_STAGE_TILE, 56.0);
+        assert_eq!(CONVERT_PROGRESS_H, 8.0);
+        assert_eq!(CONVERT_PERCENT_FONT, 26.0);
+        assert_eq!(CONVERT_STAGE_ICON, 26.0);
+        assert_eq!(CONVERT_DONE_CHECK, 40.0);
+        assert_eq!(CONVERT_DONE_COUNTDOWN_H, 3.0);
+        assert_eq!(CONVERT_COUNTDOWN_MS, 5000);
     }
 }

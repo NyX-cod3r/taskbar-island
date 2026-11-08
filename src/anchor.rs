@@ -14,8 +14,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::design::{
-    RectD, BUBBLE, BUBBLE_GAP, FLY_H, FLY_W, GAP_TASKBAR, GAP_TRAY, PILL_W, WINDOW_TOP_PAD,
-    WINDOW_W,
+    RectD, BUBBLE, BUBBLE_GAP, FLY_H, FLY_W, GAP_TASKBAR, GAP_TRAY, PILL_INSET, PILL_W,
+    WINDOW_TOP_PAD, WINDOW_W,
 };
 
 const TASKBAR_CLASS: PCWSTR = w!("Shell_TrayWnd");
@@ -51,7 +51,8 @@ impl Anchor {
             return None;
         }
         let fallback_tray = RECT {
-            left: tb.right - ((FALLBACK_TRAY_RESERVE_DIP * dpi.max(96) as f32 / 96.0).round() as i32),
+            left: tb.right
+                - ((FALLBACK_TRAY_RESERVE_DIP * dpi.max(96) as f32 / 96.0).round() as i32),
             top: tb.top,
             right: tb.right,
             bottom: tb.bottom,
@@ -128,12 +129,17 @@ impl Anchor {
             taskbar.right as f32 / scale - FALLBACK_TRAY_RESERVE_DIP
         };
 
-        let pill_right = tray_left - GAP_TRAY - (BUBBLE + BUBBLE_GAP) + slot_offset_dip as f32;
+        let pill_right = tray_left - GAP_TRAY + slot_offset_dip as f32;
         let pill_left = pill_right - PILL_W;
-        let pill_h = t + 2.0;
-        let pill_top = tb_top + 4.0;
+        // Equal 4 DIP margins top and bottom keep the band inside the taskbar
+        // and match the height of a taskbar icon's hit box instead of
+        // overhanging the screen edge.
+        let pill_h = (t - PILL_INSET * 2.0).max(0.0);
+        let pill_top = tb_top + PILL_INSET;
         let pill = RectD::new(pill_left, pill_top, PILL_W, pill_h);
-        let bubble = RectD::new(pill_right + BUBBLE_GAP, pill_top, BUBBLE, BUBBLE);
+        // The bubble slot stays reserved but now sits just left of the pill so
+        // the pill itself keeps the old 12 DIP gap to the tray.
+        let bubble = RectD::new(pill_left - BUBBLE_GAP - BUBBLE, pill_top, BUBBLE, BUBBLE);
 
         let work_left = work.left as f32 / scale;
         let work_right = work.right as f32 / scale;
@@ -154,6 +160,9 @@ impl Anchor {
             right: ((win_left + win_w) * scale).round() as i32,
             bottom: (tb_bottom * scale).round() as i32,
         };
+        // Use the snapped physical origin for local-coordinate conversion so
+        // hit testing and drawing cannot drift by a rounding fraction.
+        let origin = (window.left as f32 / scale, window.top as f32 / scale);
 
         let insufficient_space = pill_left < tb_left + 12.0;
         Self {
@@ -165,7 +174,7 @@ impl Anchor {
             pill,
             bubble,
             flyout,
-            origin: (win_left, win_top),
+            origin,
             taskbar_height_dip: t,
             visible: !insufficient_space,
             insufficient_space,
@@ -175,15 +184,6 @@ impl Anchor {
     /// Convert a screen-DIP rect to window-local DIPs.
     pub fn local(&self, r: RectD) -> RectD {
         RectD::new(r.x - self.origin.0, r.y - self.origin.1, r.w, r.h)
-    }
-
-    pub fn physical(&self, r: RectD) -> RECT {
-        RECT {
-            left: (r.x * self.scale).round() as i32,
-            top: (r.y * self.scale).round() as i32,
-            right: ((r.x + r.w) * self.scale).round() as i32,
-            bottom: ((r.y + r.h) * self.scale).round() as i32,
-        }
     }
 
     /// Local DIP point of the cursor, if the app window exists.
@@ -204,6 +204,17 @@ impl Anchor {
             (self.window.right - self.window.left) as f32 / self.scale,
             (self.window.bottom - self.window.top) as f32 / self.scale,
         )
+    }
+}
+
+/// Effective DPI of the display the taskbar lives on.
+pub fn dpi_for_window(hwnd: HWND) -> u32 {
+    // SAFETY: GetDpiForWindow only reads properties of the passed window.
+    let dpi = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) };
+    if dpi == 0 {
+        96
+    } else {
+        dpi
     }
 }
 
@@ -290,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn pill_is_208x32_and_uses_the_reserved_bubble_slot() {
+    fn pill_keeps_the_old_width_and_sits_12_dip_left_of_the_tray() {
         let a = Anchor::layout(
             rect(0, 1040, 1920, 1080),
             rect(1600, 1040, 1920, 1080),
@@ -299,11 +310,13 @@ mod tests {
             0,
         );
         assert_eq!(a.pill.w, design::PILL_W);
-        assert_eq!(a.pill.h, a.taskbar_height_dip + 2.0);
-        assert_eq!(a.pill.right(), 1600.0 - 12.0 - 40.0);
-        assert_eq!(a.bubble.x, a.pill.right() + 8.0);
+        assert_eq!(a.pill.h, a.taskbar_height_dip - design::PILL_INSET * 2.0);
+        assert_eq!(a.pill.bottom(), 1080.0 - design::PILL_INSET);
+        assert_eq!(a.pill.y, 1040.0 + design::PILL_INSET);
+        assert_eq!(a.pill.right(), 1600.0 - 12.0);
+        assert_eq!(a.bubble.x, a.pill.x - 8.0 - design::BUBBLE);
         assert_eq!(a.flyout.h, design::FLY_H);
-        assert_eq!(a.flyout.bottom(), 1040.0 - 12.0);
+        assert_eq!(a.flyout.bottom(), 1040.0 - design::GAP_TASKBAR);
     }
 
     #[test]
@@ -357,9 +370,20 @@ mod tests {
             a.window.right - a.window.left,
             (design::WINDOW_W * 1.25).round() as i32
         );
-        assert_eq!(
-            a.window.bottom - a.window.top,
-            ((50.0_f64 / 1.25 + 12.0 + 192.0 + 40.0) * 1.25).round() as i32
+        // Each edge is snapped to a physical pixel, so an edge landing on .5 can
+        // differ from the ideal height by one pixel. The origin and the
+        // taskbar-aligned bottom are the authoritative values.
+        let ideal_h = ((50.0_f64 / 1.25
+            + design::GAP_TASKBAR as f64
+            + design::FLY_H as f64
+            + design::WINDOW_TOP_PAD as f64)
+            * 1.25)
+            .round() as i32;
+        let actual_h = a.window.bottom - a.window.top;
+        assert!(
+            (actual_h - ideal_h).abs() <= 1,
+            "window height {actual_h} should be within 1 px of {ideal_h}"
         );
+        assert_eq!(a.window.bottom, 1350);
     }
 }

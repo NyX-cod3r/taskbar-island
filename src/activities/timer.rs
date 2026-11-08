@@ -36,9 +36,14 @@ impl Countdown {
         }
     }
 
+    /// A duration exists, whether it is armed, running, paused or done.
     pub fn active(&self) -> bool {
         self.total > Duration::ZERO
-            && (self.started_at.is_some() || self.accumulated > Duration::ZERO || self.finished)
+    }
+
+    /// A duration is set but the countdown has not been started.
+    pub fn armed(&self) -> bool {
+        self.active() && self.started_at.is_none() && self.accumulated.is_zero() && !self.finished
     }
 
     pub fn running(&self) -> bool {
@@ -91,11 +96,43 @@ impl Countdown {
         }
     }
 
-    pub fn add_minute(&mut self) {
-        if self.finished {
+    /// Start a paused or armed countdown; a finished timer restarts its total.
+    pub fn resume(&mut self, now: Instant) {
+        if !self.active() {
             return;
         }
-        self.total += Duration::from_secs(60);
+        if self.finished {
+            self.accumulated = Duration::ZERO;
+            self.finished = false;
+        }
+        if self.started_at.is_none() && self.accumulated < self.total {
+            self.started_at = Some(now);
+        }
+    }
+
+    /// Preset chip: idle arms the chosen duration, paused/running extends the
+    /// remaining time by that many minutes.
+    pub fn preset(&mut self, minutes: u32) {
+        let add = Duration::from_secs(minutes as u64 * 60);
+        if self.running() || (!self.finished && self.accumulated > Duration::ZERO) {
+            self.total += add;
+        } else {
+            self.total = add;
+            self.started_at = None;
+            self.accumulated = Duration::ZERO;
+            self.finished = false;
+        }
+    }
+
+    pub fn add_minute(&mut self) {
+        self.add_minutes(1);
+    }
+
+    pub fn add_minutes(&mut self, minutes: u32) {
+        if self.finished || minutes == 0 {
+            return;
+        }
+        self.total += Duration::from_secs(minutes as u64 * 60);
     }
 
     pub fn stop(&mut self) {
@@ -151,5 +188,46 @@ mod tests {
     fn empty_timer_is_inactive() {
         let t = Countdown::default();
         assert!(!t.active());
+        assert!(!t.armed());
+    }
+
+    #[test]
+    fn preset_arms_then_start_runs() {
+        let now = Instant::now();
+        let mut t = Countdown::default();
+        t.preset(5);
+        assert!(t.active());
+        assert!(t.armed());
+        assert_eq!(t.total, Duration::from_secs(300));
+        t.resume(now);
+        assert!(t.running());
+        assert_eq!(
+            t.remaining(now + Duration::from_secs(60)),
+            Duration::from_secs(240)
+        );
+    }
+
+    #[test]
+    fn presets_extend_a_running_timer() {
+        let now = Instant::now();
+        let mut t = Countdown::start("Timer", Duration::from_secs(60), now);
+        t.preset(5);
+        assert_eq!(t.total, Duration::from_secs(360));
+        t.preset(10);
+        assert_eq!(t.total, Duration::from_secs(960));
+    }
+
+    #[test]
+    fn finished_timer_restarts_from_its_total() {
+        let now = Instant::now();
+        let mut t = Countdown::start("Timer", Duration::from_secs(30), now);
+        assert!(t.tick(now + Duration::from_secs(30)));
+        t.resume(now + Duration::from_secs(40));
+        assert!(t.running());
+        assert!(!t.finished);
+        assert_eq!(
+            t.remaining(now + Duration::from_secs(40)),
+            Duration::from_secs(30)
+        );
     }
 }

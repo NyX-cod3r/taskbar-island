@@ -3,19 +3,21 @@
 //! Pure state. No drawing and no Win32 calls live here, so the ranking rules
 //! can be tested without a window.
 
-use std::time::Instant;
+// The live surface resolves its content directly from events; these ranking
+// rules remain the tested reference for the spec's priority order.
+#![allow(dead_code)]
 
-use crate::design::{self, ActivityKind};
+use crate::design::ActivityKind;
 
 /// Priority numbers: smaller wins. Only live (non-empty) activities compete.
 pub fn rank(kind: ActivityKind, timer_finished: bool) -> u8 {
     match kind {
         ActivityKind::Call => 1,
         ActivityKind::Timer if timer_finished => 2,
-        ActivityKind::Volume => 3,
         ActivityKind::Music => 4,
         ActivityKind::Timer => 5,
         ActivityKind::Shelf => 6,
+        ActivityKind::Clipboard => 7,
     }
 }
 
@@ -104,110 +106,6 @@ impl Ranker {
     }
 }
 
-// --------------------------------------------------------------- flyout
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase {
-    Closed,
-    Opening { start: Instant },
-    Open,
-    Closing { start: Instant },
-}
-
-#[derive(Debug, Clone)]
-pub struct FlyoutState {
-    pub phase: Phase,
-    /// The pointer has been inside the island since this flyout opened.
-    pub entered: bool,
-    /// Start of an activity swap while open (top/body crossfade).
-    pub content_swap: Option<Instant>,
-}
-
-impl Default for FlyoutState {
-    fn default() -> Self {
-        Self {
-            phase: Phase::Closed,
-            entered: false,
-            content_swap: None,
-        }
-    }
-}
-
-impl FlyoutState {
-    pub fn is_open(&self) -> bool {
-        matches!(self.phase, Phase::Opening { .. } | Phase::Open)
-    }
-
-    pub fn is_visible(&self, now: Instant, reduced_motion: bool) -> bool {
-        match self.phase {
-            Phase::Closed => false,
-            Phase::Open => true,
-            Phase::Opening { start } => {
-                reduced_motion
-                    || now.saturating_duration_since(start).as_millis() < design::OPEN_MS as u128
-            }
-            Phase::Closing { start } => {
-                !reduced_motion
-                    && now.saturating_duration_since(start).as_millis() < design::CLOSE_MS as u128
-            }
-        }
-    }
-
-    pub fn open(&mut self, now: Instant) {
-        self.phase = Phase::Opening { start: now };
-        self.entered = false;
-        self.content_swap = None;
-    }
-
-    /// Opens without motion (reduced motion / snapshots).
-    pub fn open_instant(&mut self) {
-        self.phase = Phase::Open;
-        self.entered = false;
-        self.content_swap = None;
-    }
-
-    pub fn close(&mut self, now: Instant) {
-        if matches!(self.phase, Phase::Closed | Phase::Closing { .. }) {
-            return;
-        }
-        self.phase = Phase::Closing { start: now };
-        self.entered = false;
-    }
-
-    pub fn close_instant(&mut self) {
-        self.phase = Phase::Closed;
-        self.entered = false;
-        self.content_swap = None;
-    }
-
-    pub fn content_swap(&mut self, now: Instant) {
-        self.content_swap = Some(now);
-    }
-
-    /// Called from the frame tick. Returns true when the state changed.
-    pub fn tick(&mut self, now: Instant) -> bool {
-        match self.phase {
-            Phase::Opening { start } => {
-                if now.saturating_duration_since(start).as_millis() >= design::OPEN_MS as u128 {
-                    self.phase = Phase::Open;
-                    true
-                } else {
-                    false
-                }
-            }
-            Phase::Closing { start } => {
-                if now.saturating_duration_since(start).as_millis() >= design::CLOSE_MS as u128 {
-                    self.phase = Phase::Closed;
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,18 +142,6 @@ mod tests {
             Live::new(ActivityKind::Call),
         ]);
         assert_eq!(r.main, Some(ActivityKind::Call));
-    }
-
-    #[test]
-    fn volume_hud_beats_music_and_running_timer() {
-        let mut r = Ranker::default();
-        r.update(&live(&[
-            ActivityKind::Music,
-            ActivityKind::Timer,
-            ActivityKind::Volume,
-        ]));
-        assert_eq!(r.main, Some(ActivityKind::Volume));
-        assert_eq!(r.second, Some(ActivityKind::Music));
     }
 
     #[test]
@@ -316,19 +202,5 @@ mod tests {
         r.update(&live(&[ActivityKind::Music]));
         assert_eq!(r.main, Some(ActivityKind::Music));
         assert_eq!(r.pinned, None);
-    }
-
-    #[test]
-    fn flyout_morph_finishes_at_the_spec_duration() {
-        let now = Instant::now();
-        let mut f = FlyoutState::default();
-        f.open(now);
-        assert!(f.is_open());
-        assert!(!f.tick(now + std::time::Duration::from_millis(100)));
-        assert!(f.tick(now + std::time::Duration::from_millis(460)));
-        assert_eq!(f.phase, Phase::Open);
-        f.close(now + std::time::Duration::from_millis(500));
-        assert!(f.tick(now + std::time::Duration::from_millis(760)));
-        assert_eq!(f.phase, Phase::Closed);
     }
 }

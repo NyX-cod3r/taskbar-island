@@ -1,4 +1,4 @@
-//! audio.rs — shared WASAPI helpers for the volume HUD and call mutes.
+//! audio.rs — shared WASAPI helpers for call audio controls.
 //!
 //! WASAPI is COM/WinRT-ish and can block, so every caller runs these helpers
 //! on its own worker thread. The UI only sees plain booleans/strings.

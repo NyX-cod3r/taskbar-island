@@ -14,6 +14,7 @@ use windows::Media::Control::{
 };
 use windows::Media::MediaPlaybackAutoRepeatMode;
 use windows::Storage::Streams::DataReader;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory2, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory,
     WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
@@ -23,6 +24,7 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::UI::Shell::SHCreateMemStream;
+use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::design::{self, Color};
 use crate::log;
@@ -73,14 +75,24 @@ pub enum MediaCommand {
     CycleRepeat,
     Seek(f64),
     Refresh,
+    /// The current GSMTC session object itself changed; re-hook its handlers.
+    SessionChanged,
 }
 
 /// Start the event-driven GSMTC worker. Snapshots arrive on `sender`.
+/// Posted to the island window whenever a media snapshot (or its absence)
+/// is ready. The UI never polls the media worker.
+pub const WM_APP_MEDIA: u32 = WM_APP + 8;
+
+/// Start the event-driven GSMTC worker. Snapshots arrive on `sender` and the
+/// worker posts `WM_APP_MEDIA` to `hwnd` so the UI redraws without a timer.
 pub fn subscribe(
-    sender: Sender<MediaSnapshot>,
+    sender: Sender<Option<MediaSnapshot>>,
     command_rx: Receiver<MediaCommand>,
     command_tx: Sender<MediaCommand>,
+    hwnd: HWND,
 ) -> windows::core::Result<()> {
+    let notify = hwnd.0 as isize;
     std::thread::Builder::new()
         .name("taskbar-island-media".into())
         .spawn(move || {
@@ -95,42 +107,57 @@ pub fn subscribe(
                 log::log("media.worker: manager request failed");
                 return;
             };
-
             let event_tx = command_tx.clone();
             let session_handler: TypedEventHandler<
                 GlobalSystemMediaTransportControlsSessionManager,
                 CurrentSessionChangedEventArgs,
             > = TypedEventHandler::new(move |_manager, _| {
-                let _ = event_tx.send(MediaCommand::Refresh);
+                let _ = event_tx.send(MediaCommand::SessionChanged);
                 Ok(())
             });
             let _ = manager.CurrentSessionChanged(&session_handler);
 
             let mut handlers: Option<SessionHandlers> = None;
             let mut art_cache = ArtCache::default();
-            publish(
-                &manager,
+            deliver(
+                notify,
                 &sender,
-                &command_tx,
-                &mut handlers,
-                &mut art_cache,
+                publish(&manager, &command_tx, &mut handlers, &mut art_cache),
             );
 
             while let Ok(command) = command_rx.recv() {
-                apply_command(&manager, command);
-                if command != MediaCommand::Refresh || handlers.is_none() {
-                    publish(
-                        &manager,
-                        &sender,
-                        &command_tx,
-                        &mut handlers,
-                        &mut art_cache,
-                    );
+                if command == MediaCommand::SessionChanged {
+                    // The old session's delegates belong to a dead session.
+                    handlers = None;
+                } else {
+                    apply_command(&manager, command);
                 }
+                deliver(
+                    notify,
+                    &sender,
+                    publish(&manager, &command_tx, &mut handlers, &mut art_cache),
+                );
             }
         })
         .map(|_| ())
         .map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))
+}
+
+/// Publish one snapshot (or `None` when there is no live session) and wake
+/// the UI thread. Runs on the media worker only.
+fn deliver(notify: isize, sender: &Sender<Option<MediaSnapshot>>, snapshot: Option<MediaSnapshot>) {
+    if sender.send(snapshot).is_ok() && notify != 0 {
+        // SAFETY: the HWND lives for the process lifetime; posting a message is
+        // safe even if the window is in the middle of being destroyed.
+        unsafe {
+            let _ = PostMessageW(
+                Some(HWND(notify as *mut _)),
+                WM_APP_MEDIA,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(0),
+            );
+        }
+    }
 }
 
 struct SessionHandlers {
@@ -205,30 +232,26 @@ fn apply_command(
                 .TryChangePlaybackPositionAsync(ticks)
                 .and_then(|op| op.join());
         }
-        MediaCommand::Refresh => {}
+        MediaCommand::Refresh | MediaCommand::SessionChanged => {}
     }
 }
 
 fn publish(
     manager: &GlobalSystemMediaTransportControlsSessionManager,
-    sender: &Sender<MediaSnapshot>,
     command_tx: &Sender<MediaCommand>,
     handlers: &mut Option<SessionHandlers>,
     art_cache: &mut ArtCache,
-) {
+) -> Option<MediaSnapshot> {
     let Ok(session) = manager.GetCurrentSession() else {
         *handlers = None;
-        return;
+        return None;
     };
     if handlers.is_none() {
-        *handlers = Some(hook_session(&session, command_tx));
-    } else {
-        // Refresh listeners when the current session object changed.
         *handlers = Some(hook_session(&session, command_tx));
     }
 
     let Ok(playback) = session.GetPlaybackInfo() else {
-        return;
+        return None;
     };
     let playing = playback
         .PlaybackStatus()
@@ -275,14 +298,14 @@ fn publish(
         .TryGetMediaPropertiesAsync()
         .and_then(|op| op.join())
     else {
-        return;
+        return None;
     };
     let title = properties
         .Title()
         .map(|s| s.to_string())
         .unwrap_or_default();
     if title.is_empty() {
-        return;
+        return None;
     }
     let artist = properties
         .Artist()
@@ -327,7 +350,7 @@ fn publish(
         accent: art_cache.accent.unwrap_or(design::MUSIC_DEFAULT),
         fetched_at: Instant::now(),
     };
-    let _ = sender.send(snapshot);
+    Some(snapshot)
 }
 
 fn hook_session(

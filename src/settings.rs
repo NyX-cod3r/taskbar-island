@@ -19,7 +19,7 @@ pub struct Enabled {
     pub call: bool,
     pub shelf: bool,
     pub timer: bool,
-    pub volume: bool,
+    pub clipboard: bool,
 }
 
 impl Default for Enabled {
@@ -29,7 +29,7 @@ impl Default for Enabled {
             call: true,
             shelf: true,
             timer: true,
-            volume: true,
+            clipboard: true,
         }
     }
 }
@@ -41,7 +41,7 @@ impl Enabled {
             ActivityKind::Call => self.call,
             ActivityKind::Shelf => self.shelf,
             ActivityKind::Timer => self.timer,
-            ActivityKind::Volume => self.volume,
+            ActivityKind::Clipboard => self.clipboard,
         }
     }
 }
@@ -52,6 +52,8 @@ pub struct Settings {
     pub run_at_startup: bool,
     pub call_app_allowlist: Vec<String>,
     pub enabled: Enabled,
+    /// Clipboard capture paused by the user; survives restarts.
+    pub clipboard_paused: bool,
 }
 
 impl Default for Settings {
@@ -68,6 +70,7 @@ impl Default for Settings {
                 "Slack".into(),
             ],
             enabled: Enabled::default(),
+            clipboard_paused: false,
         }
     }
 }
@@ -97,6 +100,9 @@ impl Settings {
                 settings.call_app_allowlist = values;
             }
         }
+        if let Some(v) = json.get("clipboardPaused").and_then(Json::as_bool) {
+            settings.clipboard_paused = v;
+        }
         if let Some(enabled) = json.get("enabled") {
             settings.enabled = Enabled {
                 music: enabled
@@ -115,10 +121,10 @@ impl Settings {
                     .get("timer")
                     .and_then(Json::as_bool)
                     .unwrap_or(settings.enabled.timer),
-                volume: enabled
-                    .get("volume")
+                clipboard: enabled
+                    .get("clipboard")
                     .and_then(Json::as_bool)
-                    .unwrap_or(settings.enabled.volume),
+                    .unwrap_or(settings.enabled.clipboard),
             };
         }
         settings
@@ -134,7 +140,7 @@ impl Settings {
             ("call".into(), Json::Bool(self.enabled.call)),
             ("shelf".into(), Json::Bool(self.enabled.shelf)),
             ("timer".into(), Json::Bool(self.enabled.timer)),
-            ("volume".into(), Json::Bool(self.enabled.volume)),
+            ("clipboard".into(), Json::Bool(self.enabled.clipboard)),
         ]);
         let doc = Json::Obj(vec![
             (
@@ -152,6 +158,7 @@ impl Settings {
                 ),
             ),
             ("enabled".into(), enabled),
+            ("clipboardPaused".into(), Json::Bool(self.clipboard_paused)),
         ]);
         let _ = std::fs::write(path, json::to_string_pretty(&doc));
     }
@@ -312,7 +319,6 @@ mod tests {
     fn defaults_are_sane() {
         let s = Settings::default();
         assert_eq!(s.slot_offset_dip, 0);
-        assert!(s.enabled.volume);
         assert!(s.call_app_allowlist.iter().any(|v| v == "Teams"));
     }
 }
