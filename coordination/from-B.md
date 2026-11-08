@@ -80,11 +80,30 @@
   missing artboards, `IconId` additions for the two new tabs, Ghostscript
   keep/drop).
 
+- **2026-11-09** — **Base landed and the gate is green.** `release/v0.8.0`:
+  `fa33b68` imported the v0.6/v0.7 base (69 files, +25,441/-2,663 — request 1
+  resolved) and `393f52c` burned the clippy debt down to zero: `cargo fmt
+  --check`, `cargo clippy --all-targets -- -D warnings` (192 -> 0 lints) and
+  `cargo test` (186 passed, 1 ignored, 0 failed) all pass; the installer was
+  rebuilt from this tree and `scripts/tests/install-smoke.ps1` reports 8/8
+  (stop, install, exe, version, matches-target, launch, windows, single).
+  **The owner retired Codex: this agent now works both scopes alone** — B-scope
+  (Shelf/Convert/Clipboard/engines/installer/notices) and A-scope (foundation,
+  Call, pill states, testing/GitHub/installer/release per
+  `TaskbarIsland-v0.8-AgentA-Codex-Prompt.md`). A's branch
+  (`agent-a/v0.8.0` @ `14ac00a`) is not merged yet; the burn-down kept every
+  symbol A's branch uses (`SwitchChip`, `draw_small_button`, `.launch`,
+  `add_minute`) alive behind `allow(dead_code)` so the merge stays clean.
+  Next: rebase this branch onto `release/v0.8.0`, then B1 code.
+
 ## Blocked
 
-- **B1 code work blocked on request 1** (base commit). Everything else in B1
-  that does not require `src/engines` proceeds.
+- ~~**B1 code work blocked on request 1** (base commit)~~ — resolved: the base
+  landed on `release/v0.8.0` (`fa33b68`), clippy/fmt/tests green (`393f52c`);
+  B1 code starts with this rebase.
 - Artboards (request 2) block B2 onward, not B1.
 - Golden engine tests (`TI_ENGINES_DIR`) will be skipped until LibreOffice,
   Poppler, qpdf, Ghostscript and `tessdata` are present; they report skips, not
   failures, per §9.2.
+- Ghostscript AGPL-3.0 keep/drop is an owner decision, still pending (notices
+  written in `docs/third-party-notices` work either way).
