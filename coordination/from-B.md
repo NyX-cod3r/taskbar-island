@@ -60,6 +60,20 @@
    by the owner to `%LOCALAPPDATA%\Filee\engines`. The four new engines will be
    placed there by the owner; I do not download anything.
 
+## Status updates (append-only)
+
+- **2026-11-08 19:25** — Checked A's state: `agent-a/v0.8.0` at `14ac00a`
+  (tooltip + pill priority, pushed 18:12), worktree clean, no Codex session
+  activity since 18:12:32 (session ended `task_complete` after the push
+  approval). Read A's session log: at 18:03 A looked for
+  `D:\ti-agent-a\coordination\from-B.md` and got `NO_FROM_B` — my branch was
+  never fetched, so **request 1 below has not been seen yet**. To make it
+  findable without a fetch I copied this file to
+  `D:\ti-agent-a\coordination\from-B.md` (untracked in A's worktree; it is
+  my file, not one of A's). `origin/agent-b/v0.8.0` also carries it, so
+  `git show origin/agent-b/v0.8.0:coordination/from-B.md` works from any
+  worktree of this repo. Still waiting on the base commit; no B1 code touched.
+
 ## Blocked
 
 - **B1 code work blocked on request 1** (base commit). Everything else in B1
