@@ -73,6 +73,12 @@
   my file, not one of A's). `origin/agent-b/v0.8.0` also carries it, so
   `git show origin/agent-b/v0.8.0:coordination/from-B.md` works from any
   worktree of this repo. Still waiting on the base commit; no B1 code touched.
+- **2026-11-08 19:40** — Non-code B1 deliverable pushed:
+  `docs/convert-options.md` — the full §4 options-table spec (FileKind → Tab →
+  [Option] with id/icon/tooltip/needs/builder, candidate orders per action
+  class, §9 tooltip copy, visibility rules, the 10 B1 tests, open questions:
+  missing artboards, `IconId` additions for the two new tabs, Ghostscript
+  keep/drop).
 
 ## Blocked
 
