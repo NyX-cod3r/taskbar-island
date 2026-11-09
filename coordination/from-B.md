@@ -112,6 +112,26 @@
   `changelog.d/B-1-convert-foundation.md`. Next: B2 (`docs/CONTRACTS.md`
   adoption of `card_content_rect()` — still needs A's file/artboards) after the
   user-rule installer smoke.
+- **2026-11-09** — **B2 code complete; gates green; commit + push of
+  `agent-b/v0.8.0` with this entry.** All three cards (Shelf, Convert,
+  Clipboard) now lay out inside the shared `card_content_rect()` (329 × 178)
+  with the design-token numbers (toolbar/gap 8, shelf tile 66, option grid 106
+  / 8 gap / 59.4 columns, clip list 142), the body fills the remaining height
+  per design §1 (convert stack top-aligned, option rows split the grid 106 or
+  49 DIP, never below the 40 minimum), the §5 single-tab rule is wired
+  (`tab_strip_hidden` collapses the strip; the grid takes the space) and the
+  Convert header shows the source format as a §7 chip. Layout invariants moved
+  to module-level `const _: () = assert!(…)` so they run in every build (also
+  clears `clippy::assertions_on_constants`). Gates: `cargo fmt --check` 0,
+  `cargo clippy --all-targets -- -D warnings` 0,
+  `cargo test` **206 passed / 0 failed / 1 ignored**. Evidence:
+  `coordination/ready-B-2.md`; changelog fragment
+  `changelog.d/B-2-card-layout.md`. **Owner open question in ready-B-2**: the
+  artboard hint copy (`Drop files here`, `Release to convert. Your original
+  stays put.`, …) and tile descriptor lines are NOT implemented — the design
+  doc §4/§6 supersede them; exact strings listed for override. Next: B3
+  (clipboard previews, engine pipeline argv builders, zip extract, batch/merge)
+  — needs A's tooltip API for the row/option tooltips.
 
 ## Blocked
 

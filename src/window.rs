@@ -2608,7 +2608,7 @@ impl Surface {
         let kind = file_kind(primary);
         let mixed = mixed_kinds(&session.probes, &session.convertible);
         let sources = source_kinds(session);
-        let tabs: Vec<ConvertTabView> = if mixed {
+        let all_tabs: Vec<ConvertTabView> = if mixed {
             Vec::new()
         } else {
             options::tabs(kind, &self.caps, &sources)
@@ -2619,12 +2619,22 @@ impl Surface {
                 })
                 .collect()
         };
-        let active_tab = tabs
+        let active_tab = all_tabs
             .iter()
             .find(|tab| tab.tab == session.tab)
-            .or_else(|| tabs.first())
+            .or_else(|| all_tabs.first())
             .map(|tab| tab.tab)
             .unwrap_or(Tab::ConvertTo);
+        // §5: the strip is pointless with a single tab (Spreadsheet,
+        // Presentation and Several files ship one; a missing engine can
+        // collapse any other card too). The grid then takes the strip's
+        // space — the active tab still comes from the full list above.
+        let tabs: Vec<ConvertTabView> =
+            if mixed || options::tab_strip_hidden(kind, &self.caps, &sources) {
+                Vec::new()
+            } else {
+                all_tabs
+            };
         let grid_options: Vec<ConvertOptionView> = if mixed {
             Vec::new()
         } else {
@@ -3028,10 +3038,11 @@ impl Surface {
 
     /// Grid viewport in card DIP coordinates. Must match `draw_shelf_card`.
     fn shelf_viewport(&self) -> RectD {
+        let content = crate::view::content_rect(self.flyout);
         RectD::new(
-            self.flyout.x + design::CARD_CONTENT_X + design::SHELF_PAD,
-            self.flyout.y + design::SHELF_PAD + design::SHELF_TOOLBAR_H + design::SHELF_TOOLBAR_GAP,
-            design::SHELF_INNER_W - design::SHELF_SCROLL_W - design::SHELF_SCROLL_GAP,
+            content.x,
+            content.y + design::SHELF_TOOLBAR_H + design::SHELF_TOOLBAR_GAP,
+            content.w - design::SHELF_SCROLL_W - design::SHELF_SCROLL_GAP,
             design::SHELF_VIEW_H,
         )
     }
@@ -3039,9 +3050,9 @@ impl Surface {
     /// Visible scrollbar track in card DIP coordinates.
     fn shelf_track(&self) -> RectD {
         let viewport = self.shelf_viewport();
+        let content = crate::view::content_rect(self.flyout);
         RectD::new(
-            self.flyout.x + design::CARD_CONTENT_X + design::SHELF_PAD + design::SHELF_INNER_W
-                - design::SHELF_SCROLL_W,
+            content.x + content.w - design::SHELF_SCROLL_W,
             viewport.y,
             design::SHELF_SCROLL_W,
             viewport.h,

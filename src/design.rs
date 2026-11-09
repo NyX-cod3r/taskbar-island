@@ -119,18 +119,18 @@ pub const CALL_BTN_GAP: f32 = 8.0;
 pub const SIGNAL_W: f32 = 18.0;
 pub const SIGNAL_H: f32 = 16.0;
 
-// Shelf card (v0.6). The shelf owns the whole content column: 12 DIP padding
-// on every side, a 28 DIP toolbar, then a scrolling 4-column grid.
-pub const SHELF_PAD: f32 = 12.0;
-pub const SHELF_INNER_W: f32 = FLY_W - CARD_CONTENT_X - SHELF_PAD * 2.0;
-pub const SHELF_INNER_H: f32 = FLY_H - SHELF_PAD * 2.0;
+// Shelf card. The shelf owns the whole content column from
+// `card_content_rect()` (CARD_PAD on all four sides), a 28 DIP toolbar, then a
+// scrolling 4-column grid that fills the remaining height.
+pub const SHELF_INNER_W: f32 = FLY_W - CARD_CONTENT_X - CARD_PAD * 2.0;
+pub const SHELF_INNER_H: f32 = FLY_H - CARD_PAD * 2.0;
 pub const SHELF_TOOLBAR_H: f32 = 28.0;
-/// Space between the toolbar and the first grid row.
-pub const SHELF_TOOLBAR_GAP: f32 = 10.0;
+/// Space between the toolbar and the first grid row (design tokens: gap 8).
+pub const SHELF_TOOLBAR_GAP: f32 = 8.0;
 /// The grid viewport fills all remaining height (two full rows + the gap).
 pub const SHELF_VIEW_H: f32 = SHELF_INNER_H - SHELF_TOOLBAR_H - SHELF_TOOLBAR_GAP;
 pub const SHELF_COLS: usize = 4;
-pub const SHELF_TILE_H: f32 = 62.0;
+pub const SHELF_TILE_H: f32 = 66.0;
 pub const SHELF_TILE_GAP: f32 = 6.0;
 pub const SHELF_ROW_H: f32 = SHELF_TILE_H + SHELF_TILE_GAP;
 /// Width of one grid cell once the scrollbar column is taken out.
@@ -170,13 +170,12 @@ pub const SHELF_SOFT_CAP: usize = 500;
 /// A name strip is painted over the bottom of every tile.
 pub const SHELF_NAME_ALPHA: f32 = 0.72;
 
-// Convert card (v0.6)
-/// The card uses the same 12 DIP padding as the shelf. Stack:
-/// 28 header + 10 + 28 tabs + 10 + 86 options = 162, inside the 166 column.
-pub const CONVERT_PAD: f32 = 12.0;
-pub const CONVERT_INNER_W: f32 = FLY_W - CARD_CONTENT_X - CONVERT_PAD * 2.0;
-pub const CONVERT_INNER_H: f32 = FLY_H - CONVERT_PAD * 2.0;
-pub const CONVERT_STACK_GAP: f32 = 10.0;
+// Convert card
+/// The card uses the shared content rect from `card_content_rect()`. Stack:
+/// 28 header + 8 + 28 tabs + 8 + grid (fills the rest of the column).
+pub const CONVERT_INNER_W: f32 = FLY_W - CARD_CONTENT_X - CARD_PAD * 2.0;
+pub const CONVERT_INNER_H: f32 = FLY_H - CARD_PAD * 2.0;
+pub const CONVERT_STACK_GAP: f32 = 8.0;
 pub const CONVERT_STACK_H: f32 =
     CONVERT_HEADER_H + CONVERT_STACK_GAP + CONVERT_TABS_H + CONVERT_STACK_GAP + CONVERT_OPTIONS_H;
 
@@ -187,11 +186,10 @@ pub const CONVERT_HEADER_GAP: f32 = 8.0;
 pub const CONVERT_NAME_FONT: f32 = 12.0;
 pub const CONVERT_CLOSE: f32 = 20.0;
 
-/// Clipboard card (v0.7). Same 12 DIP padding as the shelf; the toolbar and
-/// list inside are built in a later phase.
-pub const CLIP_PAD: f32 = 12.0;
-pub const CLIP_INNER_W: f32 = FLY_W - CARD_CONTENT_X - CLIP_PAD * 2.0;
-pub const CLIP_INNER_H: f32 = FLY_H - CLIP_PAD * 2.0;
+/// Clipboard card. Same shared content rect as the shelf/convert cards
+/// (`card_content_rect()`); the list fills the height the toolbar leaves.
+pub const CLIP_INNER_W: f32 = FLY_W - CARD_CONTENT_X - CARD_PAD * 2.0;
+pub const CLIP_INNER_H: f32 = FLY_H - CARD_PAD * 2.0;
 /// Large muted glyph of the empty Clipboard card.
 pub const CLIP_EMPTY_GLYPH: f32 = 40.0;
 pub const CLIP_EMPTY_STROKE: f32 = 2.0;
@@ -218,9 +216,9 @@ pub const CLIP_IMAGE_MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// Longest side of the cached image thumbnail.
 pub const CLIP_THUMB_PX: u32 = 96;
 
-// Clipboard card (v0.7 Phase 3): 28 DIP toolbar + 10 gap + 130 DIP list.
+// Clipboard card: 28 DIP toolbar + 8 gap + list fills the rest (142 DIP).
 pub const CLIP_TOOLBAR_H: f32 = 28.0;
-pub const CLIP_TOOLBAR_GAP: f32 = 10.0;
+pub const CLIP_TOOLBAR_GAP: f32 = 8.0;
 pub const CLIP_LIST_H: f32 = CLIP_INNER_H - CLIP_TOOLBAR_H - CLIP_TOOLBAR_GAP;
 /// Segmented filter: 2 DIP padding around 26 x 24 icon-only tabs.
 pub const CLIP_FILTER_PAD: f32 = 2.0;
@@ -264,11 +262,12 @@ pub const CONVERT_TAB: f32 = 24.0;
 pub const CONVERT_TAB_GAP: f32 = 2.0;
 pub const CONVERT_TAB_GLYPH: f32 = 15.0;
 
-/// Options: 5 columns x 2 rows of 40 DIP tiles with a 6 DIP gap.
-pub const CONVERT_OPTIONS_H: f32 = 86.0;
+/// Options: 5 columns, 8 DIP gap; the rows split the grid height (one row of
+/// 106 DIP, two rows of 49 DIP — never below the 40 DIP minimum).
+pub const CONVERT_OPTIONS_H: f32 = 106.0;
 pub const CONVERT_OPTION_COLS: usize = 5;
 pub const CONVERT_OPTION_H: f32 = 40.0;
-pub const CONVERT_OPTION_GAP: f32 = 6.0;
+pub const CONVERT_OPTION_GAP: f32 = 8.0;
 pub const CONVERT_OPTION_R: f32 = 6.0;
 pub const CONVERT_OPTION_GLYPH: f32 = 18.0;
 pub const CONVERT_OPTION_FONT: f32 = 12.0;
@@ -668,6 +667,20 @@ impl RectD {
     }
 }
 
+// Layout invariants, checked at compile time in every build: the convert
+// stack exactly fills the shared content column, the three cards share one
+// inner width, and every grid row keeps the 40 DIP tile minimum (one row
+// takes the whole 106 DIP grid, two rows split it 49/49).
+const _: () = assert!(CONVERT_STACK_H == CONVERT_INNER_H);
+const _: () = assert!(
+    CONVERT_OPTIONS_H
+        == CONVERT_INNER_H - CONVERT_HEADER_H - CONVERT_TABS_H - CONVERT_STACK_GAP * 2.0
+);
+const _: () = assert!(SHELF_INNER_W == CLIP_INNER_W && SHELF_INNER_W == CONVERT_INNER_W);
+const _: () = assert!(SHELF_ROW_H * 2.0 - SHELF_TILE_GAP <= SHELF_VIEW_H);
+const _: () = assert!(CONVERT_OPTIONS_H >= CONVERT_OPTION_H);
+const _: () = assert!((CONVERT_OPTIONS_H - CONVERT_OPTION_GAP) / 2.0 >= CONVERT_OPTION_H);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,12 +759,11 @@ mod tests {
         assert_eq!(RAIL_CLIP, rgba(0x5F, 0xD0, 0xC5, 1.0));
     }
 
-    /// v0.7 Clipboard card uses the same column as the shelf.
+    /// Clipboard card uses the same content column as the shelf.
     #[test]
     fn clipboard_card_matches_v07() {
-        assert_eq!(CLIP_PAD, 12.0);
-        assert_eq!(CLIP_INNER_W, 319.0);
-        assert_eq!(CLIP_INNER_H, 168.0);
+        assert_eq!(CLIP_INNER_W, 329.0);
+        assert_eq!(CLIP_INNER_H, 178.0);
         assert_eq!(CLIP_EMPTY_GLYPH, 40.0);
         assert_eq!(CLIP_POP_MS, 2000);
         assert_eq!(CLIP_CLEAR_CONFIRM_MS, 4000);
@@ -766,13 +778,14 @@ mod tests {
         assert_eq!(CLIP_THUMB_PX, 96);
     }
 
-    /// v0.7 Phase 3 card: 28 toolbar + 10 + 130 list, 32/2 rows, 26 x 24
-    /// filter tabs in a 2 DIP padded strip, 24 DIP row actions.
+    /// v0.7 Phase 3 card on the shared content rect: 28 toolbar + 8 gap +
+    /// 142 list, 32/2 rows, 26 x 24 filter tabs in a 2 DIP padded strip,
+    /// 24 DIP row actions.
     #[test]
     fn clipboard_list_matches_v07() {
         assert_eq!(CLIP_TOOLBAR_H, 28.0);
-        assert_eq!(CLIP_TOOLBAR_GAP, 10.0);
-        assert_eq!(CLIP_LIST_H, 130.0);
+        assert_eq!(CLIP_TOOLBAR_GAP, 8.0);
+        assert_eq!(CLIP_LIST_H, 142.0);
         assert_eq!(
             CLIP_TOOLBAR_H + CLIP_TOOLBAR_GAP + CLIP_LIST_H,
             CLIP_INNER_H
@@ -796,20 +809,21 @@ mod tests {
         assert_eq!(CLIP_TIP_CHARS, 200);
     }
 
-    /// v0.6 shelf geometry: 12 DIP padding, a 28 DIP toolbar and a
-    /// 4-column scrolling grid of 71.75 x 62 tiles with 6 DIP gaps.
+    /// Shelf geometry on the shared content rect (design tokens): a 28 DIP
+    /// toolbar, 8 DIP gap and a 4-column scrolling grid of 74.25 x 66 tiles
+    /// with 6 DIP gaps, the viewport filling the rest (142 DIP = two rows).
     #[test]
     fn shelf_grid_matches_v06() {
-        assert_eq!(SHELF_PAD, 12.0);
-        assert_eq!(SHELF_INNER_W, 319.0);
-        assert_eq!(SHELF_INNER_H, 168.0);
+        assert_eq!(SHELF_INNER_W, 329.0);
+        assert_eq!(SHELF_INNER_H, 178.0);
         assert_eq!(SHELF_TOOLBAR_H, 28.0);
-        assert_eq!(SHELF_TOOLBAR_GAP, 10.0);
-        assert_eq!(SHELF_VIEW_H, 130.0);
+        assert_eq!(SHELF_TOOLBAR_GAP, 8.0);
+        assert_eq!(SHELF_VIEW_H, 142.0);
         assert_eq!(SHELF_COLS, 4);
-        assert_eq!(SHELF_TILE_H, 62.0);
+        assert_eq!(SHELF_TILE_H, 66.0);
         assert_eq!(SHELF_TILE_GAP, 6.0);
-        assert_eq!(SHELF_TILE_W, 71.75);
+        assert_eq!(SHELF_TILE_W, 74.25);
+        assert_eq!(SHELF_ROW_H, 72.0);
         assert_eq!(SHELF_SCROLL_W, 4.0);
         assert_eq!(SHELF_CONVERT_W, 36.0);
         assert_eq!(SHELF_CONVERT_H, 28.0);
@@ -827,24 +841,25 @@ mod tests {
         assert_eq!(TOOLTIP_SUB_FONT, 11.0);
     }
 
-    /// v0.6 Convert stack: 12 DIP padding, 28 header + 10 + 28 tabs + 10 +
-    /// 86 options, five 59 DIP tiles per row.
+    /// Convert stack on the shared content rect: 28 header + 8 + 28 tabs +
+    /// 8 + a 106 DIP grid that fills the column (178 exactly), five 59.4 DIP
+    /// tiles per row, 8 DIP gaps.
     #[test]
     fn convert_stack_matches_v06() {
-        assert_eq!(CONVERT_PAD, 12.0);
-        assert_eq!(CONVERT_INNER_W, 319.0);
-        assert_eq!(CONVERT_INNER_H, 168.0);
+        assert_eq!(CONVERT_INNER_W, 329.0);
+        assert_eq!(CONVERT_INNER_H, 178.0);
         assert_eq!(CONVERT_HEADER_H, 28.0);
         assert_eq!(CONVERT_TABS_H, 28.0);
-        assert_eq!(CONVERT_OPTIONS_H, 86.0);
-        assert_eq!(CONVERT_STACK_GAP, 10.0);
-        assert_eq!(CONVERT_STACK_H, 162.0);
+        assert_eq!(CONVERT_OPTIONS_H, 106.0);
+        assert_eq!(CONVERT_STACK_GAP, 8.0);
+        assert_eq!(CONVERT_STACK_H, 178.0);
         assert_eq!(CONVERT_OPTION_COLS, 5);
-        assert_eq!(
-            CONVERT_OPTION_H * 2.0 + CONVERT_OPTION_GAP,
-            CONVERT_OPTIONS_H
-        );
-        assert_eq!(CONVERT_OPTION_W, 59.0);
+        assert_eq!(CONVERT_OPTION_GAP, 8.0);
+        assert_eq!(CONVERT_OPTION_W, 59.4);
+        // One row takes the whole grid; two rows split it (49 DIP each) —
+        // both checked at compile time with the layout invariants above.
+        assert_eq!(CONVERT_OPTIONS_H, 106.0);
+        assert_eq!((CONVERT_OPTIONS_H - CONVERT_OPTION_GAP) / 2.0, 49.0);
         assert_eq!(CONVERT_MAX_OPTIONS, 10);
     }
 

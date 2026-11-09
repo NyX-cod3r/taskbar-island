@@ -1143,7 +1143,6 @@ pub fn tabs(kind: FileKind, caps: &CapabilityTable, sources: &[SourceKind]) -> V
 /// §5: the tab strip is pointless when only one tab exists (Spreadsheet,
 /// Presentation and Several files ship single-tab; a missing engine can
 /// collapse any other card to one as well).
-#[allow(dead_code)] // Consumed by the Convert card in B2.
 pub fn tab_strip_hidden(kind: FileKind, caps: &CapabilityTable, sources: &[SourceKind]) -> bool {
     tabs(kind, caps, sources).len() <= 1
 }

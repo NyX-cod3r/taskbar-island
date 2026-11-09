@@ -392,7 +392,7 @@ pub struct ConvertBody {
     pub title: String,
     /// Type badge text and color for the 24 DIP header tile when there is no
     /// thumbnail.
-    #[allow(dead_code)] // Header badge lands with the Convert card (B2).
+    /// Header format chip (e.g. "JPG") beside the file name.
     pub badge: String,
     pub badge_color: Color,
     pub icon: IconId,
@@ -847,10 +847,11 @@ pub fn clip_scroll(len: usize, scroll: f32) -> ShelfScroll {
 /// is shifted by the flyout's offset and the wheel only works over part of the
 /// list.
 pub fn clipboard_viewport(flyout: RectD) -> RectD {
+    let content = design::card_content_rect(flyout);
     RectD::new(
-        flyout.x + design::CARD_CONTENT_X + design::CLIP_PAD,
-        flyout.y + design::CLIP_PAD + design::CLIP_TOOLBAR_H + design::CLIP_TOOLBAR_GAP,
-        design::CLIP_INNER_W - design::CLIP_SCROLL_W - design::CLIP_SCROLL_GAP,
+        content.x,
+        content.y + design::CLIP_TOOLBAR_H + design::CLIP_TOOLBAR_GAP,
+        content.w - design::CLIP_SCROLL_W - design::CLIP_SCROLL_GAP,
         design::CLIP_LIST_H,
     )
 }
@@ -1370,8 +1371,8 @@ mod tests {
         // the scroll region has to be built in that space.
         let flyout = RectD::new(60.0, 40.0, design::FLY_W, design::FLY_H);
         let view = clipboard_viewport(flyout);
-        let card_x = design::CARD_CONTENT_X + design::CLIP_PAD;
-        let card_y = design::CLIP_PAD + design::CLIP_TOOLBAR_H + design::CLIP_TOOLBAR_GAP;
+        let card_x = design::CARD_CONTENT_X + design::CARD_PAD;
+        let card_y = design::CARD_PAD + design::CLIP_TOOLBAR_H + design::CLIP_TOOLBAR_GAP;
         // The list's top-left, in window coordinates, is inside the region.
         assert!(view.contains(flyout.x + card_x + 1.0, flyout.y + card_y + 1.0));
         // The same point read card-locally is outside it. Mixing the two

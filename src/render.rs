@@ -1432,14 +1432,10 @@ impl Painter {
         if let Body::Convert(convert) = &view.body {
             let alpha = top_alpha.min(body_alpha);
             if alpha > 0.002 {
-                // v0.6: same shell as the shelf — the card owns the content
-                // column and lays out inside 12 DIP padding.
-                let area = RectD::new(
-                    fly.x + design::CARD_CONTENT_X + design::CONVERT_PAD,
-                    fly.y + design::CONVERT_PAD + input.top_dy,
-                    design::CONVERT_INNER_W,
-                    design::CONVERT_INNER_H,
-                );
+                // The card owns the shared content column from
+                // `card_content_rect()` and lays out inside it.
+                let mut area = content;
+                area.y += input.top_dy;
                 self.draw_convert_card(rt, input, convert, area, alpha, hits);
             }
             return;
@@ -1453,17 +1449,13 @@ impl Painter {
             }
             return;
         }
-        // v0.7 Clipboard: the same 12 DIP padding as the shelf. Phase 1 draws
-        // only the empty-state glyph; the list arrives in a later phase.
+        // Clipboard: the same shared content column as the shelf. Phase 1
+        // draws only the empty-state glyph; the list arrives in a later phase.
         if let Body::Clipboard(clip) = &view.body {
             let alpha = top_alpha.min(body_alpha);
             if alpha > 0.002 {
-                let area = RectD::new(
-                    fly.x + design::CARD_CONTENT_X + design::CLIP_PAD,
-                    fly.y + design::CLIP_PAD + input.top_dy,
-                    design::CLIP_INNER_W,
-                    design::CLIP_INNER_H,
-                );
+                let mut area = content;
+                area.y += input.top_dy;
                 self.draw_clipboard_card(rt, input, clip, area, alpha, hits);
             }
             return;
@@ -2697,12 +2689,10 @@ impl Painter {
     ) {
         let theme = input.theme;
         let accent = design::rail_accent(ActivityKind::Shelf);
-        let inner = RectD::new(
-            fly.x + design::CARD_CONTENT_X + design::SHELF_PAD,
-            fly.y + design::SHELF_PAD + input.top_dy,
-            design::SHELF_INNER_W,
-            design::SHELF_INNER_H,
-        );
+        // Shared content column from `card_content_rect()`, animated by the
+        // card-open tween.
+        let mut inner = crate::view::content_rect(fly);
+        inner.y += input.top_dy;
         let toolbar = RectD::new(inner.x, inner.y, inner.w, design::SHELF_TOOLBAR_H);
         let disabled = s.converting;
 
@@ -2791,8 +2781,8 @@ impl Painter {
         let viewport = RectD::new(
             inner.x,
             inner.y + design::SHELF_TOOLBAR_H + design::SHELF_TOOLBAR_GAP,
-            design::SHELF_INNER_W - design::SHELF_SCROLL_W - design::SHELF_SCROLL_GAP,
-            design::SHELF_VIEW_H,
+            inner.w - design::SHELF_SCROLL_W - design::SHELF_SCROLL_GAP,
+            inner.h - design::SHELF_TOOLBAR_H - design::SHELF_TOOLBAR_GAP,
         );
 
         if s.total == 0 {
@@ -3229,7 +3219,9 @@ impl Painter {
         hits: &mut HitMap,
     ) {
         let theme = input.theme;
-        let stack_y = area.y + (area.h - design::CONVERT_STACK_H) * 0.5;
+        // The stack is top-aligned: header, tabs, then the grid fills every
+        // remaining DIP of the content column (design system §1: body fills).
+        let stack_y = area.y;
 
         // Header: 24 DIP thumbnail/type tile, one truncated name, close.
         let header = RectD::new(area.x, stack_y, area.w, design::CONVERT_HEADER_H);
@@ -3286,15 +3278,22 @@ impl Painter {
         hits.add(Element::ConvertClose, close, design::R_CONTROL);
 
         let name_x = tile.right() + design::CONVERT_HEADER_GAP;
+        // Format badge ("JPG", "PDF") between the name and close: a rounded
+        // chip in the format colour with white bold text (design §7 chip).
+        let badge_w = if c.badge.is_empty() {
+            0.0
+        } else {
+            self.measure(rt, &c.badge, 10.5, 600, 14.0) + 12.0
+        };
+        let name_right = if badge_w > 0.0 {
+            close.x - 6.0 - badge_w - 6.0
+        } else {
+            close.x - 8.0
+        };
         self.text(
             rt,
             &c.title,
-            RectD::new(
-                name_x,
-                header.y,
-                (close.x - 8.0 - name_x).max(0.0),
-                header.h,
-            ),
+            RectD::new(name_x, header.y, (name_right - name_x).max(0.0), header.h),
             design::CONVERT_NAME_FONT,
             600,
             0,
@@ -3302,20 +3301,43 @@ impl Painter {
             theme.text_primary().with_alpha(alpha),
             true,
         );
+        if badge_w > 0.0 {
+            let chip = RectD::new(
+                close.x - 6.0 - badge_w,
+                header.y + (header.h - 15.0) * 0.5,
+                badge_w,
+                15.0,
+            );
+            self.fill_round(rt, chip, 4.0, c.badge_color.with_alpha(alpha));
+            self.text(
+                rt,
+                &c.badge,
+                chip,
+                10.5,
+                600,
+                1,
+                14.0,
+                design::white(0.96 * alpha),
+                false,
+            );
+        }
 
-        // Tabs: 24 DIP icon-only pills in a 28 DIP strip, centered.
+        // Tabs: 24 DIP icon-only pills in a 28 DIP strip, centered. §5: the
+        // strip is pointless when only one tab exists, so an empty tab list
+        // collapses it and the grid takes the space it leaves behind.
+        let strip_h = if c.tabs.is_empty() {
+            0.0
+        } else {
+            design::CONVERT_TABS_H + design::CONVERT_STACK_GAP
+        };
         let tabs = RectD::new(
             area.x,
             header.bottom() + design::CONVERT_STACK_GAP,
             area.w,
             design::CONVERT_TABS_H,
         );
-        let grid = RectD::new(
-            area.x,
-            tabs.bottom() + design::CONVERT_STACK_GAP,
-            area.w,
-            design::CONVERT_OPTIONS_H,
-        );
+        let grid_y = header.bottom() + design::CONVERT_STACK_GAP + strip_h;
+        let grid = RectD::new(area.x, grid_y, area.w, (area.bottom() - grid_y).max(0.0));
         match &c.state {
             ConvertState::Grid => {
                 let gap = design::CONVERT_TAB_GAP;
@@ -3372,6 +3394,13 @@ impl Painter {
                     x += design::CONVERT_TAB + gap;
                 }
 
+                // Rows split the grid height: one row takes all of it (106),
+                // two rows share it (49 each), never below the 40 DIP minimum.
+                let visible = c.options.len().min(design::CONVERT_MAX_OPTIONS);
+                let rows = visible.div_ceil(design::CONVERT_OPTION_COLS).max(1);
+                let tile_h = ((grid.h - design::CONVERT_OPTION_GAP * (rows as f32 - 1.0))
+                    / rows as f32)
+                    .max(design::CONVERT_OPTION_H);
                 for (index, option) in c
                     .options
                     .iter()
@@ -3383,10 +3412,9 @@ impl Painter {
                     let r = RectD::new(
                         grid.x
                             + col as f32 * (design::CONVERT_OPTION_W + design::CONVERT_OPTION_GAP),
-                        grid.y
-                            + row as f32 * (design::CONVERT_OPTION_H + design::CONVERT_OPTION_GAP),
+                        grid.y + row as f32 * (tile_h + design::CONVERT_OPTION_GAP),
                         design::CONVERT_OPTION_W,
-                        design::CONVERT_OPTION_H,
+                        tile_h,
                     );
                     let element = option.action.map(Element::ConvertOption);
                     let pressed = element.and_then(|e| input.pressed_amount(e));
@@ -4376,6 +4404,16 @@ fn wave_geometry_len(
     Some(path)
 }
 
+// Working and done layouts fit the inner card: tiles 18..74, bar 96..104,
+// stage dots 116..142 of the 178 DIP content column, and the done state's
+// check row, buttons and countdown line. Checked at compile time in every
+// build, not just under `cargo test`.
+const _: () = assert!(18.0 + design::CONVERT_STAGE_TILE < 96.0);
+const _: () = assert!(96.0 + design::CONVERT_PROGRESS_H < 116.0);
+const _: () = assert!(116.0 + design::CONVERT_STAGE_ICON < design::CONVERT_INNER_H);
+const _: () = assert!(78.0 + design::CONVERT_DONE_BTN_H < design::CONVERT_INNER_H - 18.0);
+const _: () = assert!((design::CONVERT_INNER_W - 12.0) / 3.0 > design::CONVERT_DONE_BTN_H * 2.0);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4409,14 +4447,4 @@ mod tests {
         // Out-of-range indices clamp to the last stage, never panic.
         assert!(matches!(stage_icon(9), IconId::Save));
     }
-
-    // Working and done layouts fit the inner card: tiles 18..74, bar 96..104,
-    // stage dots 116..142 of a 168 DIP column, and the done state's check row,
-    // buttons and countdown line. Checked at compile time.
-    use crate::design as d;
-    const _: () = assert!(18.0 + d::CONVERT_STAGE_TILE < 96.0);
-    const _: () = assert!(96.0 + d::CONVERT_PROGRESS_H < 116.0);
-    const _: () = assert!(116.0 + d::CONVERT_STAGE_ICON < d::CONVERT_INNER_H);
-    const _: () = assert!(78.0 + d::CONVERT_DONE_BTN_H < d::CONVERT_INNER_H - 18.0);
-    const _: () = assert!((d::CONVERT_INNER_W - 12.0) / 3.0 > d::CONVERT_DONE_BTN_H * 2.0);
 }
