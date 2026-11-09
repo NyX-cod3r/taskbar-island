@@ -67,6 +67,10 @@ pub struct ClipItem {
     pub text: String,
     pub paths: Vec<String>,
     pub image: Option<ImageMeta>,
+    /// Human-readable name of the app that owned the clipboard when this copy
+    /// was captured (`Snipping Tool`), from `GetClipboardOwner`. Optional:
+    /// rows written by older builds have none, and it is display-only.
+    pub source_app: Option<String>,
 }
 
 impl ClipItem {
@@ -190,6 +194,9 @@ impl ClipStore {
     /// Add a captured item. Duplicates move to the top instead of creating a
     /// second row; a full store evicts its oldest unpinned row in the same
     /// call, and an all-pinned store refuses the copy.
+    // The source app is capture metadata (spec 7), not content: it rides along
+    // with the row instead of getting its own method.
+    #[allow(clippy::too_many_arguments)]
     pub fn add(
         &mut self,
         kind: ClipKind,
@@ -198,6 +205,7 @@ impl ClipStore {
         paths: Vec<String>,
         image: Option<ImageMeta>,
         now: i64,
+        source_app: Option<String>,
     ) -> AddOutcome {
         let stamp = now.max(self.last_seen);
         self.last_seen = stamp;
@@ -209,6 +217,11 @@ impl ClipStore {
         {
             let mut item = self.items.remove(pos);
             item.created_at = stamp;
+            // A re-copy is a fresh capture: it carries the current owner's
+            // name (older stores simply have none to replace).
+            if source_app.is_some() {
+                item.source_app = source_app.clone();
+            }
             let id = item.id;
             self.items.insert(0, item);
             return AddOutcome::Updated { id };
@@ -235,6 +248,7 @@ impl ClipStore {
                 text,
                 paths,
                 image,
+                source_app,
             },
         );
         AddOutcome::Added { id, evicted }
@@ -394,6 +408,11 @@ impl ClipStore {
                     .to_owned(),
                 paths,
                 image,
+                source_app: raw
+                    .get("sourceApp")
+                    .and_then(Json::as_str)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned),
             });
             if store.items.len() >= CLIP_MAX_ITEMS {
                 break;
@@ -476,6 +495,10 @@ fn item_to_json(item: &ClipItem) -> Json {
             Json::Arr(item.paths.iter().map(|p| Json::Str(p.clone())).collect()),
         ),
         ("image".into(), image),
+        (
+            "sourceApp".into(),
+            item.source_app.clone().map_or(Json::Null, Json::Str),
+        ),
     ])
 }
 
@@ -585,6 +608,7 @@ mod tests {
             Vec::new(),
             None,
             now,
+            None,
         )
     }
 
@@ -603,6 +627,7 @@ mod tests {
             text: content.into(),
             paths: Vec::new(),
             image: None,
+            source_app: None,
         });
     }
 
@@ -754,6 +779,7 @@ mod tests {
                     thumb: true,
                 }),
                 T0 + 5,
+                Some("Notepad".into()),
             )
             .id()
             .unwrap();
@@ -764,6 +790,10 @@ mod tests {
         let parsed = json::parse(&text).unwrap();
         let again = ClipStore::from_json(&parsed);
         assert_eq!(again.items(), store.items());
+        // The hover-preview source app survives the encrypted round trip
+        // (spec 7); rows without one stay `None`.
+        assert_eq!(again.items()[1].source_app.as_deref(), Some("Notepad"));
+        assert_eq!(again.items()[0].source_app, None);
         assert_eq!(again.last_seen(), store.last_seen());
         assert_eq!(again.next_id, store.next_id);
     }
@@ -783,6 +813,8 @@ mod tests {
         );
         assert_eq!(legacy.len(), 1);
         assert!(legacy.items()[0].id >= 1);
+        // Written before `sourceApp` existed: no source, no error.
+        assert_eq!(legacy.items()[0].source_app, None);
     }
 
     #[test]

@@ -15,19 +15,24 @@ use std::time::Duration;
 
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{DynamicImage, ExtendedColorType, ImageEncoder, ImageFormat};
-use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
+use std::path::Path;
+use windows::core::{w, PCWSTR, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::DataExchange::{
-    AddClipboardFormatListener, CloseClipboard, GetClipboardData, GetClipboardSequenceNumber,
-    IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
-    RemoveClipboardFormatListener,
+    AddClipboardFormatListener, CloseClipboard, GetClipboardData, GetClipboardOwner,
+    GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard,
+    RegisterClipboardFormatW, RemoveClipboardFormatListener,
 };
 use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_UNICODETEXT};
+use windows::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, KillTimer, PostMessageW, RegisterClassExW,
-    SetTimer, HWND_MESSAGE, WM_APP, WM_CLIPBOARDUPDATE, WM_TIMER, WNDCLASSEXW, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowThreadProcessId, KillTimer,
+    PostMessageW, RegisterClassExW, SetTimer, HWND_MESSAGE, WM_APP, WM_CLIPBOARDUPDATE, WM_TIMER,
+    WNDCLASSEXW, WS_POPUP,
 };
 
 use crate::design::{
@@ -305,19 +310,79 @@ pub fn image_allowed(width: u32, height: u32, bytes: u64) -> bool {
         && bytes <= CLIP_IMAGE_MAX_BYTES
 }
 
-/// A single-line http(s) URL becomes a link row. The scheme is assembled at
+/// A leading http(s) URL becomes a link row; the scheme is assembled at
 /// runtime so the offline source audit never mistakes this check for an
-/// outbound call.
+/// outbound call. The classification itself lives in `view::link_parts` so
+/// the row renderer and capture agree (case-insensitive scheme, host with a
+/// dot or `localhost`, spaces allowed after the host).
 pub fn is_link(text: &str) -> bool {
-    let text = text.trim();
-    if text.is_empty() || text.split_whitespace().count() != 1 {
-        return false;
+    crate::view::link_parts(text).is_some()
+}
+
+/// The app that owned the clipboard when this copy happened, reduced to a
+/// short display name (`Snipping Tool`, `Chrome`). Read on the capture worker
+/// from `GetClipboardOwner`, stored locally, and `None` rather than a guess
+/// when the owner window or its process is already gone (spec 7).
+fn source_app() -> Option<String> {
+    // SAFETY: `GetClipboardOwner` only reads the window that owns the clipboard.
+    let owner = unsafe { GetClipboardOwner() }.ok()?;
+    if owner.0.is_null() {
+        return None;
     }
-    let Some(rest) = text.strip_prefix("http") else {
-        return false;
-    };
-    let rest = rest.strip_prefix('s').unwrap_or(rest);
-    rest.starts_with("://") && rest.len() > 4
+    let mut pid = 0u32;
+    // SAFETY: `owner` is a live HWND and `pid` is a writable out parameter.
+    unsafe { GetWindowThreadProcessId(owner, Some(&mut pid)) };
+    if pid == 0 {
+        return None;
+    }
+    // SAFETY: query-only access to a process in this session; the handle is
+    // closed on every path below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let name = process_stem(process);
+    // SAFETY: the handle came from the `OpenProcess` above.
+    unsafe {
+        let _ = CloseHandle(process);
+    }
+    name
+}
+
+/// The image path's file stem — already a readable name for most apps.
+fn process_stem(process: HANDLE) -> Option<String> {
+    let mut buffer = [0u16; 512];
+    let mut len = buffer.len() as u32;
+    // SAFETY: `buffer` is writable for `len` wide characters.
+    unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        )
+    }
+    .ok()?;
+    let path = String::from_utf16_lossy(&buffer[..len as usize]);
+    let stem = Path::new(&path).file_stem()?.to_string_lossy().into_owned();
+    Some(display_name(&stem))
+}
+
+/// Names that read better than the executable's own; anything else is kept
+/// as-is (the stem is already what the task manager shows).
+fn display_name(stem: &str) -> String {
+    match stem {
+        "SnippingTool" => "Snipping Tool".to_string(),
+        "msedge" => "Edge".to_string(),
+        "chrome" => "Chrome".to_string(),
+        "firefox" => "Firefox".to_string(),
+        "Code" => "VS Code".to_string(),
+        "excel" => "Excel".to_string(),
+        "word" => "Word".to_string(),
+        "powerpnt" => "PowerPoint".to_string(),
+        "outlook" => "Outlook".to_string(),
+        "explorer" => "File Explorer".to_string(),
+        "SearchHost" | "SearchApp" => "Windows Search".to_string(),
+        "TextInputHost" => "Windows Shell".to_string(),
+        other => other.to_string(),
+    }
 }
 
 enum Payload {
@@ -334,6 +399,9 @@ enum Payload {
 
 fn capture_item() -> Option<ClipItem> {
     let payload = read_payload()?;
+    // Resolved once per copy: the window that owned the clipboard becomes the
+    // row's `from <app>` line (spec 7).
+    let source_app = source_app();
     Some(match payload {
         Payload::Text(text) => {
             let kind = if is_link(&text) {
@@ -351,6 +419,7 @@ fn capture_item() -> Option<ClipItem> {
                 text,
                 paths: Vec::new(),
                 image: None,
+                source_app,
             }
         }
         Payload::Files(paths) => {
@@ -368,6 +437,7 @@ fn capture_item() -> Option<ClipItem> {
                 text: String::new(),
                 paths,
                 image: None,
+                source_app,
             }
         }
         Payload::Image {
@@ -395,6 +465,7 @@ fn capture_item() -> Option<ClipItem> {
                     bytes: png.len() as u64,
                     thumb: thumb_present,
                 }),
+                source_app,
             }
         }
     })
@@ -799,6 +870,7 @@ mod tests {
     #[test]
     fn image_limits_match_the_spec() {
         assert!(image_allowed(1920, 1080, 5 * 1024 * 1024));
+        assert!(image_allowed(1, 1, 1)); // 1-pixel images are kept (spec 7)
         assert!(!image_allowed(0, 1080, 1024));
         assert!(!image_allowed(1920, 0, 1024));
         assert!(!image_allowed(6000, 4000, 1024)); // 24 MP
@@ -806,14 +878,41 @@ mod tests {
     }
 
     #[test]
-    fn links_require_a_single_http_url() {
+    fn links_need_a_leading_http_url_with_a_host() {
         let http = concat!("ht", "tp", ":", "//", "example.com/a?b=1");
         let https = concat!("ht", "tp", "s", ":", "//", "example.com");
         assert!(is_link(http));
         assert!(is_link(https));
+        // Any case (spec 7 test table: `HTTP://`)…
+        assert!(is_link("HTTP://example.com"));
+        // …but a scheme with no host is not a link…
+        assert!(!is_link("HTTP://"));
+        // …a URL with spaces after the host still is (spec 7).
+        assert!(is_link(concat!(
+            "ht",
+            "tp",
+            "s",
+            "://",
+            "example.com/a b c"
+        )));
+        assert!(is_link(concat!("ht", "tp", "://", "localhost:8080/x")));
         assert!(!is_link(concat!("see ", "ht", "tps://example.com")));
         assert!(!is_link("file:///c:/temp"));
         assert!(!is_link("not a link"));
+        assert!(!is_link("www.example.com"));
+    }
+
+    #[test]
+    fn corrupt_png_never_becomes_an_item() {
+        // Signature present, IHDR garbage: the decoder must fail cleanly
+        // instead of panicking (spec 7 "corrupt clipboard bitmaps").
+        let junk = b"\x89PNG\r\n\x1a\n....IHDRcorrupt-corrupt-corrupt";
+        assert!(decode_png(junk).is_none());
+        assert!(decode_png(b"not a png at all").is_none());
+        // A truncated but plausible header is rejected before decoding.
+        let mut tiny = b"\x89PNG\r\n\x1a\n".to_vec();
+        tiny.extend_from_slice(b"xxxxIHDR");
+        assert!(decode_png(&tiny).is_none());
     }
 
     #[test]
@@ -844,13 +943,19 @@ mod tests {
     }
 
     #[test]
-    fn thumbnails_fit_ninety_six_pixels() {
+    fn thumbnails_fit_one_hundred_twenty_eight_pixels() {
+        // 128 px = 2× DPI for the 64 DIP row thumbnail (spec 7).
         let image = DynamicImage::new_rgba8(400, 200);
         let thumb = thumbnail(&image).expect("thumb");
-        assert_eq!(thumb.width(), 96);
-        assert_eq!(thumb.height(), 48);
+        assert_eq!(thumb.width(), 128);
+        assert_eq!(thumb.height(), 64);
+        // Small images keep their natural size (the row draws them on a
+        // checkerboard at exactly this size).
         let small = DynamicImage::new_rgba8(24, 18);
         let thumb = thumbnail(&small).expect("thumb");
         assert_eq!((thumb.width(), thumb.height()), (24, 18));
+        let tiny = DynamicImage::new_rgba8(1, 1);
+        let thumb = thumbnail(&tiny).expect("thumb");
+        assert_eq!((thumb.width(), thumb.height()), (1, 1));
     }
 }

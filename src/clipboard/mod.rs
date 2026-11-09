@@ -88,9 +88,15 @@ impl ClipboardRuntime {
             .into_iter()
             .map(|item| item.digest)
             .collect();
-        let outcome = self
-            .store
-            .add(item.kind, &digest, item.text, item.paths, item.image, now);
+        let outcome = self.store.add(
+            item.kind,
+            &digest,
+            item.text,
+            item.paths,
+            item.image,
+            now,
+            item.source_app,
+        );
         if let AddOutcome::Added { evicted, .. } = &outcome {
             deletes.extend(evicted.iter().cloned());
         }
@@ -178,6 +184,7 @@ mod tests {
                 thumb: true,
             }),
             now - store::RETENTION_SECS - 1,
+            None,
         );
         assert!(old.accepted());
         let removed = store.expire(now);

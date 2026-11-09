@@ -18,13 +18,28 @@ use crate::view::AlbumArt;
 
 /// Posted once per decoded (or failed) thumbnail.
 pub const WM_APP_THUMB: u32 = WM_APP + 33;
-/// Longest side of a cached thumbnail, in pixels.
+/// Longest side of a cached row/tile thumbnail, in pixels.
 pub const MAX_THUMB: u32 = 128;
+/// Longest side of a clipboard hover-preview decode (spec 7). The overlay
+/// picture is 192 × 118 DIP, so a 384 px source stays sharp at 2× DPI while
+/// still being far smaller than the row thumbnail's source file.
+pub const PREVIEW_PX: u32 = 384;
 /// Refuse to decode anything larger than this before allocating pixels.
 pub const MAX_PIXELS: u64 = 100_000_000;
 
+/// One decode job: which file, and the box it has to fit inside. Row and shelf
+/// thumbnails ask for [`MAX_THUMB`], the clipboard hover preview for
+/// [`PREVIEW_PX`]; the worker never guesses.
+pub struct ThumbRequest {
+    pub path: String,
+    pub max: u32,
+}
+
 pub struct ThumbArt {
     pub key: u64,
+    /// The box this decode was requested at; results are matched back to the
+    /// cache entry that asked for them (`key` alone is size-blind).
+    pub max: u32,
     /// `None` means the file could not be decoded; remember it so the cache
     /// does not retry every frame.
     pub art: Option<Arc<AlbumArt>>,
@@ -46,6 +61,16 @@ pub fn key_for(path: &str) -> u64 {
     hasher.finish()
 }
 
+/// Bitmap-cache identity: the path key salted with the requested box, so a
+/// 128 px row thumbnail and a 384 px hover preview of the same file are two
+/// `ID2D1Bitmap`s instead of one bitmap drawn at the wrong size.
+pub fn art_id(key: u64, max: u32) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    max.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Fits `(w, h)` inside a `max` box without upscaling.
 pub fn fit(w: u32, h: u32, max: u32) -> (u32, u32) {
     let longest = w.max(h);
@@ -60,26 +85,30 @@ pub fn fit(w: u32, h: u32, max: u32) -> (u32, u32) {
 }
 
 pub struct ThumbWorker {
-    tx: Option<mpsc::Sender<String>>,
+    tx: Option<mpsc::Sender<ThumbRequest>>,
     results: Arc<Mutex<Vec<ThumbArt>>>,
 }
 
 impl ThumbWorker {
     pub fn start(hwnd: HWND) -> Self {
-        let (tx, rx) = mpsc::channel::<String>();
+        let (tx, rx) = mpsc::channel::<ThumbRequest>();
         let results = Arc::new(Mutex::new(Vec::new()));
         let shared = results.clone();
         let target = hwnd.0 as isize;
         let spawned = std::thread::Builder::new()
             .name("island-thumbs".into())
             .spawn(move || {
-                while let Ok(path) = rx.recv() {
-                    let key = key_for(&path);
-                    let art = decode(&path, key);
+                while let Ok(request) = rx.recv() {
+                    let key = key_for(&request.path);
+                    let art = decode(&request.path, key, request.max);
                     shared
                         .lock()
                         .expect("thumbnail cache mutex poisoned")
-                        .push(ThumbArt { key, art });
+                        .push(ThumbArt {
+                            key,
+                            max: request.max,
+                            art,
+                        });
                     // SAFETY: posting to a window owned by this process.
                     unsafe {
                         let _ = PostMessageW(
@@ -97,9 +126,14 @@ impl ThumbWorker {
         }
     }
 
-    pub fn request(&self, path: &str) {
+    /// Queue one file for decoding at `max` (`MAX_THUMB` for rows and shelf
+    /// tiles, `PREVIEW_PX` for the clipboard hover preview).
+    pub fn request(&self, path: &str, max: u32) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(path.to_owned());
+            let _ = tx.send(ThumbRequest {
+                path: path.to_owned(),
+                max,
+            });
         }
     }
 
@@ -108,7 +142,7 @@ impl ThumbWorker {
     }
 }
 
-fn decode(path: &str, key: u64) -> Option<Arc<AlbumArt>> {
+fn decode(path: &str, key: u64, max: u32) -> Option<Arc<AlbumArt>> {
     let attempt = || -> Option<AlbumArt> {
         // Dimensions first: `into_dimensions` stops at the header, so a
         // decompression bomb is rejected before pixels are allocated.
@@ -130,7 +164,7 @@ fn decode(path: &str, key: u64) -> Option<Arc<AlbumArt>> {
         limits.max_alloc = Some(MAX_PIXELS * 4);
         reader.limits(limits);
         let image = reader.decode().ok()?;
-        let (tw, th) = fit(image.width(), image.height(), MAX_THUMB);
+        let (tw, th) = fit(image.width(), image.height(), max);
         let small = image.thumbnail(tw, th).to_rgba8();
         let (tw, th) = small.dimensions();
         let mut bgra = Vec::with_capacity((tw * th * 4) as usize);
@@ -138,7 +172,7 @@ fn decode(path: &str, key: u64) -> Option<Arc<AlbumArt>> {
             bgra.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
         }
         Some(AlbumArt {
-            id: key,
+            id: art_id(key, max),
             width: tw,
             height: th,
             bgra: Arc::new(bgra),
@@ -181,10 +215,35 @@ mod tests {
         let path = dir.join("sample.png");
         image.save(&path).unwrap();
         let key = key_for(&path.display().to_string());
-        let art = decode(&path.display().to_string(), key).expect("png decodes");
+        let art = decode(&path.display().to_string(), key, MAX_THUMB).expect("png decodes");
         assert_eq!((art.width, art.height), (128, 85));
         assert_eq!(art.bgra.len(), 128 * 85 * 4);
         assert_eq!(art.bgra[3], 255, "alpha channel survives");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The clipboard hover preview decodes the same file at `PREVIEW_PX` and
+    /// gets its own bitmap id, so it never reuses (or overwrites) the row
+    /// thumbnail in the renderer's cache (spec 7).
+    #[test]
+    fn preview_decode_is_bigger_and_gets_its_own_art_id() {
+        let dir = std::env::temp_dir().join("taskbar-island-preview-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut image = image::RgbaImage::new(640, 480);
+        for (x, y, px) in image.enumerate_pixels_mut() {
+            *px = image::Rgba([x as u8, y as u8, 9, 255]);
+        }
+        let path = dir.join("preview.png");
+        image.save(&path).unwrap();
+        let text = path.display().to_string();
+        let key = key_for(&text);
+        let row = decode(&text, key, MAX_THUMB).expect("row thumbnail");
+        let preview = decode(&text, key, PREVIEW_PX).expect("preview");
+        assert_eq!((row.width, row.height), (128, 96));
+        assert_eq!((preview.width, preview.height), (384, 288));
+        assert_ne!(row.id, preview.id, "two sizes of one file are two bitmaps");
+        assert_eq!(row.id, art_id(key, MAX_THUMB));
+        assert_eq!(preview.id, art_id(key, PREVIEW_PX));
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -194,7 +253,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("broken.png");
         std::fs::write(&path, b"not really a png").unwrap();
-        assert!(decode(&path.display().to_string(), 1).is_none());
+        assert!(decode(&path.display().to_string(), 1, MAX_THUMB).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

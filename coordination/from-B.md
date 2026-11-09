@@ -132,6 +132,33 @@
   doc §4/§6 supersede them; exact strings listed for override. Next: B3
   (clipboard previews, engine pipeline argv builders, zip extract, batch/merge)
   — needs A's tooltip API for the row/option tooltips.
+- **2026-11-10** — **B3 code complete; gates green; commit + push of
+   `agent-b/v0.8.0` with this entry.** Clipboard history rows now carry a
+   display type re-derived every frame (link / code / color / image / files /
+   text — persisted `ClipKind` stays a hint, so older stores classify too),
+   with mixed-height virtualization (34 DIP text rows, 50 DIP image rows with a
+   64 × 40 checkerboard thumb, strides 36/52, gap 2) driven by
+   `clip_strides` + variable `clip_scroll` at every scroll site. The 450 ms
+   hover preview overlay landed: a 206 × 150 panel, horizontally centered and
+   seated on the toolbar's bottom edge (`y = CLIP_TOOLBAR_H`; the popup height
+   equals toolbar gap + list by const assert, so it never covers a toolbar
+   control), showing the 192 × 118 picture (natural size / cover-crop, never
+   stretched) or capped 200-char text, the `615 × 342 · PNG · 212 KB` caption
+   and the `from <app>` line. Thumbnails gained an explicit box —
+   `ThumbRequest{path,max}`, 128 px rows/tiles vs 384 px preview, size-salted
+   `art_id`, a separate preview cache holding only the live file, decode always
+   on the worker. Capture records the clipboard owner
+   (`GetClipboardOwner` → process stem → friendly name) as optional
+   `sourceApp` in the encrypted store (lenient JSON; older rows unaffected).
+   The hovered row no longer shows the generic tooltip (its preview replaces
+   it; keyboard focus keeps the row tip). Gates: `cargo fmt --check` 0,
+   `cargo clippy --all-targets -- -D warnings` 0, `cargo test`
+   **215 passed / 0 failed / 1 ignored**. Evidence:
+   `coordination/ready-B-3.md`; changelog fragment
+   `changelog.d/B-3-clipboard-rows-preview.md`. Next: B4 (golden engine tests
+   — still gated on the owner dropping LibreOffice/Poppler/qpdf/Ghostscript +
+   `tessdata` into `ENGINES_DIR` — plus PDF/Office/sheet/present UI), then B5
+   (installer engine fragment, `THIRD_PARTY_NOTICES.md`, changelog assembly).
 
 ## Blocked
 

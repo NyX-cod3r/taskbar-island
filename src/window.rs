@@ -119,6 +119,8 @@ const CLIP_SWEEP_TIMER_ID: usize = 13;
 const CLIP_POP_TIMER_ID: usize = 14;
 /// One-shot auto-cancel of the two-step Clear confirm.
 const CLIP_CONFIRM_TIMER_ID: usize = 15;
+/// One-shot 450 ms delay before a history row shows its hover preview (spec 7).
+const CLIP_PREVIEW_TIMER_ID: usize = 16;
 /// `WM_MOUSELEAVE` ships under `UI::Controls` in windows-rs 0.62; the value is
 /// stable Win32.
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -332,12 +334,67 @@ impl ConvertSession {
     }
 }
 
-/// One decoded (or failed) shelf thumbnail. `pending` keeps the UI from
-/// queueing the same path on every repaint while the worker is busy.
+/// One decoded (or failed) thumbnail. `pending` keeps the UI from
+/// queueing the same path on every repaint while the worker is busy; `max`
+/// is the box it was asked for (`thumb::MAX_THUMB` for rows and tiles,
+/// `thumb::PREVIEW_PX` for the hover preview), so a result only ever fills
+/// the entry that requested it.
 struct ThumbEntry {
     key: u64,
+    max: u32,
     art: Option<Arc<AlbumArt>>,
     pending: bool,
+}
+
+/// Queue one file for decoding at `max`, remembering a cached failure so a
+/// hostile or broken file is never decoded in a loop. Shared by the shelf
+/// rows, the clipboard rows and the hover preview, which differ only in the
+/// box they ask for.
+fn queue_thumb(
+    worker: &ThumbWorker,
+    cache: &mut HashMap<String, ThumbEntry>,
+    path: &str,
+    max: u32,
+) {
+    let key = crate::thumb::key_for(path);
+    match cache.get_mut(path) {
+        // Same file at the same size: decoded, failing, or still in flight.
+        Some(entry) if entry.key == key && entry.max == max => {}
+        Some(entry) => {
+            entry.key = key;
+            entry.max = max;
+            entry.art = None;
+            entry.pending = true;
+            worker.request(path, max);
+        }
+        None => {
+            cache.insert(
+                path.to_owned(),
+                ThumbEntry {
+                    key,
+                    max,
+                    art: None,
+                    pending: true,
+                },
+            );
+            worker.request(path, max);
+        }
+    }
+}
+
+/// Move one worker result into the entry that asked for it. `max` is part of
+/// the match, so a 128 px row thumbnail can never land in the 384 px preview
+/// cache (or the reverse) when both hold the same path.
+fn fill_thumb(cache: &mut HashMap<String, ThumbEntry>, result: &crate::thumb::ThumbArt) -> bool {
+    let mut changed = false;
+    for entry in cache.values_mut() {
+        if entry.pending && entry.key == result.key && entry.max == result.max {
+            entry.art = result.art.clone();
+            entry.pending = false;
+            changed = true;
+        }
+    }
+    changed
 }
 
 struct Surface {
@@ -444,6 +501,9 @@ struct Surface {
     /// Off-thread thumbnail worker and its path-keyed cache.
     thumb_worker: ThumbWorker,
     thumbs: HashMap<String, ThumbEntry>,
+    /// 384 px decodes for the clipboard hover preview (spec 7): a separate
+    /// cache from `thumbs` so one file can hold both sizes at once.
+    clip_preview_art: HashMap<String, ThumbEntry>,
     /// Traveling wave phase for the music/timer pill and the music card.
     wave_phase: f32,
     /// Timestamp of the previous wave tick, for a frame-rate-independent phase.
@@ -482,6 +542,11 @@ struct Surface {
     /// End of the transient "+N" pill state after a new copy.
     clip_pop_until: Option<Instant>,
     clip_pop_count: u32,
+    /// Store id of the row whose hover-preview overlay is on screen (spec 7).
+    clip_preview: Option<u64>,
+    /// `(row id, armed at)` while the 450 ms one-shot runs; cleared the moment
+    /// the pointer leaves the row, the list scrolls or the card closes.
+    clip_preview_arm: Option<(u64, Instant)>,
 }
 
 thread_local! {
@@ -1638,9 +1703,27 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             });
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == CLIP_PREVIEW_TIMER_ID => {
+            with_surface(|surface| {
+                if surface.clip_preview_due(Instant::now()) {
+                    unsafe {
+                        let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
+                    }
+                }
+            });
+            LRESULT(0)
+        }
         WM_APP_THUMB => {
             with_surface(|surface| {
                 if surface.drain_thumbs() {
+                    // Rebuild the open card so the new bitmap lands in the
+                    // body, then repaint (same pattern as the state mutators).
+                    let kind = surface.view.main.as_ref().map(|view| view.kind);
+                    match kind {
+                        Some(ActivityKind::Shelf) => surface.show_shelf(),
+                        Some(ActivityKind::Clipboard) => surface.show_clipboard(),
+                        _ => {}
+                    }
                     unsafe {
                         let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
                     }
@@ -1769,6 +1852,7 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let _ = KillTimer(Some(hwnd), CLIP_SWEEP_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_POP_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_CONFIRM_TIMER_ID);
+                let _ = KillTimer(Some(hwnd), CLIP_PREVIEW_TIMER_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_FALLBACK_HOTKEY_ID);
             }
@@ -1921,6 +2005,7 @@ impl Surface {
             shelf_shift_anchor: None,
             thumb_worker: ThumbWorker::start(hwnd),
             thumbs: HashMap::new(),
+            clip_preview_art: HashMap::new(),
             wave_phase: 0.0,
             wave_tick_at: Instant::now(),
             timer: Countdown::default(),
@@ -1942,6 +2027,8 @@ impl Surface {
             pending_paste: None,
             clip_pop_until: None,
             clip_pop_count: 0,
+            clip_preview: None,
+            clip_preview_arm: None,
         })
     }
     fn apply_shelf(&mut self) {
@@ -2976,7 +3063,7 @@ impl Surface {
             && self.flyout.contains(x, y)
             && self.clip_viewport().contains(x, y);
         let max_scroll = if clip_card {
-            crate::view::clip_scroll(self.clip_len(), self.clip_scroll).max_scroll
+            crate::view::clip_scroll(&self.clip_strides(), self.clip_scroll).max_scroll
         } else {
             crate::view::shelf_scroll(self.shelf_store.len(), self.shelf_scroll).max_scroll
         };
@@ -3160,7 +3247,7 @@ impl Surface {
     /// Clamps and applies the history scroll offset. Returns whether the view
     /// changed.
     fn set_clip_scroll(&mut self, scroll: f32) -> bool {
-        let next = crate::view::clip_scroll(self.clip_len(), scroll).scroll;
+        let next = crate::view::clip_scroll(&self.clip_strides(), scroll).scroll;
         if (next - self.clip_scroll).abs() < 0.01 {
             return false;
         }
@@ -3173,7 +3260,7 @@ impl Surface {
     /// Press on the history scrollbar: grabbing the thumb keeps the pointer's
     /// offset inside it; pressing the empty track centres the thumb on it.
     fn begin_clip_scrollbar_drag(&mut self, y: f32) {
-        let view = crate::view::clip_scroll(self.clip_len(), self.clip_scroll);
+        let view = crate::view::clip_scroll(&self.clip_strides(), self.clip_scroll);
         if view.max_scroll <= 0.0 {
             return;
         }
@@ -3190,7 +3277,7 @@ impl Surface {
 
     /// Maps the pointer back to a history scroll offset while the thumb is held.
     fn drag_clip_scrollbar(&mut self, y: f32, grab: f32) -> bool {
-        let view = crate::view::clip_scroll(self.clip_len(), self.clip_scroll);
+        let view = crate::view::clip_scroll(&self.clip_strides(), self.clip_scroll);
         if view.max_scroll <= 0.0 {
             return false;
         }
@@ -3218,51 +3305,107 @@ impl Surface {
                 }
             }
         }
-        for path in visible {
-            let key = crate::thumb::key_for(&path);
-            match self.thumbs.get_mut(&path) {
-                Some(entry) if entry.key == key => {}
-                Some(entry) => {
-                    entry.key = key;
-                    entry.art = None;
-                    entry.pending = true;
-                    self.thumb_worker.request(&path);
+        self.queue_thumbs(visible);
+    }
+
+    /// Queue thumbnails for the visible clipboard rows only: the stored image
+    /// blob thumbnail (generated at capture, spec 7) or a single image file
+    /// through the same worker. The cache is bounded by the 30-item history.
+    fn ensure_clip_thumbs(&mut self) {
+        let Some(clip) = self.clip.as_ref() else {
+            return;
+        };
+        let filter = self.clip_filter;
+        let items = clip.store.items();
+        let filtered: Vec<_> = items.iter().filter(|item| filter.matches(item)).collect();
+        let strides: Vec<f32> = filtered
+            .iter()
+            .map(|item| crate::view::clip_row_kind(item).stride())
+            .collect();
+        let view = crate::view::clip_scroll(&strides, self.clip_scroll);
+        let mut visible: Vec<String> = Vec::new();
+        for index in view.first_row..view.first_row + view.rows {
+            let Some(item) = filtered.get(index) else {
+                break;
+            };
+            match crate::view::clip_row_kind(item) {
+                crate::view::ClipRowKind::Image { .. } => visible.push(
+                    crate::clipboard::store::thumb_path(&item.digest)
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                crate::view::ClipRowKind::Files
+                    if item.paths.len() == 1
+                        && item.paths.first().is_some_and(|p| crate::view::is_image(p)) =>
+                {
+                    visible.push(item.paths[0].clone());
                 }
-                None => {
-                    self.thumbs.insert(
-                        path.clone(),
-                        ThumbEntry {
-                            key,
-                            art: None,
-                            pending: true,
-                        },
-                    );
-                    self.thumb_worker.request(&path);
-                }
+                _ => {}
             }
+        }
+        self.queue_thumbs(visible);
+    }
+
+    /// Shared by the shelf and clipboard queues: one request per path, with
+    /// cached failures remembered so nothing decodes in a loop.
+    fn queue_thumbs(&mut self, visible: Vec<String>) {
+        for path in visible {
+            queue_thumb(
+                &self.thumb_worker,
+                &mut self.thumbs,
+                &path,
+                crate::thumb::MAX_THUMB,
+            );
         }
     }
 
+    /// Queue the 384 px decode behind the hover preview (spec 7). The cache
+    /// holds only the file the preview is about: previews are transient, so a
+    /// long session never piles up decoded pictures.
+    fn ensure_clip_preview(&mut self) {
+        let Some(id) = self
+            .clip_preview
+            .or(self.clip_preview_arm.map(|(id, _)| id))
+        else {
+            self.clip_preview_art.clear();
+            return;
+        };
+        let path = self
+            .clip
+            .as_ref()
+            .and_then(|clip| clip.store.get(id))
+            .and_then(crate::view::clip_preview_path);
+        let Some(path) = path else {
+            self.clip_preview_art.clear();
+            return;
+        };
+        self.clip_preview_art.retain(|known, _| *known == path);
+        queue_thumb(
+            &self.thumb_worker,
+            &mut self.clip_preview_art,
+            &path,
+            crate::thumb::PREVIEW_PX,
+        );
+    }
+
     /// Drops finished thumbnails into the cache. Returns whether a repaint is
-    /// needed while the shelf card is on screen.
+    /// needed while the shelf or clipboard card is on screen.
     fn drain_thumbs(&mut self) -> bool {
         let results = self.thumb_worker.drain();
         if results.is_empty() {
             return false;
         }
         let mut changed = false;
-        for result in results {
-            for entry in self.thumbs.values_mut() {
-                if entry.pending && entry.key == result.key {
-                    entry.art = result.art.clone();
-                    entry.pending = false;
-                    changed = true;
-                }
-            }
+        for result in &results {
+            changed |= fill_thumb(&mut self.thumbs, result);
+            changed |= fill_thumb(&mut self.clip_preview_art, result);
         }
         changed
             && self.flyout_open
-            && self.view.main.as_ref().map(|view| view.kind) == Some(ActivityKind::Shelf)
+            && matches!(
+                self.view.main.as_ref().map(|view| view.kind),
+                Some(ActivityKind::Shelf | ActivityKind::Clipboard)
+            )
     }
 
     fn show_shelf(&mut self) {
@@ -3354,24 +3497,52 @@ impl Surface {
             .map(|_| self.clip_pop_count.max(1));
         let filter = self.clip_filter;
         let now = crate::clipboard::now_secs();
+        // Queue thumbnail work for the visible rows first, then resolve what
+        // the worker already produced (spec 7 thumbnails; never decoded here).
+        self.ensure_clip_thumbs();
+        // The overlay belongs to a row that is still under the pointer: if the
+        // hover moved on (or the row was evicted), drop it rather than freeze a
+        // stale preview over the list.
+        if self
+            .clip_preview
+            .is_some_and(|id| self.hover != Some(Element::ClipRow(id)))
+        {
+            self.dismiss_clip_preview();
+        }
+        // Start (or restart) the 384 px decode so the picture is usually ready
+        // the moment the 450 ms delay lands (spec 7).
+        self.ensure_clip_preview();
+        let thumbs = &self.thumbs;
         let (rows, scroll) = self.clip.as_ref().map_or_else(
-            || (Vec::new(), crate::view::clip_scroll(0, 0.0)),
+            || (Vec::new(), crate::view::clip_scroll(&[], 0.0)),
             |clip| {
-                let filtered_len = clip
-                    .store
-                    .items()
-                    .iter()
-                    .filter(|item| filter.matches(item))
-                    .count();
-                let scroll = crate::view::clip_scroll(filtered_len, self.clip_scroll);
-                (
-                    crate::view::clip_rows(clip.store.items(), filter, scroll.scroll, now, &|_| {
-                        None
-                    }),
-                    scroll,
-                )
+                let scroll = crate::view::clip_scroll(&self.clip_strides(), self.clip_scroll);
+                let rows = crate::view::clip_rows(
+                    clip.store.items(),
+                    filter,
+                    scroll.scroll,
+                    now,
+                    &|path| thumbs.get(path).and_then(|entry| entry.art.clone()),
+                );
+                (rows, scroll)
             },
         );
+        let preview = self.clip_preview.and_then(|id| {
+            let item = self.clip.as_ref()?.store.get(id)?;
+            let row = rows.iter().find(|row| row.id == id)?;
+            let path = crate::view::clip_preview_path(item)?;
+            Some(crate::view::ClipPreviewView {
+                id,
+                art: self
+                    .clip_preview_art
+                    .get(&path)
+                    .and_then(|entry| entry.art.clone()),
+                body: crate::view::clip_preview_body(item),
+                source: row.source.clone(),
+                image: row.image,
+                mono: row.mono,
+            })
+        });
         let body = crate::view::ClipboardBody {
             total: count,
             pinned,
@@ -3384,6 +3555,7 @@ impl Surface {
             content_h: scroll.content_h,
             active_row: self.clip_active,
             clear_confirm: self.clip_clear_at.map(|_| count.saturating_sub(pinned)),
+            preview,
         };
         self.view.main = Some(ActivityView {
             kind: ActivityKind::Clipboard,
@@ -3993,6 +4165,9 @@ impl Surface {
         ));
         self.sync_hover_timer();
         self.schedule_tip(now);
+        // The row preview follows the pointer with the same rule as the tip:
+        // a new hover target restarts the 450 ms (spec 7).
+        self.sync_clip_preview(now);
         if self.convert.is_some() {
             let action = match hover {
                 Some(Element::ConvertOption(action)) => Some(action),
@@ -4223,6 +4398,9 @@ impl Surface {
 
     /// The element whose tip should appear: the hovered control, or the rail
     /// button that owns keyboard focus. Only an open, settled card shows tips.
+    /// A *hovered* history row is deliberately absent: its richer 450 ms
+    /// preview overlay (spec 7) replaces the tooltip. Keyboard focus on a row
+    /// still carries the row's own tip (spec 3.2).
     fn tip_candidate(&self) -> Option<Element> {
         if !self.flyout_open
             || self.flyout_phase != FlyoutPhase::Open
@@ -4259,7 +4437,6 @@ impl Surface {
                 | Element::ClipClear
                 | Element::ClipClearConfirm
                 | Element::ClipClearCancel
-                | Element::ClipRow(_)
                 | Element::ClipPin(_)
                 | Element::ClipCopy(_)
                 | Element::ClipDelete(_)),
@@ -4517,8 +4694,11 @@ impl Surface {
     }
 
     /// Dismiss the popup immediately (click, scroll, drag, card close, Esc).
+    /// The hover-preview overlay is a popup too: it goes with the tip so no
+    /// stale picture is left over the list.
     fn hide_tip(&mut self) {
         let now = Instant::now();
+        self.dismiss_clip_preview();
         if self.tip.is_visible() {
             self.tip.hide();
             self.tip_hidden_at = Some(now);
@@ -4576,6 +4756,79 @@ impl Surface {
             align_right,
         };
         self.tip.show(&request, self.scale);
+    }
+
+    /// Arm the 450 ms one-shot for the row under the pointer (spec 7). Moving
+    /// onto another row restarts it, so the overlay only ever appears over a
+    /// steady hover; the 384 px decode starts here to earn the delay as head
+    /// start.
+    fn sync_clip_preview(&mut self, now: Instant) {
+        let row = match self.hover {
+            Some(Element::ClipRow(id)) => Some(id),
+            _ => None,
+        };
+        if self.clip_preview_arm.map(|(id, _)| id) == row {
+            return;
+        }
+        self.dismiss_clip_preview();
+        if let Some(id) = row {
+            self.clip_preview_arm = Some((id, now));
+            self.ensure_clip_preview();
+            // SAFETY: the timer id belongs to this window.
+            unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    CLIP_PREVIEW_TIMER_ID,
+                    design::CLIP_PREVIEW_MS,
+                    None,
+                );
+            }
+        }
+    }
+
+    /// Drop the overlay, its one-shot and the decoded picture: the pointer
+    /// left the row, the list scrolled, the card closed or a click landed.
+    fn dismiss_clip_preview(&mut self) {
+        self.clip_preview = None;
+        self.clip_preview_arm = None;
+        self.clip_preview_art.clear();
+        // SAFETY: one-shot timer; killing an id that never armed is harmless.
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), CLIP_PREVIEW_TIMER_ID);
+        }
+    }
+
+    /// One-shot expiry: show the overlay if the same row is still under the
+    /// pointer for the whole delay, otherwise re-arm for the remainder.
+    /// Returns whether an overlay appeared (so the caller can repaint).
+    fn clip_preview_due(&mut self, now: Instant) -> bool {
+        // SAFETY: one-shot timer; killing an already-fired id is harmless.
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), CLIP_PREVIEW_TIMER_ID);
+        }
+        let Some((id, since)) = self.clip_preview_arm else {
+            return false;
+        };
+        if self.hover != Some(Element::ClipRow(id)) {
+            self.dismiss_clip_preview();
+            return false;
+        }
+        let waited = now.saturating_duration_since(since).as_millis() as u64;
+        if !crate::view::clip_preview_ready(waited) {
+            // SAFETY: the timer id belongs to this window.
+            unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    CLIP_PREVIEW_TIMER_ID,
+                    (u64::from(design::CLIP_PREVIEW_MS) - waited).max(1) as u32,
+                    None,
+                );
+            }
+            return false;
+        }
+        self.clip_preview = Some(id);
+        self.refresh(now);
+        true
     }
 
     /// Accessibility snapshot for the current frame: one node per control that
@@ -4642,6 +4895,15 @@ impl Surface {
         self.rail_focus.is_some() || matches!(self.hover, Some(Element::Rail(_)))
     }
 
+    /// Per-item stride of the filtered history list (34 DIP rows, 50 DIP for
+    /// images): the input to every `clip_scroll` call so scrolling and row
+    /// layout agree.
+    fn clip_strides(&self) -> Vec<f32> {
+        self.clip.as_ref().map_or_else(Vec::new, |clip| {
+            crate::view::clip_strides(clip.store.items(), self.clip_filter)
+        })
+    }
+
     /// The filtered history row with store id `id`, as an index into the list.
     fn clip_row_index(&self, id: u64) -> Option<usize> {
         self.clip
@@ -4667,8 +4929,10 @@ impl Surface {
 
     /// Scrolls the list just enough to keep `index` in view.
     fn reveal_clip_row(&mut self, index: usize) {
-        let top = index as f32 * design::CLIP_ROW_STRIDE;
-        let bottom = top + design::CLIP_ROW_H;
+        // Mixed 34/50 DIP rows: the offsets come from the stride list.
+        let strides = self.clip_strides();
+        let top: f32 = strides.iter().take(index).sum();
+        let bottom = top + strides.get(index).copied().unwrap_or(design::CLIP_ROW_H);
         let viewport = self.clip_viewport();
         if top < self.clip_scroll {
             self.set_clip_scroll(top);

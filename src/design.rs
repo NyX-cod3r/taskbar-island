@@ -213,8 +213,9 @@ pub const CLIP_SWEEP_MS: u32 = 60 * 60 * 1000;
 pub const CLIP_TEXT_MAX_BYTES: usize = 1024 * 1024;
 pub const CLIP_IMAGE_MAX_PIXELS: u64 = 20_000_000;
 pub const CLIP_IMAGE_MAX_BYTES: u64 = 25 * 1024 * 1024;
-/// Longest side of the cached image thumbnail.
-pub const CLIP_THUMB_PX: u32 = 96;
+/// Longest side of the cached image thumbnail: 128 px = 2× DPI for the 64 DIP
+/// row thumbnail (spec 7).
+pub const CLIP_THUMB_PX: u32 = 128;
 
 // Clipboard card: 28 DIP toolbar + 8 gap + list fills the rest (142 DIP).
 pub const CLIP_TOOLBAR_H: f32 = 28.0;
@@ -228,21 +229,49 @@ pub const CLIP_FILTER_GLYPH: f32 = 14.0;
 pub const CLIP_FILTER_ACTIVE: Color = rgba(0x5F, 0xD0, 0xC5, 0.24);
 pub const CLIP_TOOL_BTN: f32 = 28.0;
 pub const CLIP_TOOL_GAP: f32 = 6.0;
-/// History rows: 32 DIP tall, 2 DIP gap, radius 6.
-pub const CLIP_ROW_H: f32 = 32.0;
+/// History rows: 34 DIP tall, image rows 50 (64 × 40 thumb), 2 DIP gap,
+/// radius 6 (spec 7).
+pub const CLIP_ROW_H: f32 = 34.0;
+pub const CLIP_ROW_IMG_H: f32 = 50.0;
 pub const CLIP_ROW_GAP: f32 = 2.0;
 pub const CLIP_ROW_STRIDE: f32 = CLIP_ROW_H + CLIP_ROW_GAP;
+pub const CLIP_ROW_IMG_STRIDE: f32 = CLIP_ROW_IMG_H + CLIP_ROW_GAP;
 pub const CLIP_ROW_R: f32 = 6.0;
 pub const CLIP_ROW_PAD: f32 = 8.0;
 pub const CLIP_ROW_HOVER: Color = rgba(255, 255, 255, 0.07);
 pub const CLIP_GLYPH_SLOT: f32 = 20.0;
 pub const CLIP_GLYPH: f32 = 16.0;
+/// Small leading slot: file rows keep a 24 × 18 thumbnail of a single image.
 pub const CLIP_THUMB_W: f32 = 24.0;
 pub const CLIP_THUMB_H: f32 = 18.0;
+/// Image row thumbnail (spec 7: "50 DIP row, 64 × 40 thumbnail").
+pub const CLIP_ROW_THUMB_W: f32 = 64.0;
+pub const CLIP_ROW_THUMB_H: f32 = 40.0;
+/// Checkerboard behind images smaller than the thumb slot, so a 37 × 13 image
+/// is obviously tiny (spec 7).
+pub const CLIP_CHECKER: f32 = 4.0;
+pub const CLIP_CHECKER_A: Color = rgb(0x50, 0x50, 0x50);
+pub const CLIP_CHECKER_B: Color = rgb(0x40, 0x40, 0x40);
+/// Hover preview overlay (spec 7): appears after 450 ms of steady hover and
+/// stays inside the card (206 × 150 of the 329 × 178 content rect).
+pub const CLIP_PREVIEW_MS: u32 = 450;
+pub const CLIP_PREVIEW_W: f32 = 206.0;
+pub const CLIP_PREVIEW_H: f32 = 150.0;
+pub const CLIP_PREVIEW_PAD: f32 = 6.0;
+pub const CLIP_PREVIEW_IMG_W: f32 = 192.0;
+pub const CLIP_PREVIEW_IMG_H: f32 = 118.0;
+/// Bands under the picture: one `LINE_HINT` caption line, then the shorter
+/// `from <app>` line. Together with the pad and the picture they fill the
+/// 150 DIP popup exactly, so the source line ends on its bottom edge.
+pub const CLIP_PREVIEW_CAPTION_H: f32 = LINE_HINT;
+pub const CLIP_PREVIEW_SOURCE_H: f32 = 12.0;
 /// Hover/focus cluster: three 24 DIP icon buttons replace the age.
 pub const CLIP_ACTION_BTN: f32 = 24.0;
 pub const CLIP_ACTION_GAP: f32 = 2.0;
 pub const CLIP_AGE_W: f32 = 30.0;
+/// Small pin marker left of the age on a pinned row.
+pub const CLIP_PIN_MARK: f32 = 12.0;
+pub const CLIP_PIN_MARK_GAP: f32 = 4.0;
 pub const CLIP_LINK: Color = rgb(0x8F, 0xB8, 0xFF);
 /// Row-preview tooltips cap the quoted text at ~200 characters.
 pub const CLIP_TIP_CHARS: usize = 200;
@@ -680,6 +709,22 @@ const _: () = assert!(SHELF_INNER_W == CLIP_INNER_W && SHELF_INNER_W == CONVERT_
 const _: () = assert!(SHELF_ROW_H * 2.0 - SHELF_TILE_GAP <= SHELF_VIEW_H);
 const _: () = assert!(CONVERT_OPTIONS_H >= CONVERT_OPTION_H);
 const _: () = assert!((CONVERT_OPTIONS_H - CONVERT_OPTION_GAP) / 2.0 >= CONVERT_OPTION_H);
+// Clipboard (spec 7): the hover preview overlay always fits the content rect
+// and the 64 x 40 image thumb fits the 50 DIP row with room to spare.
+const _: () = assert!(CLIP_PREVIEW_W <= CLIP_INNER_W && CLIP_PREVIEW_H <= CLIP_INNER_H);
+// The 150 DIP popup exactly fills the pad, the picture and its two caption
+// bands, and that height in turn equals the 8 DIP toolbar gap plus the 142 DIP
+// list column — so sitting on the content rect's bottom edge it covers the
+// list and never a toolbar control.
+const _: () = assert!(
+    CLIP_PREVIEW_H
+        == CLIP_PREVIEW_PAD + CLIP_PREVIEW_IMG_H + CLIP_PREVIEW_CAPTION_H + CLIP_PREVIEW_SOURCE_H
+);
+const _: () = assert!(CLIP_PREVIEW_H == CLIP_TOOLBAR_GAP + CLIP_LIST_H);
+// The 192 DIP picture column keeps its 6 DIP pad on both sides.
+const _: () = assert!(CLIP_PREVIEW_IMG_W + CLIP_PREVIEW_PAD * 2.0 <= CLIP_PREVIEW_W);
+const _: () = assert!(CLIP_ROW_THUMB_H + 2.0 * CLIP_ROW_GAP <= CLIP_ROW_IMG_H);
+const _: () = assert!(CLIP_ROW_IMG_STRIDE - CLIP_ROW_GAP == CLIP_ROW_IMG_H);
 
 #[cfg(test)]
 mod tests {
@@ -775,12 +820,12 @@ mod tests {
         assert_eq!(CLIP_TEXT_MAX_BYTES, 1_048_576);
         assert_eq!(CLIP_IMAGE_MAX_PIXELS, 20_000_000);
         assert_eq!(CLIP_IMAGE_MAX_BYTES, 26_214_400);
-        assert_eq!(CLIP_THUMB_PX, 96);
+        assert_eq!(CLIP_THUMB_PX, 128);
     }
 
     /// v0.7 Phase 3 card on the shared content rect: 28 toolbar + 8 gap +
-    /// 142 list, 32/2 rows, 26 x 24 filter tabs in a 2 DIP padded strip,
-    /// 24 DIP row actions.
+    /// 142 list, 34/50 DIP rows with a 2 DIP gap, 26 x 24 filter tabs in a
+    /// 2 DIP padded strip, 24 DIP row actions.
     #[test]
     fn clipboard_list_matches_v07() {
         assert_eq!(CLIP_TOOLBAR_H, 28.0);
@@ -795,18 +840,54 @@ mod tests {
         assert_eq!(CLIP_FILTER_TAB_H, 24.0);
         assert_eq!(CLIP_FILTER_TAB_H + CLIP_FILTER_PAD * 2.0, CLIP_TOOLBAR_H);
         assert_eq!(CLIP_FILTER_ACTIVE, rgba(0x5F, 0xD0, 0xC5, 0.24));
-        assert_eq!(CLIP_ROW_H, 32.0);
+        assert_eq!(CLIP_ROW_H, 34.0);
+        assert_eq!(CLIP_ROW_IMG_H, 50.0);
         assert_eq!(CLIP_ROW_GAP, 2.0);
-        assert_eq!(CLIP_ROW_STRIDE, 34.0);
+        assert_eq!(CLIP_ROW_STRIDE, 36.0);
+        assert_eq!(CLIP_ROW_IMG_STRIDE, 52.0);
         assert_eq!(CLIP_ROW_R, 6.0);
         assert_eq!(CLIP_ROW_HOVER, rgba(255, 255, 255, 0.07));
         assert_eq!(CLIP_GLYPH_SLOT, 20.0);
         assert_eq!(CLIP_THUMB_W, 24.0);
         assert_eq!(CLIP_THUMB_H, 18.0);
+        assert_eq!(CLIP_ROW_THUMB_W, 64.0);
+        assert_eq!(CLIP_ROW_THUMB_H, 40.0);
         assert_eq!(CLIP_ACTION_BTN, 24.0);
         assert_eq!(CLIP_LINK, rgb(0x8F, 0xB8, 0xFF));
         assert_eq!(CLIP_SCROLL_W, 4.0);
         assert_eq!(CLIP_TIP_CHARS, 200);
+    }
+
+    /// Hover preview overlay (spec 7): 450 ms delay, 206 × 150 popup with a
+    /// 192 × 118 image area, always inside the 329 × 178 content rect.
+    #[test]
+    fn clipboard_preview_overlay_matches_spec() {
+        assert_eq!(CLIP_PREVIEW_MS, 450);
+        assert_eq!(CLIP_PREVIEW_W, 206.0);
+        assert_eq!(CLIP_PREVIEW_H, 150.0);
+        assert_eq!(CLIP_PREVIEW_IMG_W, 192.0);
+        assert_eq!(CLIP_PREVIEW_IMG_H, 118.0);
+        // The picture column's fit is a compile-time `const _: () = assert!`
+        // next to the tokens; what is worth pinning here is where it lands.
+        // Horizontal centering, vertical fit: the popup sits on the toolbar's
+        // bottom edge and ends exactly at the content rect's bottom, so it
+        // covers the toolbar gap and the list and nothing else.
+        let x = (CLIP_INNER_W - CLIP_PREVIEW_W) * 0.5;
+        let y = CLIP_INNER_H - CLIP_PREVIEW_H;
+        assert_eq!(x, 61.5);
+        assert_eq!(y, CLIP_TOOLBAR_H);
+        assert_eq!(CLIP_PREVIEW_H, CLIP_TOOLBAR_GAP + CLIP_LIST_H);
+        assert!(x + CLIP_PREVIEW_W <= CLIP_INNER_W);
+        assert!(y + CLIP_PREVIEW_H <= CLIP_INNER_H);
+        // The picture band and the two caption bands fill the popup exactly.
+        assert_eq!(
+            CLIP_PREVIEW_PAD + CLIP_PREVIEW_IMG_H + CLIP_PREVIEW_CAPTION_H + CLIP_PREVIEW_SOURCE_H,
+            CLIP_PREVIEW_H
+        );
+        assert_eq!(CLIP_PREVIEW_CAPTION_H, LINE_HINT);
+        // Body copy shares the picture's column, so text lines up with it:
+        // a 7 DIP inset on each side of the 192 DIP column.
+        assert_eq!((CLIP_PREVIEW_W - CLIP_PREVIEW_IMG_W) * 0.5, 7.0);
     }
 
     /// Shelf geometry on the shared content rect (design tokens): a 28 DIP

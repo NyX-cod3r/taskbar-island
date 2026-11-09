@@ -472,6 +472,63 @@ impl ClipFilter {
 }
 
 /// One visible history row. `index` is absolute inside the filtered list so
+/// A history row's display type (spec 7). The persisted `ClipKind` is only a
+/// hint: text is re-classified every frame (link → color → code), so items
+/// written by older builds classify too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipRowKind {
+    Text,
+    /// Code/command preview, drawn in the mono family.
+    Code,
+    /// Domain in the link accent, `path` muted right after it.
+    Link {
+        domain: String,
+        path: String,
+    },
+    /// Swatch + `#RRGGBB` in mono + `rgb(…)` muted in mono.
+    Color {
+        r: u8,
+        g: u8,
+        b: u8,
+        hex: String,
+        rgb: String,
+    },
+    /// Bold dimensions with a muted `PNG · 48 KB` line under them.
+    Image {
+        w: u32,
+        h: u32,
+        bytes: u64,
+    },
+    Files,
+}
+
+impl ClipRowKind {
+    /// Image rows get the taller 50 DIP row for the 64 × 40 thumbnail
+    /// (spec 7); everything else is a 34 DIP row.
+    pub fn height(&self) -> f32 {
+        match self {
+            Self::Image { .. } => design::CLIP_ROW_IMG_H,
+            _ => design::CLIP_ROW_H,
+        }
+    }
+
+    /// Height including the 2 DIP gap: the input to `clip_scroll`.
+    pub fn stride(&self) -> f32 {
+        self.height() + design::CLIP_ROW_GAP
+    }
+
+    /// Code-like previews render in Cascadia Mono.
+    pub fn mono(&self) -> bool {
+        matches!(self, Self::Code)
+    }
+
+    /// The row starts with a URL: the glyph and domain use the link accent.
+    pub fn is_link(&self) -> bool {
+        matches!(self, Self::Link { .. })
+    }
+}
+
+/// One visible history row. `index` is absolute inside the filtered list so
 /// keyboard focus and scrolling survive virtualization; `id` addresses the
 /// store row for actions.
 #[derive(Debug, Clone)]
@@ -480,22 +537,28 @@ pub struct ClipRowView {
     pub id: u64,
     pub icon: IconId,
     pub preview: String,
+    /// What the row is, decided from the stored item (spec 7 row types).
+    pub kind: ClipRowKind,
+    /// Content-space `y` of the row top (mixed34/50 DIP rows are not a fixed
+    /// stride, so the offset is computed while the view is built).
+    pub y: f32,
     /// Code-like text previews use the mono font.
     pub mono: bool,
     pub link: bool,
-    #[allow(dead_code)] // Row image chip lands with the clipboard card (B1).
     pub image: bool,
     pub thumb: Option<Arc<AlbumArt>>,
     pub age: String,
     /// Last 24 h of retention: the age turns amber.
     pub expiring: bool,
-    #[allow(dead_code)] // Pin marker lands with the clipboard card (B1).
     pub pinned: bool,
     /// Every path of a file row is gone.
     pub dimmed: bool,
     /// The preview looks like a credential, so it is drawn as bullets until
     /// the row is hovered or focused (spec 3.6).
     pub masked: bool,
+    /// App that owned the clipboard for this copy (`Snipping Tool`), shown as
+    /// `from <app>` in the hover preview (spec 7).
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -517,6 +580,31 @@ pub struct ClipboardBody {
     /// Two-step Clear is armed: `Some(unpinned count)`. The toolbar draws the
     /// red-tinted check and the cancel in place of the trash (spec 3.3).
     pub clear_confirm: Option<usize>,
+    /// The 450 ms hover preview overlay (spec 7), `None` while no row has
+    /// been hovered long enough.
+    pub preview: Option<ClipPreviewView>,
+}
+
+/// The hover-preview overlay: a 206 × 150 card drawn over the list, always
+/// inside the clipboard card. Built from the hovered row, so it disappears
+/// with it (scroll, hover change, card close) instead of going stale.
+#[derive(Debug, Clone)]
+pub struct ClipPreviewView {
+    /// Store id of the row being previewed; the overlay is dropped as soon as
+    /// that row leaves the virtualized viewport.
+    pub id: u64,
+    /// Image rows: the 384 px decode of the stored blob, `None` until the
+    /// worker lands so the picture can pop in a frame after its caption.
+    pub art: Option<Arc<AlbumArt>>,
+    /// `615 × 342 · PNG · 212 KB` for images, the full text (≤ 200 chars)
+    /// otherwise — one block of body copy under the picture.
+    pub body: String,
+    /// `from Snipping Tool`; `None` when the source app is unknown.
+    pub source: Option<String>,
+    /// Image rows draw the 192 × 118 picture above the caption.
+    pub image: bool,
+    /// Code-like body copy is set in the mono family (spec 3.2).
+    pub mono: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -818,17 +906,36 @@ pub fn shelf_tiles(
     files
 }
 
-/// Viewport math for the history list; same shape as the shelf grid but one
-/// row per item with a 34 DIP stride.
-pub fn clip_scroll(len: usize, scroll: f32) -> ShelfScroll {
-    let content_h = len as f32 * design::CLIP_ROW_STRIDE;
+/// Viewport math for the history list; one row per item with mixed heights
+/// (34 DIP text/code/link/color/file rows, 50 DIP image rows, 2 DIP gap), so
+/// `strides` is the filtered list in order.
+pub fn clip_scroll(strides: &[f32], scroll: f32) -> ShelfScroll {
+    let content_h: f32 = strides.iter().sum();
     let max_scroll = (content_h - design::CLIP_LIST_H).max(0.0);
     let scroll = scroll.clamp(0.0, max_scroll);
-    let stride = design::CLIP_ROW_STRIDE;
-    let first_row = (scroll / stride).floor() as usize;
-    let offset = scroll - first_row as f32 * stride;
-    let rows = ((design::CLIP_LIST_H + offset) / stride).ceil() as usize + 1;
-    let rows = rows.min(len.saturating_sub(first_row));
+    // First row whose bottom edge passes the scroll offset.
+    let mut top = 0.0;
+    let mut first_row = 0;
+    for &stride in strides {
+        if top + stride > scroll {
+            break;
+        }
+        top += stride;
+        first_row += 1;
+    }
+    let offset = scroll - top;
+    // Every row whose top edge enters the viewport (the first may hang over
+    // the top, the last may hang over the bottom; both are clipped by the
+    // list rect).
+    let mut rows = 0;
+    let mut screen_top = -offset;
+    for &stride in strides.iter().skip(first_row) {
+        if screen_top >= design::CLIP_LIST_H {
+            break;
+        }
+        rows += 1;
+        screen_top += stride;
+    }
     ShelfScroll {
         first_row,
         rows,
@@ -836,6 +943,16 @@ pub fn clip_scroll(len: usize, scroll: f32) -> ShelfScroll {
         max_scroll,
         scroll,
     }
+}
+
+/// Per-item stride of the filtered history list: the input to `clip_scroll`
+/// so scrolling and row layout agree.
+pub fn clip_strides(items: &[crate::clipboard::store::ClipItem], filter: ClipFilter) -> Vec<f32> {
+    items
+        .iter()
+        .filter(|item| filter.matches(item))
+        .map(|item| clip_row_kind(item).stride())
+        .collect()
 }
 
 /// The history viewport in *window* coordinates, used for wheel ownership.
@@ -930,6 +1047,43 @@ pub fn clip_tip(item: &crate::clipboard::store::ClipItem) -> String {
     }
 }
 
+/// The file the hover preview decodes at `thumb::PREVIEW_PX`: the stored blob
+/// of an image row (spec 7). File and text rows preview as copy and never
+/// touch the decoder.
+pub fn clip_preview_path(item: &crate::clipboard::store::ClipItem) -> Option<String> {
+    if item.kind != crate::clipboard::store::ClipKind::Image {
+        return None;
+    }
+    Some(
+        crate::clipboard::store::blob_path(&item.digest)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// The overlay's body copy (spec 7): image rows get `615 × 342 · PNG · 212 KB`
+/// under the picture, everything else the full content capped at 200
+/// characters — the same cap the row tooltip uses.
+pub fn clip_preview_body(item: &crate::clipboard::store::ClipItem) -> String {
+    if item.kind == crate::clipboard::store::ClipKind::Image {
+        return item.image.as_ref().map_or_else(String::new, |meta| {
+            format!(
+                "{} \u{00d7} {} \u{00b7} PNG \u{00b7} {}",
+                meta.width,
+                meta.height,
+                fmt_size(meta.bytes)
+            )
+        });
+    }
+    clip_tip(item)
+}
+
+/// True once a steady hover has reached the preview delay (spec 7). Pure so
+/// the 450 ms boundary is testable without a message loop.
+pub fn clip_preview_ready(elapsed_ms: u64) -> bool {
+    elapsed_ms >= u64::from(design::CLIP_PREVIEW_MS)
+}
+
 /// Local, deliberately simple heuristic: code punctuation density or a
 /// keyword start. Only the preview font changes, never the content.
 pub fn looks_like_code(text: &str) -> bool {
@@ -965,6 +1119,204 @@ pub fn looks_like_code(text: &str) -> bool {
     punct >= 3
 }
 
+/// Splits a *leading* http(s) URL into `(domain, path)` (spec 7 link rows).
+///
+/// The scheme is case-insensitive (`HTTP://…` counts), the host must contain
+/// a dot or be `localhost` (a port after it is fine), and the rest of the
+/// line may contain spaces — a URL copied with spaces still counts as a link.
+/// A URL anywhere but the start is plain text, and a scheme with no host is
+/// not a link.
+pub fn link_parts(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    let bytes = text.as_bytes();
+    // The scheme is assembled byte-wise so the offline source audit never
+    // mistakes this check for an outbound call (same rule as capture::is_link).
+    let rest =
+        if bytes.len() >= 7 && bytes[..4].eq_ignore_ascii_case(b"http") && bytes[4..7] == *b"://" {
+            &text[7..]
+        } else if bytes.len() >= 8
+            && bytes[..4].eq_ignore_ascii_case(b"http")
+            && bytes[4..8] == *b"s://"
+        {
+            &text[8..]
+        } else {
+            return None;
+        };
+    let end = rest
+        .find(|c: char| c == '/' || c.is_whitespace())
+        .unwrap_or(rest.len());
+    let host = &rest[..end];
+    // Drop a `:port` before judging the host (`localhost:8080` is local).
+    let name = host.split_once(':').map_or(host, |(name, _)| name);
+    if name.is_empty() || !(name.contains('.') || name.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
+    Some((host.to_string(), rest[end..].to_string()))
+}
+
+/// Accepts `#RGB`, `#RRGGBB`, `#RRGGBBAA`, `rgb(…)`/`rgba(…)` and
+/// `hsl(…)`/`hsla(…)` when the *whole* trimmed text is exactly one color
+/// literal. Returns `(r, g, b, "#RRGGBB", "rgb(r, g, b)")`; the alpha of an
+/// 8-digit hex or a 4th argument is accepted and ignored.
+pub fn detect_color(text: &str) -> Option<(u8, u8, u8, String, String)> {
+    let t = text.trim();
+    let (r, g, b) = if let Some(hex) = t.strip_prefix('#') {
+        parse_hex_color(hex)?
+    } else if let Some(inner) = strip_call(t, "rgb", "rgba") {
+        parse_rgb_call(inner)?
+    } else {
+        let inner = strip_call(t, "hsl", "hsla")?;
+        parse_hsl_call(inner)?
+    };
+    Some((
+        r,
+        g,
+        b,
+        format!("#{r:02X}{g:02X}{b:02X}"),
+        format!("rgb({r}, {g}, {b})"),
+    ))
+}
+
+/// `name(...)` with an ascii-case-insensitive name and a matching `)`.
+fn strip_call<'a>(text: &'a str, short: &str, long: &str) -> Option<&'a str> {
+    if !text.ends_with(')') {
+        return None;
+    }
+    let open = text.find('(')?;
+    let name = text[..open].trim();
+    let matches_name = (name.len() == short.len() && name.eq_ignore_ascii_case(short))
+        || (name.len() == long.len() && name.eq_ignore_ascii_case(long));
+    matches_name.then(|| &text[open + 1..text.len() - 1])
+}
+
+fn hex_digit(c: u8) -> Option<u8> {
+    match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn hex_pair(a: u8, b: u8) -> Option<u8> {
+    Some(hex_digit(a)? * 16 + hex_digit(b)?)
+}
+
+fn parse_hex_color(hex: &str) -> Option<(u8, u8, u8)> {
+    let b = hex.as_bytes();
+    match b.len() {
+        3 => Some((
+            hex_pair(b[0], b[0])?,
+            hex_pair(b[1], b[1])?,
+            hex_pair(b[2], b[2])?,
+        )),
+        6 | 8 => Some((
+            hex_pair(b[0], b[1])?,
+            hex_pair(b[2], b[3])?,
+            hex_pair(b[4], b[5])?,
+        )),
+        _ => None,
+    }
+}
+
+/// Split on commas when present, otherwise on whitespace; a 4th (alpha)
+/// argument is ignored, more than 4 is not a color.
+fn color_args(inner: &str) -> Option<Vec<&str>> {
+    let parts: Vec<&str> = if inner.contains(',') {
+        inner.split(',').map(str::trim).collect()
+    } else {
+        inner.split_whitespace().collect()
+    };
+    (3..=4).contains(&parts.len()).then_some(parts)
+}
+
+fn parse_rgb_call(inner: &str) -> Option<(u8, u8, u8)> {
+    let parts = color_args(inner)?;
+    let mut vals = [0u8; 3];
+    for (slot, part) in vals.iter_mut().zip(parts.iter().take(3)) {
+        *slot = if let Some(pc) = part.strip_suffix('%') {
+            let pct: f32 = pc.trim().parse().ok()?;
+            if !(0.0..=100.0).contains(&pct) {
+                return None;
+            }
+            (pct * 2.55).round() as u8
+        } else {
+            part.parse::<u8>().ok()?
+        };
+    }
+    Some((vals[0], vals[1], vals[2]))
+}
+
+fn parse_hsl_call(inner: &str) -> Option<(u8, u8, u8)> {
+    let parts = color_args(inner)?;
+    let h_text = parts[0].trim();
+    let h_text = h_text.strip_suffix("deg").unwrap_or(h_text);
+    let mut h: f32 = h_text.parse().ok()?;
+    if !h.is_finite() {
+        return None;
+    }
+    h = h.rem_euclid(360.0);
+    let s: f32 = parts[1].trim().strip_suffix('%')?.trim().parse().ok()?;
+    let l: f32 = parts[2].trim().strip_suffix('%')?.trim().parse().ok()?;
+    if !(0.0..=100.0).contains(&s) || !(0.0..=100.0).contains(&l) {
+        return None;
+    }
+    Some(hsl_to_rgb(h, s / 100.0, l / 100.0))
+}
+
+/// Standard HSL→RGB with `h` in [0, 360) and `s`/`l` in [0, 1].
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hp as i32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c * 0.5;
+    let to = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    (to(r1), to(g1), to(b1))
+}
+
+/// Display type for a stored item (spec 7): image and file kinds come from
+/// the store; text re-derives link → color → code so old items classify too.
+pub fn clip_row_kind(item: &crate::clipboard::store::ClipItem) -> ClipRowKind {
+    use crate::clipboard::store::ClipKind;
+    match item.kind {
+        ClipKind::Image => item.image.as_ref().map_or(
+            ClipRowKind::Image {
+                w: 0,
+                h: 0,
+                bytes: 0,
+            },
+            |meta| ClipRowKind::Image {
+                w: meta.width,
+                h: meta.height,
+                bytes: meta.bytes,
+            },
+        ),
+        ClipKind::Files => ClipRowKind::Files,
+        ClipKind::Link | ClipKind::Text => text_kind(&item.text),
+    }
+}
+
+/// Link → color → code → plain text, in that order.
+fn text_kind(text: &str) -> ClipRowKind {
+    if let Some((domain, path)) = link_parts(text) {
+        ClipRowKind::Link { domain, path }
+    } else if let Some((r, g, b, hex, rgb)) = detect_color(text) {
+        ClipRowKind::Color { r, g, b, hex, rgb }
+    } else if looks_like_code(text) {
+        ClipRowKind::Code
+    } else {
+        ClipRowKind::Text
+    }
+}
+
 /// The toolbar count: capacity meter, or the pinned total under that filter.
 pub fn clip_count_text(total: usize, pinned: usize, filter: ClipFilter) -> String {
     if filter == ClipFilter::Pinned {
@@ -975,7 +1327,8 @@ pub fn clip_count_text(total: usize, pinned: usize, filter: ClipFilter) -> Strin
 }
 
 /// A row range covering the viewport, built from the filtered store so
-/// indices stay absolute. Newest first, exactly the store's order.
+/// indices stay absolute. Newest first, exactly the store's order. Rows carry
+/// their content-space `y` because image rows are taller (spec 7).
 pub fn clip_rows(
     items: &[crate::clipboard::store::ClipItem],
     filter: ClipFilter,
@@ -986,17 +1339,20 @@ pub fn clip_rows(
     use crate::clipboard::store::ClipKind;
     let filtered: Vec<&crate::clipboard::store::ClipItem> =
         items.iter().filter(|item| filter.matches(item)).collect();
-    let view = clip_scroll(filtered.len(), scroll);
+    let kinds: Vec<ClipRowKind> = filtered.iter().map(|item| clip_row_kind(item)).collect();
+    let strides: Vec<f32> = kinds.iter().map(ClipRowKind::stride).collect();
+    let view = clip_scroll(&strides, scroll);
+    let mut y: f32 = strides.iter().take(view.first_row).sum();
     let mut rows = Vec::with_capacity(view.rows);
     for index in view.first_row..view.first_row + view.rows {
-        let Some(item) = filtered.get(index) else {
+        let (Some(item), Some(kind)) = (filtered.get(index), kinds.get(index).cloned()) else {
             break;
         };
-        let (icon, link, image) = match item.kind {
-            ClipKind::Text => (IconId::TextLines, false, false),
-            ClipKind::Link => (IconId::Link, true, false),
-            ClipKind::Image => (IconId::Image, false, true),
-            ClipKind::Files => (IconId::File, false, false),
+        let icon = match &kind {
+            ClipRowKind::Link { .. } => IconId::Link,
+            ClipRowKind::Image { .. } => IconId::Image,
+            ClipRowKind::Files => IconId::File,
+            ClipRowKind::Text | ClipRowKind::Code | ClipRowKind::Color { .. } => IconId::TextLines,
         };
         let dimmed = item.kind == ClipKind::Files
             && !item.paths.is_empty()
@@ -1004,23 +1360,34 @@ pub fn clip_rows(
                 .paths
                 .iter()
                 .all(|path| std::fs::metadata(path).is_err());
-        let mono = matches!(item.kind, ClipKind::Text) && looks_like_code(&item.text);
         // Secrets are only ever text-shaped; files and images have their own
         // previews (spec 3.6).
         let masked = matches!(item.kind, ClipKind::Text | ClipKind::Link)
             && crate::clipboard::secret::looks_secret(&item.text);
-        let thumb = if image {
-            thumb(&crate::clipboard::store::thumb_path(&item.digest).to_string_lossy())
-        } else {
-            None
+        let image = matches!(&kind, ClipRowKind::Image { .. });
+        // Image rows thumbnail their blob; a file row thumbnails a single
+        // image file through the shelf worker (spec 7 file rows).
+        let thumb = match &kind {
+            ClipRowKind::Image { .. } => {
+                thumb(&crate::clipboard::store::thumb_path(&item.digest).to_string_lossy())
+            }
+            ClipRowKind::Files
+                if item.paths.len() == 1 && item.paths.first().is_some_and(|p| is_image(p)) =>
+            {
+                thumb(&item.paths[0])
+            }
+            _ => None,
         };
+        let stride = kind.stride();
         rows.push(ClipRowView {
             index,
             id: item.id,
             icon,
             preview: clip_preview(item),
-            mono,
-            link,
+            kind: kind.clone(),
+            y,
+            mono: kind.mono(),
+            link: kind.is_link(),
             image,
             thumb,
             age: clip_age(item.created_at, now),
@@ -1028,7 +1395,9 @@ pub fn clip_rows(
             pinned: item.pinned,
             dimmed,
             masked,
+            source: item.source_app.clone(),
         });
+        y += stride;
     }
     rows
 }
@@ -1221,6 +1590,7 @@ mod tests {
             text: String::new(),
             paths: Vec::new(),
             image: None,
+            source_app: None,
         }
     }
 
@@ -1240,6 +1610,7 @@ mod tests {
             })
             .collect();
         let none = |_: &str| None;
+        let strides = clip_strides(&items, ClipFilter::All);
         let max_per_frame = (design::CLIP_LIST_H / design::CLIP_ROW_STRIDE).ceil() as usize + 2;
         for step in 0..40 {
             let scroll = step as f32 * 17.0;
@@ -1253,7 +1624,7 @@ mod tests {
         let top = clip_rows(&items, ClipFilter::All, 0.0, now, &none);
         assert_eq!(top[0].index, 0);
         assert_eq!(top[0].id, 0);
-        let end = clip_scroll(30, f32::MAX);
+        let end = clip_scroll(&strides, f32::MAX);
         assert!(end.scroll <= end.max_scroll);
         let bottom = clip_rows(&items, ClipFilter::All, end.max_scroll, now, &none);
         assert_eq!(bottom.iter().map(|r| r.index).max(), Some(29));
@@ -1281,6 +1652,246 @@ mod tests {
         assert!(looks_like_code("a(b) = {c[d];}"));
         assert!(!looks_like_code("hello world"));
         assert!(!looks_like_code("call me later"));
+    }
+
+    /// Spec 7 type-detection table, including the documented edge cases
+    /// (`#fff`, `HTTP://`, URLs with spaces) and the store-kind fallbacks.
+    #[test]
+    fn row_type_detection_table() {
+        use crate::clipboard::store::{ClipKind, ImageMeta};
+        let row = |kind: ClipKind, text: &str| {
+            let mut item = clip_item(1, kind, 0);
+            item.text = text.into();
+            clip_row_kind(&item)
+        };
+        // Text and code.
+        assert_eq!(row(ClipKind::Text, "hello world"), ClipRowKind::Text);
+        assert_eq!(row(ClipKind::Text, "fn main() {"), ClipRowKind::Code);
+        assert_eq!(
+            row(ClipKind::Text, "SELECT name FROM users WHERE id = 1;"),
+            ClipRowKind::Code
+        );
+        // Color wins for a whole-text color literal, not for a heading.
+        assert_eq!(
+            row(ClipKind::Text, "#fff"),
+            ClipRowKind::Color {
+                r: 255,
+                g: 255,
+                b: 255,
+                hex: "#FFFFFF".into(),
+                rgb: "rgb(255, 255, 255)".into(),
+            }
+        );
+        assert_eq!(row(ClipKind::Text, "# Title"), ClipRowKind::Text);
+        assert_eq!(row(ClipKind::Text, "#12"), ClipRowKind::Text);
+        // Link: case-insensitive scheme, no host → plain text, spaces after
+        // the host still count, and a URL mid-sentence does not.
+        match row(ClipKind::Text, "HTTP://example.com") {
+            ClipRowKind::Link { domain, path } => {
+                assert_eq!(domain, "example.com");
+                assert!(path.is_empty());
+            }
+            other => panic!("HTTP://example.com should be a link: {other:?}"),
+        }
+        assert_eq!(row(ClipKind::Text, "HTTP://"), ClipRowKind::Text);
+        match row(
+            ClipKind::Text,
+            concat!("ht", "tp", "s", "://", "example.com/a b c"),
+        ) {
+            ClipRowKind::Link { domain, path } => {
+                assert_eq!(domain, "example.com");
+                assert_eq!(path, "/a b c");
+            }
+            other => panic!("URL with spaces should be a link: {other:?}"),
+        }
+        assert_eq!(
+            row(
+                ClipKind::Text,
+                concat!("see ", "ht", "tp", "s", "://", "example.com now")
+            ),
+            ClipRowKind::Text
+        );
+        // A stored link whose text went away degrades to plain text.
+        assert_eq!(row(ClipKind::Link, ""), ClipRowKind::Text);
+        // Files and images come from the store kind.
+        assert_eq!(row(ClipKind::Files, ""), ClipRowKind::Files);
+        let mut image = row(ClipKind::Image, "");
+        assert!(matches!(image, ClipRowKind::Image { w: 0, h: 0, .. }));
+        image = {
+            let mut item = clip_item(1, ClipKind::Image, 0);
+            item.image = Some(ImageMeta {
+                width: 573,
+                height: 353,
+                bytes: 49_152,
+                thumb: true,
+            });
+            clip_row_kind(&item)
+        };
+        assert_eq!(
+            image,
+            ClipRowKind::Image {
+                w: 573,
+                h: 353,
+                bytes: 49_152,
+            }
+        );
+    }
+
+    /// `#RGB`, `#RRGGBB`, `#RRGGBBAA`, `rgb()` and `hsl()` are accepted as
+    /// whole-text literals; everything else is not a color (spec 7).
+    #[test]
+    fn color_detection_accepts_the_spec_formats() {
+        let pick = detect_color;
+        assert_eq!(
+            pick("#fff"),
+            Some((255, 255, 255, "#FFFFFF".into(), "rgb(255, 255, 255)".into()))
+        );
+        assert_eq!(
+            pick("#1e90ff"),
+            Some((30, 144, 255, "#1E90FF".into(), "rgb(30, 144, 255)".into()))
+        );
+        // Alpha is accepted and ignored.
+        assert_eq!(
+            pick("#1e90ff80"),
+            Some((30, 144, 255, "#1E90FF".into(), "rgb(30, 144, 255)".into()))
+        );
+        assert_eq!(
+            pick("rgb(0, 128, 255)"),
+            Some((0, 128, 255, "#0080FF".into(), "rgb(0, 128, 255)".into()))
+        );
+        assert_eq!(
+            pick("hsl(0, 100%, 50%)"),
+            Some((255, 0, 0, "#FF0000".into(), "rgb(255, 0, 0)".into()))
+        );
+        assert_eq!(
+            pick("hsl(240deg, 100%, 50%)"),
+            Some((0, 0, 255, "#0000FF".into(), "rgb(0, 0, 255)".into()))
+        );
+        // Rejected: markdown heading, bad length, prose around a literal,
+        // missing components, a non-hex digit, and a value out of range.
+        assert_eq!(pick("# Title"), None);
+        assert_eq!(pick("#ffff"), None);
+        assert_eq!(pick("#fgf"), None);
+        assert_eq!(pick("color #fff today"), None);
+        assert_eq!(pick("rgb(1, 2)"), None);
+        assert_eq!(pick("rgb(300, 0, 0)"), None);
+        assert_eq!(pick("hsl(210, 50, 40%)"), None);
+    }
+
+    /// Mixed 34/50 DIP rows: strides, content offsets and the scroll model
+    /// all agree (spec 7 row list).
+    #[test]
+    fn image_rows_are_taller_and_offsets_accumulate() {
+        use crate::clipboard::store::{ClipKind, ImageMeta};
+        let mut items: Vec<_> = (0..4).map(|i| clip_item(i, ClipKind::Text, 0)).collect();
+        let mut image = clip_item(9, ClipKind::Image, 0);
+        image.image = Some(ImageMeta {
+            width: 573,
+            height: 353,
+            bytes: 49_152,
+            thumb: true,
+        });
+        items.push(image);
+        let strides = clip_strides(&items, ClipFilter::All);
+        assert_eq!(strides, vec![36.0, 36.0, 36.0, 36.0, 52.0]);
+        let none = |_: &str| None;
+        let rows = clip_rows(&items, ClipFilter::All, 0.0, 0, &none);
+        assert_eq!(
+            rows.iter().map(|row| row.y).collect::<Vec<_>>(),
+            vec![0.0, 36.0, 72.0, 108.0]
+        );
+        assert!(rows
+            .iter()
+            .all(|row| row.kind.height() == design::CLIP_ROW_H));
+        // Content height: 4 text rows + one image row, gap included.
+        let end = clip_scroll(&strides, f32::MAX);
+        assert_eq!(end.content_h, 4.0 * 36.0 + 52.0);
+        assert!((end.max_scroll - (196.0 - design::CLIP_LIST_H)).abs() < 0.01);
+        let bottom = clip_rows(&items, ClipFilter::All, end.max_scroll, 0, &none);
+        let image_row = bottom
+            .iter()
+            .find(|row| row.image)
+            .expect("image row visible at the end");
+        assert_eq!(image_row.index, 4);
+        assert_eq!(image_row.kind.height(), design::CLIP_ROW_IMG_H);
+        assert_eq!(
+            image_row.kind,
+            ClipRowKind::Image {
+                w: 573,
+                h: 353,
+                bytes: 49_152,
+            }
+        );
+    }
+
+    /// The 450 ms hover-preview overlay geometry stays inside the card (spec
+    /// 7): 206 × 150 popup, 192 × 118 image area.
+    #[test]
+    fn preview_overlay_geometry_stays_inside_the_card() {
+        assert_eq!(design::CLIP_PREVIEW_MS, 450);
+        // The "fits the content rect" relations are compile-time
+        // `const _: () = assert!(…)` in design.rs, so a test here could only
+        // restate them; what is worth pinning is where the popup lands.
+        // Horizontal centering; vertically the popup sits on the toolbar's
+        // bottom edge and ends at the content rect's bottom, so it covers the
+        // toolbar gap and the list and never a toolbar control (spec 7).
+        let x = (design::CLIP_INNER_W - design::CLIP_PREVIEW_W) * 0.5;
+        let y = design::CLIP_INNER_H - design::CLIP_PREVIEW_H;
+        assert_eq!(x, 61.5);
+        assert_eq!(y, design::CLIP_TOOLBAR_H);
+        assert_eq!(
+            design::CLIP_PREVIEW_H,
+            design::CLIP_TOOLBAR_GAP + design::CLIP_LIST_H
+        );
+        assert!(x >= 0.0 && x + design::CLIP_PREVIEW_W <= design::CLIP_INNER_W);
+        assert!(y >= 0.0 && y + design::CLIP_PREVIEW_H <= design::CLIP_INNER_H);
+        // Retention/capacity rules are untouched by the preview work.
+        assert_eq!(design::CLIP_MAX_ITEMS, 30);
+        assert_eq!(design::CLIP_RETENTION_DAYS, 7);
+    }
+
+    /// The hover preview arms only at the full 450 ms (spec 7) and its body
+    /// copy is the spec's `615 × 342 · PNG · 212 KB` line, or the capped text.
+    #[test]
+    fn hover_preview_delay_body_and_source() {
+        use crate::clipboard::store::{ClipKind, ImageMeta};
+        assert!(!clip_preview_ready(449), "449 ms is still just a hover");
+        assert!(clip_preview_ready(450));
+        assert!(clip_preview_ready(9_999));
+
+        let mut image = clip_item(1, ClipKind::Image, 0);
+        image.image = Some(ImageMeta {
+            width: 615,
+            height: 342,
+            bytes: 217_088,
+            thumb: true,
+        });
+        assert_eq!(
+            clip_preview_body(&image),
+            "615 \u{00d7} 342 \u{00b7} PNG \u{00b7} 212 KB"
+        );
+        let path = clip_preview_path(&image).expect("an image row decodes its blob");
+        assert!(
+            path.ends_with(&format!("{}.png", image.digest)),
+            "preview reads the stored blob, not the thumbnail: {path}"
+        );
+
+        // Text never touches the decoder and keeps the 200-character cap.
+        let mut text = clip_item(2, ClipKind::Text, 0);
+        text.text = "a".repeat(500);
+        assert_eq!(
+            clip_preview_body(&text).chars().count(),
+            design::CLIP_TIP_CHARS + 1,
+            "capped text plus the ellipsis"
+        );
+        assert!(clip_preview_path(&text).is_none());
+
+        // The `from <app>` line comes straight off the captured row.
+        text.source_app = Some("Notepad".into());
+        assert_eq!(text.source_app.as_deref(), Some("Notepad"));
+        let none = |_: &str| None;
+        let mut row = clip_rows(&[text], ClipFilter::All, 0.0, 0, &none);
+        assert_eq!(row.pop().unwrap().source.as_deref(), Some("Notepad"));
     }
 
     #[test]

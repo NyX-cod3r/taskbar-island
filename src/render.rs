@@ -1685,8 +1685,10 @@ impl Painter {
         }
         unsafe { rt.PushAxisAlignedClip(&d2d_rect(list), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
         for row in &body.rows {
-            let y = list.y + row.index as f32 * design::CLIP_ROW_STRIDE - body.scroll;
-            let row_rect = RectD::new(list.x, y, list.w, design::CLIP_ROW_H);
+            // Rows are not a fixed stride (image rows are taller), so each row
+            // carries its content-space offset (spec 7).
+            let y = list.y + row.y - body.scroll;
+            let row_rect = RectD::new(list.x, y, list.w, row.kind.height());
             // The row hit goes in first: `HitMap::hit` scans in reverse, so the
             // action buttons added below have to come after it or every click
             // would resolve to the row (the shelf adds tile then remove the
@@ -1708,22 +1710,87 @@ impl Painter {
                     design::CLIP_ROW_HOVER.with_alpha(alpha),
                 );
             }
-            // Image rows carry the spec's 24 x 18 thumbnail in the leading
-            // slot; every other row keeps the type glyph. A thumbnail that
-            // fails to load falls back to the glyph, so a row is never blank.
+            // Leading slot (spec 7): a 64 × 40 image thumbnail — natural size
+            // on a checkerboard when the image is smaller than the box,
+            // letterboxed cover when it is larger, never stretched — the small
+            // 24 × 18 slot for a single image file, a color swatch, or the
+            // type glyph. A thumbnail that fails to load falls back to the
+            // glyph, so a row is never blank.
+            let image_row = row.image;
+            let swatch = if let crate::view::ClipRowKind::Color { r, g, b, .. } = &row.kind {
+                Some(design::rgb(*r, *g, *b))
+            } else {
+                None
+            };
+            let (thumb_w, thumb_h) = if image_row {
+                (design::CLIP_ROW_THUMB_W, design::CLIP_ROW_THUMB_H)
+            } else {
+                (design::CLIP_THUMB_W, design::CLIP_THUMB_H)
+            };
             let thumb_rect = RectD::new(
                 row_rect.x + design::CLIP_ROW_PAD,
-                row_rect.y + (row_rect.h - design::CLIP_THUMB_H) * 0.5,
-                design::CLIP_THUMB_W,
-                design::CLIP_THUMB_H,
+                row_rect.y + (row_rect.h - thumb_h) * 0.5,
+                thumb_w,
+                thumb_h,
             );
-            let drew_thumb = row.thumb.as_ref().is_some_and(|art| {
+            let mut drew_thumb = false;
+            if let Some(art) = row.thumb.as_ref() {
                 let clip = rounded_layer(rt, thumb_rect, design::CLIP_ROW_R * 0.66);
-                let drawn = self.draw_thumb(rt, art, thumb_rect, alpha);
+                let natural =
+                    image_row && art.width as f32 <= thumb_w && art.height as f32 <= thumb_h;
+                if natural {
+                    // A 37 × 13 image must be obviously tiny: draw it at its
+                    // natural size over the checkerboard (spec 7).
+                    self.draw_checker(rt, thumb_rect, alpha);
+                    let (nw, nh) = (art.width as f32, art.height as f32);
+                    drew_thumb = self.draw_thumb(
+                        rt,
+                        art,
+                        RectD::new(
+                            thumb_rect.center_x() - nw * 0.5,
+                            thumb_rect.center_y() - nh * 0.5,
+                            nw,
+                            nh,
+                        ),
+                        alpha,
+                    );
+                } else {
+                    drew_thumb = self.draw_thumb(rt, art, thumb_rect, alpha);
+                }
                 drop_rounded_layer(rt, clip);
-                drawn
-            });
-            if !drew_thumb {
+            }
+            if !drew_thumb && image_row {
+                self.icon_center(
+                    rt,
+                    IconId::Image,
+                    thumb_rect,
+                    design::CLIP_GLYPH,
+                    theme.text_secondary().with_alpha(alpha),
+                    input.scale,
+                    design::ICON_STROKE,
+                );
+            } else if let Some(color) = swatch.filter(|_| !drew_thumb) {
+                // Color rows swap the glyph for the swatch; the ring keeps a
+                // near-white value readable on a light card (spec 7).
+                let ring = RectD::new(
+                    row_rect.x + design::CLIP_ROW_PAD,
+                    row_rect.y + (row_rect.h - 18.0) * 0.5,
+                    18.0,
+                    18.0,
+                );
+                self.fill_round(
+                    rt,
+                    ring,
+                    5.0,
+                    theme.text_tertiary().with_alpha(0.35 * alpha),
+                );
+                self.fill_round(
+                    rt,
+                    RectD::new(ring.x + 1.0, ring.y + 1.0, 16.0, 16.0),
+                    4.0,
+                    color.with_alpha(alpha),
+                );
+            } else if !drew_thumb {
                 self.icon_center(
                     rt,
                     row.icon,
@@ -1747,10 +1814,20 @@ impl Painter {
                     design::ICON_STROKE,
                 );
             }
-            let leading = if drew_thumb {
+            let leading = if image_row {
+                design::CLIP_ROW_THUMB_W + 6.0
+            } else if drew_thumb {
                 design::CLIP_THUMB_W + 6.0
+            } else if swatch.is_some() {
+                18.0 + 6.0
             } else {
                 design::CLIP_GLYPH_SLOT
+            };
+            // A pinned row keeps a small pin marker left of the age column.
+            let pin_w = if row.pinned && !active {
+                design::CLIP_PIN_MARK + design::CLIP_PIN_MARK_GAP
+            } else {
+                0.0
             };
             let age_w = if active {
                 design::CLIP_ACTION_BTN * 3.0 + design::CLIP_ACTION_GAP * 2.0
@@ -1760,7 +1837,8 @@ impl Painter {
             // Masked secrets read as bullets until the row is hovered or
             // focused (spec 3.6); revealing on hover is the whole point of the
             // "masked" state, so `active` decides, not just the focus ring.
-            let preview = if row.masked && !active {
+            let masked_now = row.masked && !active;
+            let preview = if masked_now {
                 MASKED_PREVIEW
             } else {
                 &row.preview
@@ -1768,41 +1846,164 @@ impl Painter {
             let preview_rect = RectD::new(
                 row_rect.x + design::CLIP_ROW_PAD + leading,
                 row_rect.y,
-                (row_rect.w - age_w - leading - design::CLIP_ROW_PAD * 2.0).max(0.0),
+                (row_rect.w - age_w - pin_w - leading - design::CLIP_ROW_PAD * 2.0).max(0.0),
                 row_rect.h,
             );
             let color =
                 theme
                     .text_primary()
                     .with_alpha(if row.dimmed { alpha * 0.4 } else { alpha });
-            // Code-like previews are set in Cascadia Mono (spec 3.2). Both
-            // branches trim: a copied paragraph is one unbroken line here, and
-            // without the ellipsis it paints straight under the age and the
-            // Pin/Copy/Delete cluster.
-            if row.mono {
-                self.text_family(
+            let muted =
+                theme
+                    .text_tertiary()
+                    .with_alpha(if row.dimmed { alpha * 0.4 } else { alpha });
+            match &row.kind {
+                // Image rows: bold dimensions over a muted `PNG · 48 KB`
+                // beside the thumbnail (spec 7).
+                crate::view::ClipRowKind::Image { w, h, bytes } if !masked_now => {
+                    let top = preview_rect.y + (preview_rect.h - design::LINE_HINT * 2.0) * 0.5;
+                    let dims = format!("{w} \u{00d7} {h}");
+                    let size_line = format!("PNG \u{00b7} {}", crate::view::fmt_size(*bytes));
+                    self.text(
+                        rt,
+                        &dims,
+                        RectD::new(preview_rect.x, top, preview_rect.w, design::LINE_HINT),
+                        design::FONT_BUTTON,
+                        600,
+                        0,
+                        design::LINE_HINT,
+                        color,
+                        false,
+                    );
+                    self.text(
+                        rt,
+                        &size_line,
+                        RectD::new(
+                            preview_rect.x,
+                            top + design::LINE_HINT,
+                            preview_rect.w,
+                            design::LINE_HINT,
+                        ),
+                        design::FONT_BUTTON,
+                        400,
+                        0,
+                        design::LINE_HINT,
+                        muted,
+                        true,
+                    );
+                }
+                // Color rows: `#RRGGBB` in mono, then the muted `rgb(…)` form.
+                crate::view::ClipRowKind::Color { hex, rgb, .. } if !masked_now => {
+                    let hw = self.text_family(
+                        rt,
+                        hex,
+                        preview_rect,
+                        design::FONT_BUTTON,
+                        500,
+                        0,
+                        design::LINE_HINT,
+                        color,
+                        false,
+                        FAMILY_MONO,
+                    );
+                    let mut rgb_rect = preview_rect;
+                    rgb_rect.x += hw + 6.0;
+                    rgb_rect.w = (preview_rect.w - hw - 6.0).max(0.0);
+                    self.text_family(
+                        rt,
+                        rgb,
+                        rgb_rect,
+                        design::FONT_BUTTON,
+                        400,
+                        0,
+                        design::LINE_HINT,
+                        muted,
+                        true,
+                        FAMILY_MONO,
+                    );
+                }
+                // Link rows: domain in the accent, the path muted after it.
+                crate::view::ClipRowKind::Link { domain, path } if !masked_now => {
+                    let link_color =
+                        design::CLIP_LINK.with_alpha(if row.dimmed { alpha * 0.4 } else { alpha });
+                    let dw = self.text(
+                        rt,
+                        domain,
+                        preview_rect,
+                        design::FONT_BUTTON,
+                        500,
+                        0,
+                        design::LINE_HINT,
+                        link_color,
+                        true,
+                    );
+                    if !path.is_empty() {
+                        let mut path_rect = preview_rect;
+                        path_rect.x += dw + 2.0;
+                        path_rect.w = (preview_rect.w - dw - 2.0).max(0.0);
+                        self.text(
+                            rt,
+                            path,
+                            path_rect,
+                            design::FONT_BUTTON,
+                            400,
+                            0,
+                            design::LINE_HINT,
+                            muted,
+                            true,
+                        );
+                    }
+                }
+                // Text/code/file rows: one trimmed line. Code-like previews
+                // are set in Cascadia Mono (spec 3.2); without the ellipsis a
+                // copied paragraph would paint straight under the age and the
+                // Pin/Copy/Delete cluster.
+                _ => {
+                    if row.mono {
+                        self.text_family(
+                            rt,
+                            preview,
+                            preview_rect,
+                            design::FONT_BUTTON,
+                            400,
+                            0,
+                            design::LINE_HINT,
+                            color,
+                            true,
+                            FAMILY_MONO,
+                        );
+                    } else {
+                        self.text(
+                            rt,
+                            preview,
+                            preview_rect,
+                            design::FONT_BUTTON,
+                            400,
+                            0,
+                            design::LINE_HINT,
+                            color,
+                            true,
+                        );
+                    }
+                }
+            }
+            if row.pinned && !active {
+                self.icon_center(
                     rt,
-                    preview,
-                    preview_rect,
-                    design::FONT_BUTTON,
-                    400,
-                    0,
-                    design::LINE_HINT,
-                    color,
-                    true,
-                    FAMILY_MONO,
-                );
-            } else {
-                self.text(
-                    rt,
-                    preview,
-                    preview_rect,
-                    design::FONT_BUTTON,
-                    400,
-                    0,
-                    design::LINE_HINT,
-                    color,
-                    true,
+                    IconId::Pin,
+                    RectD::new(
+                        row_rect.right()
+                            - design::CLIP_AGE_W
+                            - design::CLIP_PIN_MARK_GAP
+                            - design::CLIP_PIN_MARK,
+                        row_rect.y + (row_rect.h - design::CLIP_PIN_MARK) * 0.5,
+                        design::CLIP_PIN_MARK,
+                        design::CLIP_PIN_MARK,
+                    ),
+                    design::CLIP_PIN_MARK,
+                    theme.text_tertiary().with_alpha(alpha),
+                    input.scale,
+                    design::ICON_STROKE,
                 );
             }
             if active {
@@ -1878,6 +2079,160 @@ impl Painter {
                 theme.text_tertiary().with_alpha(0.55 * alpha),
             );
             hits.add(Element::ClipScrollbar, track, track.w * 0.5);
+        }
+        // The 450 ms hover preview (spec 7): a 206 × 150 panel, centered
+        // horizontally and seated on the toolbar's bottom edge so it covers
+        // the toolbar gap and the list and never leaves the card. Its hit
+        // maps back to the row it belongs to, which keeps the pointer "on"
+        // that row while the panel is up instead of dismissing it.
+        if let Some(preview) = &body.preview {
+            let card = RectD::new(
+                rect.x + (rect.w - design::CLIP_PREVIEW_W) * 0.5,
+                rect.y + rect.h - design::CLIP_PREVIEW_H,
+                design::CLIP_PREVIEW_W,
+                design::CLIP_PREVIEW_H,
+            );
+            hits.add(Element::ClipRow(preview.id), card, design::TOOLTIP_R);
+            self.draw_shadow(rt, card, theme, alpha);
+            // Everything inside the rounded panel is clipped to it, so no
+            // caption can paint over the card's edge.
+            let clip = rounded_layer(rt, card, design::TOOLTIP_R);
+            self.fill_round(
+                rt,
+                card,
+                design::TOOLTIP_R,
+                theme.fly_fill().set_alpha(alpha),
+            );
+            self.draw_clipboard_preview(rt, input, preview, card, alpha);
+            drop_rounded_layer(rt, clip);
+            self.stroke_round(
+                rt,
+                card,
+                design::TOOLTIP_R,
+                1.0,
+                theme.fly_border().with_alpha(alpha),
+                false,
+            );
+        }
+    }
+
+    /// Contents of the hover-preview panel: the 192 × 118 picture over its
+    /// caption for image rows, the full (≤ 200 character) text for everything
+    /// else, then the `from <app>` line (spec 7).
+    fn draw_clipboard_preview(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        preview: &crate::view::ClipPreviewView,
+        card: RectD,
+        alpha: f32,
+    ) {
+        let theme = input.theme;
+        // One 192 DIP column, horizontally centered, that picture and copy
+        // both align to (7 DIP of panel on either side).
+        let column_x = card.x + (card.w - design::CLIP_PREVIEW_IMG_W) * 0.5;
+        let column_w = design::CLIP_PREVIEW_IMG_W;
+        let source_h = if preview.source.is_some() {
+            design::CLIP_PREVIEW_SOURCE_H
+        } else {
+            0.0
+        };
+        let top = card.y + design::CLIP_PREVIEW_PAD;
+        let bottom = card.y + design::CLIP_PREVIEW_H - source_h;
+        if preview.image {
+            // Picture and caption are one block, centered in whatever the
+            // source line leaves: with a source line it lands exactly on the
+            // 6 DIP top pad (the bands fill the panel by construction).
+            let block = design::CLIP_PREVIEW_IMG_H + design::CLIP_PREVIEW_CAPTION_H;
+            let picture_y = top + ((bottom - top) - block).max(0.0) * 0.5;
+            let picture = RectD::new(column_x, picture_y, column_w, design::CLIP_PREVIEW_IMG_H);
+            self.draw_checker(rt, picture, alpha);
+            let drew = match preview.art.as_ref() {
+                Some(art) => {
+                    // Natural size over the checkerboard when the picture is
+                    // smaller than the box, cover-crop when it is larger —
+                    // never stretched (spec 7).
+                    let (aw, ah) = (art.width as f32, art.height as f32);
+                    let (w, h) = if aw <= picture.w && ah <= picture.h {
+                        (aw, ah)
+                    } else {
+                        let scale = (picture.w / aw).min(picture.h / ah);
+                        (aw * scale, ah * scale)
+                    };
+                    self.draw_thumb(
+                        rt,
+                        art,
+                        RectD::new(
+                            picture.center_x() - w * 0.5,
+                            picture.center_y() - h * 0.5,
+                            w,
+                            h,
+                        ),
+                        alpha,
+                    )
+                }
+                // Still decoding: the caption carries the row meanwhile, so
+                // the panel is never blank.
+                None => false,
+            };
+            if !drew {
+                self.icon_center(
+                    rt,
+                    IconId::Image,
+                    picture,
+                    design::CLIP_GLYPH,
+                    theme.text_tertiary().with_alpha(alpha),
+                    input.scale,
+                    design::ICON_STROKE,
+                );
+            }
+            self.text(
+                rt,
+                &preview.body,
+                RectD::new(
+                    column_x,
+                    picture_y + design::CLIP_PREVIEW_IMG_H,
+                    column_w,
+                    design::CLIP_PREVIEW_CAPTION_H,
+                ),
+                design::FONT_BUTTON,
+                500,
+                0,
+                design::LINE_HINT,
+                theme.text_primary().with_alpha(alpha),
+                true,
+            );
+        } else {
+            self.text_family(
+                rt,
+                &preview.body,
+                RectD::new(column_x, top, column_w, (bottom - top).max(0.0)),
+                design::FONT_BUTTON,
+                400,
+                0,
+                design::LINE_HINT,
+                theme.text_primary().with_alpha(alpha),
+                true,
+                if preview.mono { FAMILY_MONO } else { FAMILY_UI },
+            );
+        }
+        if let Some(source) = &preview.source {
+            self.text(
+                rt,
+                &format!("from {source}"),
+                RectD::new(
+                    column_x,
+                    card.y + design::CLIP_PREVIEW_H - design::CLIP_PREVIEW_SOURCE_H,
+                    column_w,
+                    design::CLIP_PREVIEW_SOURCE_H,
+                ),
+                design::FONT_HINT,
+                400,
+                0,
+                design::CLIP_PREVIEW_SOURCE_H,
+                theme.text_tertiary().with_alpha(alpha),
+                true,
+            );
         }
     }
 
@@ -3164,6 +3519,31 @@ impl Painter {
 
     /// Cover-crops a cached thumbnail into a tile. Returns false when the
     /// bitmap could not be created so the caller can draw the type chip.
+    /// Light checkerboard under an image that renders at its natural size, so
+    /// the empty area of the 64 × 40 slot reads as "small image" (spec 7).
+    fn draw_checker(&mut self, rt: &ID2D1RenderTarget, r: RectD, alpha: f32) {
+        let cell = design::CLIP_CHECKER;
+        if cell <= 0.0 || r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        unsafe { rt.PushAxisAlignedClip(&d2d_rect(r), D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
+        let rows = (r.h / cell).ceil() as usize + 1;
+        let cols = (r.w / cell).ceil() as usize + 1;
+        for row in 0..rows {
+            for col in 0..cols {
+                let square =
+                    RectD::new(r.x + col as f32 * cell, r.y + row as f32 * cell, cell, cell);
+                let color = if (row + col) % 2 == 0 {
+                    design::CLIP_CHECKER_A
+                } else {
+                    design::CLIP_CHECKER_B
+                };
+                self.fill_rect(rt, square, color.with_alpha(alpha));
+            }
+        }
+        unsafe { rt.PopAxisAlignedClip() };
+    }
+
     fn draw_thumb(&mut self, rt: &ID2D1RenderTarget, art: &AlbumArt, r: RectD, alpha: f32) -> bool {
         let Some(bitmap) = self.art_bitmap(rt, art) else {
             return false;
