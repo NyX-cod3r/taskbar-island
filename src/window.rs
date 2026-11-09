@@ -318,7 +318,6 @@ impl ConvertSession {
             ProbeKind::CloudPending => "Not downloaded yet",
             ProbeKind::TooLarge { .. } => "File is too large",
             ProbeKind::Folder => "That's a folder",
-            ProbeKind::Pdf => "PDF input isn't supported",
             ProbeKind::Missing => "File not found",
             _ => "Unsupported file",
         };
@@ -5303,6 +5302,11 @@ fn file_kind(probe: &Probe) -> FileKind {
         ProbeKind::Video(_) => FileKind::Video,
         ProbeKind::Audio(_) => FileKind::Audio,
         ProbeKind::Document(_) => FileKind::Document,
+        ProbeKind::Pdf => FileKind::Pdf,
+        ProbeKind::Sheet(_) => FileKind::Spreadsheet,
+        ProbeKind::Present(_) => FileKind::Presentation,
+        // A ZIP archive opens the Document card (§2.9).
+        ProbeKind::Zip => FileKind::Document,
         _ => FileKind::Other,
     }
 }
@@ -5328,13 +5332,7 @@ fn source_kinds(session: &ConvertSession) -> Vec<SourceKind> {
         .convertible
         .iter()
         .filter_map(|index| session.probes.get(*index))
-        .filter_map(|probe| match &probe.kind {
-            ProbeKind::Image(info) => info.format.image_format().map(SourceKind::Image),
-            ProbeKind::Video(format) => format.video_format().map(SourceKind::Video),
-            ProbeKind::Audio(format) => format.audio_format().map(SourceKind::Audio),
-            ProbeKind::Document(format) => format.document_format().map(SourceKind::Document),
-            _ => None,
-        })
+        .filter_map(|probe| SourceKind::from_source(probe.format()))
         .collect()
 }
 

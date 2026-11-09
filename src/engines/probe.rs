@@ -1,4 +1,4 @@
-//! probe.rs — locating and probing the three external engines.
+//! probe.rs — locating and probing the external engines.
 //!
 //! Probes run hidden, without a shell, with an argv array and a private
 //! working directory. Their output is bounded before it is parsed; the
@@ -43,14 +43,60 @@ pub fn lower_thread_priority() {
 
 // ------------------------------------------------------------- locations
 
+/// Documented locations per engine, most specific first (docs/engines.md).
+/// Forward slashes are separators on Windows too.
+const fn engine_paths(id: EngineId) -> &'static [&'static str] {
+    match id {
+        EngineId::Native => &[],
+        EngineId::Ffmpeg => &["ffmpeg/bin/ffmpeg.exe"],
+        EngineId::Pandoc => &["pandoc/pandoc.exe"],
+        EngineId::Tesseract => &["tesseract/tesseract.exe"],
+        EngineId::LibreOffice => &["libreoffice/program/soffice.exe"],
+        // The Windows build ships every tool in one folder; either name in
+        // the layout table is accepted, siblings live next to it.
+        EngineId::Poppler => &[
+            "poppler/Library/bin/pdftotext.exe",
+            "poppler/bin/pdftotext.exe",
+        ],
+        EngineId::Qpdf => &["qpdf/bin/qpdf.exe"],
+        EngineId::Ghostscript => &["ghostscript/bin/gswin64c.exe"],
+    }
+}
+
+/// Tolerant search for one engine executable (docs/engines.md): the exact
+/// documented layout first, then the same layout inside one wrapper folder
+/// (a portable archive extracted with a top-level directory). Returns `None`
+/// when nothing matches — an absent engine hides its options, it is never an
+/// error.
 pub fn locate_engine(dir: &Path, id: EngineId) -> Option<PathBuf> {
-    let exe = match id {
-        EngineId::Native => return None,
-        EngineId::Ffmpeg => dir.join("ffmpeg").join("bin").join("ffmpeg.exe"),
-        EngineId::Pandoc => dir.join("pandoc").join("pandoc.exe"),
-        EngineId::Tesseract => dir.join("tesseract").join("tesseract.exe"),
-    };
-    exe.is_file().then_some(exe)
+    let paths = engine_paths(id);
+    if paths.is_empty() {
+        return None;
+    }
+    for relative in paths {
+        let direct = dir.join(relative);
+        if direct.is_file() {
+            return Some(direct);
+        }
+    }
+    let mut wrappers: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    // read_dir order is OS-defined; sort so a machine with several wrapper
+    // candidates always resolves to the same one.
+    wrappers.sort();
+    for wrapper in wrappers {
+        for relative in paths {
+            let nested = wrapper.join(relative);
+            if nested.is_file() {
+                return Some(nested);
+            }
+        }
+    }
+    None
 }
 
 pub fn fingerprint(path: &Path) -> Option<Fingerprint> {
@@ -183,6 +229,10 @@ pub(crate) fn probe_external(id: EngineId, exe: &Path) -> Result<EngineCapabilit
         EngineId::Ffmpeg => probe_ffmpeg(exe),
         EngineId::Pandoc => probe_pandoc(exe),
         EngineId::Tesseract => probe_tesseract(exe),
+        EngineId::LibreOffice => probe_libreoffice(exe),
+        EngineId::Poppler => probe_poppler(exe),
+        EngineId::Qpdf => probe_version(exe, "qpdf"),
+        EngineId::Ghostscript => probe_version(exe, "Ghostscript"),
         EngineId::Native => Ok(native_capabilities()),
     }
 }
@@ -235,6 +285,61 @@ fn probe_tesseract(exe: &Path) -> Result<EngineCapabilities, EngineError> {
     };
     capabilities.ocr_languages = parse_tesseract_langs(&langs.stdout);
     Ok(capabilities)
+}
+
+/// `soffice --version` answers on stdout; the format lists are fixed because
+/// the router only asks "is it installed" for office conversions (B3 passes
+/// the concrete filter names on the command line).
+fn probe_libreoffice(exe: &Path) -> Result<EngineCapabilities, EngineError> {
+    let version = capture(exe, &["--version"])?;
+    Ok(EngineCapabilities {
+        installed: true,
+        version: Some(
+            first_line(&version.stdout)
+                .unwrap_or("LibreOffice")
+                .to_owned(),
+        ),
+        documents_in: DocumentFormat::ALL.to_vec(),
+        // Writer/Calc/Impress write these (PDF and legacy DOC included);
+        // Markdown, EPUB and LaTeX are Pandoc's job.
+        documents_out: vec![
+            DocumentFormat::Docx,
+            DocumentFormat::Odt,
+            DocumentFormat::Html,
+            DocumentFormat::Txt,
+            DocumentFormat::Rtf,
+            DocumentFormat::Pdf,
+            DocumentFormat::Doc,
+        ],
+        ..EngineCapabilities::default()
+    })
+}
+
+/// `pdftotext -v` reports on stderr and exits 0; every Poppler tool in the
+/// folder is the same build, so one version line proves the set.
+fn probe_poppler(exe: &Path) -> Result<EngineCapabilities, EngineError> {
+    let version = capture(exe, &["-v"])?;
+    Ok(EngineCapabilities {
+        installed: true,
+        version: Some(
+            first_line(&version.stdout)
+                .or_else(|| first_line(&version.stderr))
+                .unwrap_or("Poppler")
+                .to_owned(),
+        ),
+        ..EngineCapabilities::default()
+    })
+}
+
+/// qpdf and Ghostscript both answer `--version` on stdout with nothing else
+/// to derive, so one builder covers them.
+fn probe_version(exe: &Path, fallback: &str) -> Result<EngineCapabilities, EngineError> {
+    let version = capture(exe, &["--version"])?;
+    Ok(EngineCapabilities {
+        installed: true,
+        version: Some(first_line(&version.stdout).unwrap_or(fallback).to_owned()),
+        ..EngineCapabilities::default()
+    })
 }
 
 // ------------------------------------------------------------ derivation
@@ -733,6 +838,22 @@ Decoders:
         assert!(caps.installed(EngineId::Ffmpeg));
         assert!(caps.installed(EngineId::Pandoc));
         assert!(caps.installed(EngineId::Tesseract));
+        // The four v0.8 engines are optional; absent ones report not
+        // installed instead of failing the probe.
+        for id in [
+            EngineId::LibreOffice,
+            EngineId::Poppler,
+            EngineId::Qpdf,
+            EngineId::Ghostscript,
+        ] {
+            let engine = caps.get(id);
+            println!(
+                "{}: installed={} version={:?}",
+                id.name().unwrap_or("?"),
+                engine.installed,
+                engine.version
+            );
+        }
     }
 
     #[test]
@@ -745,5 +866,79 @@ Decoders:
             "List of available languages in \"C:\\engines\\tessdata/\" (0):\n"
         )
         .is_empty());
+    }
+
+    /// Unique per-run scratch: tests never delete anything, so reusing a
+    /// folder would make the layout assertions depend on earlier runs.
+    fn scratch(name: &str) -> PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "taskbar-island-resolver-{name}-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn dummy(dir: &Path, relative: &str) {
+        let path = dir.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"").unwrap();
+    }
+
+    /// Test 8: every engine resolves in the documented layout (exact, its
+    /// own sub-folder nesting, and one wrapper folder); absent ⇒ None.
+    #[test]
+    fn the_resolver_finds_every_engine_in_the_documented_layouts() {
+        const LAYOUTS: &[(EngineId, &str)] = &[
+            (EngineId::Ffmpeg, "ffmpeg/bin/ffmpeg.exe"),
+            (EngineId::Pandoc, "pandoc/pandoc.exe"),
+            (EngineId::Tesseract, "tesseract/tesseract.exe"),
+            (EngineId::LibreOffice, "libreoffice/program/soffice.exe"),
+            (EngineId::Poppler, "poppler/Library/bin/pdftotext.exe"),
+            (EngineId::Qpdf, "qpdf/bin/qpdf.exe"),
+            (EngineId::Ghostscript, "ghostscript/bin/gswin64c.exe"),
+        ];
+        for (id, layout) in LAYOUTS {
+            // Exact: as documented, including the engine's own nesting.
+            let exact = scratch("exact");
+            dummy(&exact, layout);
+            assert_eq!(locate_engine(&exact, *id), Some(exe(&exact, layout)));
+
+            // Wrapper: one extra top-level folder around the same layout.
+            let wrapped = scratch("wrapped");
+            dummy(&wrapped.join("wrapper"), layout);
+            assert_eq!(
+                locate_engine(&wrapped, *id),
+                Some(exe(&wrapped.join("wrapper"), layout))
+            );
+
+            // Absent: an empty root resolves to nothing, never an error.
+            let empty = scratch("empty");
+            assert_eq!(locate_engine(&empty, *id), None);
+        }
+        // Native has no executable, wrapper folder or not.
+        let root = scratch("native");
+        dummy(&root, "ffmpeg/bin/ffmpeg.exe");
+        assert_eq!(locate_engine(&root, EngineId::Native), None);
+    }
+
+    fn exe(root: &Path, relative: &str) -> PathBuf {
+        root.join(relative)
+    }
+
+    /// Poppler's alternate documented folder (`bin` instead of `Library\bin`)
+    /// is accepted too.
+    #[test]
+    fn poppler_resolves_in_either_documented_folder() {
+        let root = scratch("poppler-bin");
+        dummy(&root, "poppler/bin/pdftotext.exe");
+        assert_eq!(
+            locate_engine(&root, EngineId::Poppler),
+            Some(root.join("poppler/bin/pdftotext.exe"))
+        );
     }
 }

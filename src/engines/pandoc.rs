@@ -176,12 +176,15 @@ fn plan(
     job: &Job,
 ) -> Result<Vec<OsString>, EngineError> {
     let input_format = input_name(source).ok_or(EngineError::Unsupported)?;
+    // Pandoc has no PDF or legacy DOC *writer* (PDF goes through an external
+    // engine, DOC through LibreOffice); refuse instead of mislabelling output.
+    let output_format = output_name(target).ok_or(EngineError::Unsupported)?;
     Ok(vec![
         "--sandbox".into(),
         "-f".into(),
         input_format.into(),
         "-t".into(),
-        output_name(target).into(),
+        output_format.into(),
         "-o".into(),
         argv_path(output),
         argv_path(&job.input),
@@ -212,8 +215,8 @@ fn input_name(source: SourceFormat) -> Option<&'static str> {
     }
 }
 
-fn output_name(format: DocumentFormat) -> &'static str {
-    match format {
+fn output_name(format: DocumentFormat) -> Option<&'static str> {
+    Some(match format {
         DocumentFormat::Docx => "docx",
         DocumentFormat::Odt => "odt",
         DocumentFormat::Markdown => "markdown",
@@ -222,7 +225,10 @@ fn output_name(format: DocumentFormat) -> &'static str {
         DocumentFormat::Epub => "epub",
         DocumentFormat::Rtf => "rtf",
         DocumentFormat::Tex => "latex",
-    }
+        // No Pandoc writer for these: PDF is an external engine's job and DOC
+        // is LibreOffice's. `plan` turns `None` into `Unsupported`.
+        DocumentFormat::Pdf | DocumentFormat::Doc => return None,
+    })
 }
 
 fn extension(format: DocumentFormat) -> &'static str {
@@ -286,9 +292,12 @@ mod tests {
     #[test]
     fn pandoc_format_names_match_the_probe() {
         assert_eq!(input_name(SourceFormat::Txt), Some("markdown"));
-        assert_eq!(output_name(DocumentFormat::Txt), "plain");
-        assert_eq!(output_name(DocumentFormat::Markdown), "markdown");
-        assert_eq!(output_name(DocumentFormat::Tex), "latex");
+        assert_eq!(output_name(DocumentFormat::Txt), Some("plain"));
+        assert_eq!(output_name(DocumentFormat::Markdown), Some("markdown"));
+        assert_eq!(output_name(DocumentFormat::Tex), Some("latex"));
+        // Pandoc cannot write these; the plan refuses them.
+        assert_eq!(output_name(DocumentFormat::Pdf), None);
+        assert_eq!(output_name(DocumentFormat::Doc), None);
     }
 
     #[test]

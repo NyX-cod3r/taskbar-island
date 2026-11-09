@@ -39,14 +39,22 @@ pub enum EngineId {
     Ffmpeg,
     Pandoc,
     Tesseract,
+    LibreOffice,
+    Poppler,
+    Qpdf,
+    Ghostscript,
 }
 
 impl EngineId {
-    pub const ALL: [EngineId; 4] = [
+    pub const ALL: [EngineId; 8] = [
         EngineId::Native,
         EngineId::Ffmpeg,
         EngineId::Pandoc,
         EngineId::Tesseract,
+        EngineId::LibreOffice,
+        EngineId::Poppler,
+        EngineId::Qpdf,
+        EngineId::Ghostscript,
     ];
 
     pub const fn index(self) -> usize {
@@ -55,6 +63,10 @@ impl EngineId {
             EngineId::Ffmpeg => 1,
             EngineId::Pandoc => 2,
             EngineId::Tesseract => 3,
+            EngineId::LibreOffice => 4,
+            EngineId::Poppler => 5,
+            EngineId::Qpdf => 6,
+            EngineId::Ghostscript => 7,
         }
     }
 
@@ -65,6 +77,10 @@ impl EngineId {
             EngineId::Ffmpeg => Some("FFmpeg"),
             EngineId::Pandoc => Some("Pandoc"),
             EngineId::Tesseract => Some("Tesseract"),
+            EngineId::LibreOffice => Some("LibreOffice"),
+            EngineId::Poppler => Some("Poppler"),
+            EngineId::Qpdf => Some("qpdf"),
+            EngineId::Ghostscript => Some("Ghostscript"),
         }
     }
 
@@ -84,6 +100,14 @@ pub enum FileKind {
     Video,
     Audio,
     Document,
+    /// PDF documents (v0.8): their own card with PDF tools.
+    Pdf,
+    /// Spreadsheets (XLSX, XLS, ODS, CSV, TSV).
+    Spreadsheet,
+    /// Presentations (PPTX, PPT, ODP).
+    Presentation,
+    /// Several selected files at once (2+): merge / zip / batch.
+    Multi,
     Other,
 }
 
@@ -136,10 +160,16 @@ pub enum DocumentFormat {
     Epub,
     Rtf,
     Tex,
+    /// "Convert to PDF" from a document (v0.8). LibreOffice writes it; it
+    /// lives here rather than in `ImageFormat` because the source is a
+    /// document, not a raster.
+    Pdf,
+    /// Legacy binary Word (v0.8); LibreOffice converts it.
+    Doc,
 }
 
 impl DocumentFormat {
-    pub const ALL: [DocumentFormat; 8] = [
+    pub const ALL: [DocumentFormat; 10] = [
         DocumentFormat::Docx,
         DocumentFormat::Odt,
         DocumentFormat::Markdown,
@@ -148,6 +178,8 @@ impl DocumentFormat {
         DocumentFormat::Epub,
         DocumentFormat::Rtf,
         DocumentFormat::Tex,
+        DocumentFormat::Pdf,
+        DocumentFormat::Doc,
     ];
 }
 
@@ -169,6 +201,98 @@ pub enum Action {
     AudioOptimize(AudioOptimize),
     DocumentConvert(DocumentFormat),
     DocumentExtract(DocumentExtract),
+    /// PDF file → another format (v0.8).
+    PdfConvert(PdfTarget),
+    /// The PDF tools tab (v0.8).
+    PdfTool(PdfTool),
+    /// Text/image extraction from a PDF (v0.8).
+    PdfExtract(PdfExtract),
+    /// Spreadsheet → another format (v0.8).
+    SheetConvert(SheetFormat),
+    /// Presentation → another format (v0.8).
+    PresentConvert(PresentFormat),
+    /// Several files at once: merge, zip, batch (v0.8).
+    Multi(MultiOp),
+    /// ZIP archive operations (v0.8).
+    Zip(ZipOp),
+}
+
+/// Targets of "convert this PDF to …".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PdfTarget {
+    Docx,
+    Odt,
+    Txt,
+    Markdown,
+    Png,
+    Jpeg,
+}
+
+/// The PDF tools tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PdfTool {
+    Compress,
+    RotateLeft,
+    RotateRight,
+    Split,
+    Merge,
+    Searchable,
+    OptimizeWeb,
+}
+
+/// Extraction actions on a PDF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PdfExtract {
+    /// `pdftotext` → clipboard.
+    CopyText,
+    /// `pdftotext` → `.txt`.
+    Text,
+    /// `pdfimages -all`.
+    Images,
+    /// One page → PNG.
+    PagePng,
+}
+
+/// Targets of "convert this spreadsheet to …".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SheetFormat {
+    Pdf,
+    Csv,
+    Xlsx,
+    Ods,
+    Html,
+    Xls,
+    Tsv,
+    /// CSV → JSON, built into the Native engine.
+    Json,
+}
+
+/// Targets of "convert this presentation to …".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PresentFormat {
+    Pdf,
+    Pptx,
+    Ppt,
+    Odp,
+    /// Slides → PNG (LibreOffice → Poppler chain).
+    Png,
+}
+
+/// Operations over a multi-file selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MultiOp {
+    MergePdf,
+    Zip,
+    BatchConvert,
+    BatchResize,
+    BatchCompress,
+    BatchStripMetadata,
+}
+
+/// Operations on a ZIP archive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ZipOp {
+    ExtractHere,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -210,6 +334,8 @@ pub enum VideoOptimize {
     /// Long-edge cap in pixels.
     Height(u32),
     Mute,
+    /// Stream-copy into a fresh container without re-encoding (§2.3).
+    Remux,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -300,7 +426,7 @@ impl EngineCapabilities {
 /// UI to hold a snapshot of the table it was built from.
 #[derive(Debug, Clone, Default)]
 pub struct CapabilityTable {
-    slots: [EngineCapabilities; 4],
+    slots: [EngineCapabilities; 8],
 }
 
 impl CapabilityTable {
@@ -440,7 +566,7 @@ pub trait Engine: Send + Sync {
 /// conversion never holds the engine lock while it runs.
 #[derive(Debug, Clone, Default)]
 pub struct EnginePaths {
-    slots: [Option<PathBuf>; 4],
+    slots: [Option<PathBuf>; 8],
 }
 
 impl EnginePaths {
@@ -468,7 +594,13 @@ pub fn run_external(
         EngineId::Ffmpeg => ffmpeg::run(exe, job, progress, cancel),
         EngineId::Pandoc => pandoc::run(exe, job, progress, cancel),
         EngineId::Tesseract => tesseract::run(exe, helper, job, progress, cancel),
-        EngineId::Native => Err(EngineError::Unsupported),
+        // The v0.8 engines run as pipeline steps (jobs.rs `Step`), not as a
+        // whole-job runner; their argv builders land with B3.
+        EngineId::LibreOffice
+        | EngineId::Poppler
+        | EngineId::Qpdf
+        | EngineId::Ghostscript
+        | EngineId::Native => Err(EngineError::Unsupported),
     }
 }
 
@@ -501,8 +633,8 @@ pub struct EngineSet {
     dir: PathBuf,
     engines: Vec<(EngineId, Box<dyn Engine>)>,
     capabilities: CapabilityTable,
-    locations: [Option<PathBuf>; 4],
-    fingerprints: [Option<probe::Fingerprint>; 4],
+    locations: [Option<PathBuf>; 8],
+    fingerprints: [Option<probe::Fingerprint>; 8],
 }
 
 impl EngineSet {
@@ -674,6 +806,21 @@ mod tests {
     fn engine_names_only_expose_external_tools() {
         assert_eq!(EngineId::Native.name(), None);
         assert_eq!(EngineId::Ffmpeg.name(), Some("FFmpeg"));
+        assert_eq!(EngineId::LibreOffice.name(), Some("LibreOffice"));
+        assert_eq!(EngineId::Poppler.name(), Some("Poppler"));
+        assert_eq!(EngineId::Qpdf.name(), Some("qpdf"));
+        assert_eq!(EngineId::Ghostscript.name(), Some("Ghostscript"));
+    }
+
+    #[test]
+    fn every_engine_has_a_unique_slot() {
+        let mut seen = [false; 8];
+        for id in EngineId::ALL {
+            let index = id.index();
+            assert!(!seen[index], "{id:?} shares slot {index}");
+            seen[index] = true;
+        }
+        assert!(seen.iter().all(|filled| *filled));
     }
 
     #[test]

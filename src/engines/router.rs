@@ -6,8 +6,9 @@
 //! millisecond.
 
 use super::{
-    Action, CapabilityTable, DocumentFormat, EngineError, EngineId, FileKind, ImageFormat,
-    ImageOptimize, JobOutput, OcrOutput, VideoExtract, VideoFormat,
+    Action, CapabilityTable, DocumentFormat, DocumentFormat as Doc, EngineError, EngineId,
+    FileKind, ImageFormat, ImageOptimize, JobOutput, MultiOp, OcrOutput, PdfTarget, PdfTool,
+    PresentFormat, SheetFormat, VideoExtract, VideoFormat,
 };
 
 /// One automatic retry, exactly as the spec asks: the chosen engine, then the
@@ -111,21 +112,172 @@ pub fn route(kind: FileKind, action: Action, capabilities: &CapabilityTable) -> 
                 candidates.push(Candidate::new(EngineId::Ffmpeg, 0));
             }
         }
-        (FileKind::Document, Action::DocumentConvert(target)) => {
-            let pandoc = capabilities.get(EngineId::Pandoc);
-            if pandoc.installed && pandoc.can_write_document(target) {
-                candidates.push(Candidate::new(EngineId::Pandoc, 0));
+        (FileKind::Document, Action::DocumentConvert(target)) => match target {
+            // Word-processing outputs: LibreOffice is the engine of record
+            // (group A sources). Pandoc writes DOCX as well, so it stays as
+            // the one automatic retry for markup sources (group B).
+            Doc::Pdf | Doc::Doc | Doc::Docx => {
+                push_document(
+                    &mut candidates,
+                    capabilities,
+                    EngineId::LibreOffice,
+                    0,
+                    target,
+                );
+                if target == Doc::Docx {
+                    push_document(&mut candidates, capabilities, EngineId::Pandoc, 10, target);
+                }
+            }
+            other => push_document(&mut candidates, capabilities, EngineId::Pandoc, 0, other),
+        },
+        (FileKind::Document, Action::DocumentExtract(extract)) => match extract {
+            // Extracting embedded images is Native's unpack job (§2.2).
+            crate::engines::DocumentExtract::Images => {
+                push_installed(&mut candidates, capabilities, EngineId::Native, 0);
+            }
+            crate::engines::DocumentExtract::PlainText => {
+                push_document(&mut candidates, capabilities, EngineId::Pandoc, 0, Doc::Txt);
+            }
+        },
+        // A GIF source offers MP4 (§2.1); FFmpeg is the only engine for it.
+        (FileKind::Image, Action::VideoConvert(target)) => {
+            let ffmpeg = capabilities.get(EngineId::Ffmpeg);
+            if ffmpeg.installed && ffmpeg.can_write_video(target) {
+                candidates.push(Candidate::new(EngineId::Ffmpeg, 0));
             }
         }
-        (FileKind::Document, Action::DocumentExtract(_)) => {
-            let pandoc = capabilities.get(EngineId::Pandoc);
-            if pandoc.installed && !pandoc.documents_out.is_empty() {
-                candidates.push(Candidate::new(EngineId::Pandoc, 0));
+        (FileKind::Pdf, Action::PdfConvert(target)) => match target {
+            PdfTarget::Docx => push_document(
+                &mut candidates,
+                capabilities,
+                EngineId::LibreOffice,
+                0,
+                Doc::Docx,
+            ),
+            PdfTarget::Odt => push_document(
+                &mut candidates,
+                capabilities,
+                EngineId::LibreOffice,
+                0,
+                Doc::Odt,
+            ),
+            // Text, pages and the Markdown chain all start at Poppler; the
+            // Markdown chain's second engine (Pandoc) is a gate, exactly like
+            // image OCR → MD: the chain runs inside one job, it is not a
+            // retry.
+            PdfTarget::Txt => push_installed(&mut candidates, capabilities, EngineId::Poppler, 0),
+            PdfTarget::Markdown => {
+                if capabilities.installed(EngineId::Poppler)
+                    && capabilities.installed(EngineId::Pandoc)
+                {
+                    candidates.push(Candidate::new(EngineId::Poppler, 0));
+                }
             }
+            PdfTarget::Png | PdfTarget::Jpeg => {
+                push_installed(&mut candidates, capabilities, EngineId::Poppler, 0)
+            }
+        },
+        (FileKind::Pdf, Action::PdfTool(tool)) => match tool {
+            PdfTool::Compress => {
+                push_installed(&mut candidates, capabilities, EngineId::Ghostscript, 0)
+            }
+            PdfTool::RotateLeft | PdfTool::RotateRight => {
+                push_installed(&mut candidates, capabilities, EngineId::Qpdf, 0)
+            }
+            PdfTool::OptimizeWeb => {
+                push_installed(&mut candidates, capabilities, EngineId::Qpdf, 0)
+            }
+            // Poppler first, qpdf as the one automatic retry (§3).
+            PdfTool::Split | PdfTool::Merge => {
+                push_installed(&mut candidates, capabilities, EngineId::Poppler, 0);
+                push_installed(&mut candidates, capabilities, EngineId::Qpdf, 10);
+            }
+            // Rasterise with Poppler, OCR with Tesseract: both are needed, so
+            // Tesseract is a gate, not a retry.
+            PdfTool::Searchable => {
+                let tesseract = capabilities.get(EngineId::Tesseract);
+                if capabilities.installed(EngineId::Poppler)
+                    && tesseract.installed
+                    && tesseract.can_ocr()
+                {
+                    candidates.push(Candidate::new(EngineId::Poppler, 0));
+                }
+            }
+        },
+        (FileKind::Pdf, Action::PdfExtract(_)) => {
+            push_installed(&mut candidates, capabilities, EngineId::Poppler, 0);
+        }
+        (FileKind::Spreadsheet, Action::SheetConvert(target)) => {
+            if target == SheetFormat::Json {
+                // CSV → JSON is built into the Native engine (§2.4).
+                push_installed(&mut candidates, capabilities, EngineId::Native, 0);
+            } else {
+                push_installed(&mut candidates, capabilities, EngineId::LibreOffice, 0);
+            }
+        }
+        (FileKind::Presentation, Action::PresentConvert(target)) => {
+            if capabilities.installed(EngineId::LibreOffice) {
+                candidates.push(Candidate::new(EngineId::LibreOffice, 0));
+                // Slides → PNG is LibreOffice → Poppler: Poppler finishes the
+                // chain inside the same job, so it gates rather than retries.
+                if target == PresentFormat::Png && !capabilities.installed(EngineId::Poppler) {
+                    candidates.pop();
+                }
+            }
+        }
+        (FileKind::Multi, Action::Multi(op)) => match op {
+            // Images merge in Native, PDFs through Poppler, qpdf is the
+            // documented last resort (only reachable when Poppler is absent,
+            // because MAX_ATTEMPTS is 2).
+            MultiOp::MergePdf => {
+                push_installed(&mut candidates, capabilities, EngineId::Native, 0);
+                push_installed(&mut candidates, capabilities, EngineId::Poppler, 10);
+                push_installed(&mut candidates, capabilities, EngineId::Qpdf, 20);
+            }
+            // ZIP and batch jobs are Native's; a batch delegates each file
+            // back through this same router (§2.7).
+            MultiOp::Zip
+            | MultiOp::BatchConvert
+            | MultiOp::BatchResize
+            | MultiOp::BatchCompress
+            | MultiOp::BatchStripMetadata => {
+                push_installed(&mut candidates, capabilities, EngineId::Native, 0);
+            }
+        },
+        // A ZIP source opens one Extract tab with one Native tile (§2.9).
+        (FileKind::Document, Action::Zip(_)) => {
+            push_installed(&mut candidates, capabilities, EngineId::Native, 0);
         }
         _ => {}
     }
     candidates
+}
+
+/// One engine, when it is installed *and* reports the document writer.
+fn push_document(
+    candidates: &mut Vec<Candidate>,
+    capabilities: &CapabilityTable,
+    engine: EngineId,
+    cost: u8,
+    target: DocumentFormat,
+) {
+    let caps = capabilities.get(engine);
+    if caps.installed && caps.can_write_document(target) {
+        candidates.push(Candidate::new(engine, cost));
+    }
+}
+
+/// One engine, when it is installed (its capability is implied by the job
+/// class: Poppler always does Poppler jobs, qpdf does qpdf jobs).
+fn push_installed(
+    candidates: &mut Vec<Candidate>,
+    capabilities: &CapabilityTable,
+    engine: EngineId,
+    cost: u8,
+) {
+    if capabilities.installed(engine) {
+        candidates.push(Candidate::new(engine, cost));
+    }
 }
 
 fn push_image(
@@ -230,7 +382,8 @@ mod tests {
     use super::*;
     use crate::engines::probe::native_capabilities;
     use crate::engines::{
-        AudioFormat, AudioOptimize, CancelToken, EngineCapabilities, ImageEdit, VideoEdit,
+        AudioFormat, AudioOptimize, CancelToken, EngineCapabilities, ImageEdit, PdfExtract,
+        VideoEdit,
     };
 
     fn table() -> CapabilityTable {
@@ -300,6 +453,58 @@ mod tests {
         };
         table.set(EngineId::Tesseract, tesseract);
 
+        // The four v0.8 engines, at full capability (test 1's "fake engine"
+        // table): every option in TABLE must be routable against this.
+        table.set(
+            EngineId::LibreOffice,
+            EngineCapabilities {
+                installed: true,
+                version: Some("LibreOffice 25.2".into()),
+                documents_in: DocumentFormat::ALL.to_vec(),
+                documents_out: vec![
+                    DocumentFormat::Docx,
+                    DocumentFormat::Odt,
+                    DocumentFormat::Html,
+                    DocumentFormat::Txt,
+                    DocumentFormat::Rtf,
+                    DocumentFormat::Pdf,
+                    DocumentFormat::Doc,
+                ],
+                ..EngineCapabilities::default()
+            },
+        );
+        table.set(
+            EngineId::Poppler,
+            EngineCapabilities {
+                installed: true,
+                version: Some("poppler 24.08".into()),
+                ..EngineCapabilities::default()
+            },
+        );
+        table.set(
+            EngineId::Qpdf,
+            EngineCapabilities {
+                installed: true,
+                version: Some("qpdf 11.9".into()),
+                ..EngineCapabilities::default()
+            },
+        );
+        table.set(
+            EngineId::Ghostscript,
+            EngineCapabilities {
+                installed: true,
+                version: Some("Ghostscript 10.04".into()),
+                ..EngineCapabilities::default()
+            },
+        );
+
+        table
+    }
+
+    /// The full-capability table with one engine removed (test 5).
+    fn table_without(engine: EngineId) -> CapabilityTable {
+        let mut table = table();
+        table.set(engine, EngineCapabilities::default());
         table
     }
 
@@ -522,5 +727,330 @@ mod tests {
         let failure = result.expect_err("both candidates fail");
         assert_eq!(failure.attempts, 2);
         assert_eq!(failure.last_engine, Some(EngineId::Ffmpeg));
+    }
+
+    // ---------------------------------------------------- v0.8 routes (§3)
+
+    #[test]
+    fn pdf_converts_and_tools_follow_the_spec_chain() {
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfConvert(PdfTarget::Docx)),
+            vec![EngineId::LibreOffice]
+        );
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfConvert(PdfTarget::Odt)),
+            vec![EngineId::LibreOffice]
+        );
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfConvert(PdfTarget::Txt)),
+            vec![EngineId::Poppler]
+        );
+        // Markdown: Poppler is the candidate, Pandoc the chain gate.
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfConvert(PdfTarget::Markdown)),
+            vec![EngineId::Poppler]
+        );
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfConvert(PdfTarget::Png)),
+            vec![EngineId::Poppler]
+        );
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfConvert(PdfTarget::Jpeg)),
+            vec![EngineId::Poppler]
+        );
+
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfTool(PdfTool::Compress)),
+            vec![EngineId::Ghostscript]
+        );
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfTool(PdfTool::RotateLeft)),
+            vec![EngineId::Qpdf]
+        );
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfTool(PdfTool::OptimizeWeb)),
+            vec![EngineId::Qpdf]
+        );
+        // Split and merge: Poppler first, qpdf as the one automatic retry.
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfTool(PdfTool::Split)),
+            vec![EngineId::Poppler, EngineId::Qpdf]
+        );
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfTool(PdfTool::Merge)),
+            vec![EngineId::Poppler, EngineId::Qpdf]
+        );
+        // Searchable: Poppler candidate, Tesseract gate (chain, not retry).
+        assert_eq!(
+            engines(FileKind::Pdf, Action::PdfTool(PdfTool::Searchable)),
+            vec![EngineId::Poppler]
+        );
+
+        for extract in [
+            PdfExtract::CopyText,
+            PdfExtract::Text,
+            PdfExtract::Images,
+            PdfExtract::PagePng,
+        ] {
+            assert_eq!(
+                engines(FileKind::Pdf, Action::PdfExtract(extract)),
+                vec![EngineId::Poppler]
+            );
+        }
+    }
+
+    #[test]
+    fn documents_route_pdf_doc_and_docx_to_libreoffice() {
+        assert_eq!(
+            engines(
+                FileKind::Document,
+                Action::DocumentConvert(DocumentFormat::Pdf)
+            ),
+            vec![EngineId::LibreOffice]
+        );
+        assert_eq!(
+            engines(
+                FileKind::Document,
+                Action::DocumentConvert(DocumentFormat::Doc)
+            ),
+            vec![EngineId::LibreOffice]
+        );
+        // LibreOffice first, Pandoc as the single automatic retry.
+        assert_eq!(
+            engines(
+                FileKind::Document,
+                Action::DocumentConvert(DocumentFormat::Docx)
+            ),
+            vec![EngineId::LibreOffice, EngineId::Pandoc]
+        );
+        assert_eq!(
+            engines(
+                FileKind::Document,
+                Action::DocumentConvert(DocumentFormat::Markdown)
+            ),
+            vec![EngineId::Pandoc]
+        );
+        // Extract: images unpack in Native, text goes through Pandoc.
+        assert_eq!(
+            engines(
+                FileKind::Document,
+                Action::DocumentExtract(crate::engines::DocumentExtract::Images)
+            ),
+            vec![EngineId::Native]
+        );
+        assert_eq!(
+            engines(
+                FileKind::Document,
+                Action::DocumentExtract(crate::engines::DocumentExtract::PlainText)
+            ),
+            vec![EngineId::Pandoc]
+        );
+    }
+
+    #[test]
+    fn sheet_presentation_multi_and_zip_route_per_spec() {
+        // Everything but JSON is LibreOffice; JSON is built into Native.
+        for target in [
+            SheetFormat::Pdf,
+            SheetFormat::Csv,
+            SheetFormat::Xlsx,
+            SheetFormat::Ods,
+            SheetFormat::Html,
+            SheetFormat::Xls,
+            SheetFormat::Tsv,
+        ] {
+            assert_eq!(
+                engines(FileKind::Spreadsheet, Action::SheetConvert(target)),
+                vec![EngineId::LibreOffice]
+            );
+        }
+        assert_eq!(
+            engines(
+                FileKind::Spreadsheet,
+                Action::SheetConvert(SheetFormat::Json)
+            ),
+            vec![EngineId::Native]
+        );
+
+        for target in [
+            PresentFormat::Pdf,
+            PresentFormat::Pptx,
+            PresentFormat::Ppt,
+            PresentFormat::Odp,
+        ] {
+            assert_eq!(
+                engines(FileKind::Presentation, Action::PresentConvert(target)),
+                vec![EngineId::LibreOffice]
+            );
+        }
+        // PNG slides are a LibreOffice → Poppler chain: Poppler gates it.
+        assert_eq!(
+            engines(
+                FileKind::Presentation,
+                Action::PresentConvert(PresentFormat::Png)
+            ),
+            vec![EngineId::LibreOffice]
+        );
+
+        assert_eq!(
+            engines(FileKind::Multi, Action::Multi(MultiOp::MergePdf)),
+            vec![EngineId::Native, EngineId::Poppler, EngineId::Qpdf]
+        );
+        for op in [
+            MultiOp::Zip,
+            MultiOp::BatchConvert,
+            MultiOp::BatchResize,
+            MultiOp::BatchCompress,
+            MultiOp::BatchStripMetadata,
+        ] {
+            assert_eq!(
+                engines(FileKind::Multi, Action::Multi(op)),
+                vec![EngineId::Native]
+            );
+        }
+
+        assert_eq!(
+            engines(
+                FileKind::Document,
+                Action::Zip(crate::engines::ZipOp::ExtractHere)
+            ),
+            vec![EngineId::Native]
+        );
+    }
+
+    #[test]
+    fn gif_source_offers_mp4_through_ffmpeg() {
+        assert_eq!(
+            engines(FileKind::Image, Action::VideoConvert(VideoFormat::Mp4)),
+            vec![EngineId::Ffmpeg]
+        );
+        // Without FFmpeg the GIF→MP4 tile hides like every other FFmpeg job.
+        let mut no_ffmpeg = table();
+        no_ffmpeg.set(EngineId::Ffmpeg, EngineCapabilities::default());
+        assert!(route(
+            FileKind::Image,
+            Action::VideoConvert(VideoFormat::Mp4),
+            &no_ffmpeg
+        )
+        .is_empty());
+    }
+
+    /// Test 5: a missing engine hides exactly its own options.
+    #[test]
+    fn missing_v08_engines_hide_their_options() {
+        // No LibreOffice ⇒ PDF→DOCX/ODT, doc→PDF/DOC, every sheet and every
+        // presentation tile is gone.
+        let no_lo = table_without(EngineId::LibreOffice);
+        assert!(route(FileKind::Pdf, Action::PdfConvert(PdfTarget::Docx), &no_lo).is_empty());
+        assert!(route(FileKind::Pdf, Action::PdfConvert(PdfTarget::Odt), &no_lo).is_empty());
+        assert!(route(
+            FileKind::Document,
+            Action::DocumentConvert(DocumentFormat::Pdf),
+            &no_lo
+        )
+        .is_empty());
+        for target in [SheetFormat::Pdf, SheetFormat::Csv, SheetFormat::Xls] {
+            assert!(route(FileKind::Spreadsheet, Action::SheetConvert(target), &no_lo).is_empty());
+        }
+        for target in [PresentFormat::Pdf, PresentFormat::Pptx, PresentFormat::Png] {
+            assert!(route(
+                FileKind::Presentation,
+                Action::PresentConvert(target),
+                &no_lo
+            )
+            .is_empty());
+        }
+
+        // No Poppler ⇒ TXT, page raster, Markdown (gate) and every extract
+        // tile is gone; split/merge keep their qpdf retry.
+        let no_poppler = table_without(EngineId::Poppler);
+        for target in [
+            PdfTarget::Txt,
+            PdfTarget::Png,
+            PdfTarget::Jpeg,
+            PdfTarget::Markdown,
+        ] {
+            assert!(route(FileKind::Pdf, Action::PdfConvert(target), &no_poppler).is_empty());
+        }
+        for extract in [
+            PdfExtract::CopyText,
+            PdfExtract::Text,
+            PdfExtract::Images,
+            PdfExtract::PagePng,
+        ] {
+            assert!(route(FileKind::Pdf, Action::PdfExtract(extract), &no_poppler).is_empty());
+        }
+        assert_eq!(
+            route(FileKind::Pdf, Action::PdfTool(PdfTool::Split), &no_poppler)
+                .into_iter()
+                .map(|candidate| candidate.engine)
+                .collect::<Vec<_>>(),
+            vec![EngineId::Qpdf]
+        );
+
+        // No qpdf ⇒ rotate and linearize are gone.
+        let no_qpdf = table_without(EngineId::Qpdf);
+        for tool in [
+            PdfTool::RotateLeft,
+            PdfTool::RotateRight,
+            PdfTool::OptimizeWeb,
+        ] {
+            assert!(route(FileKind::Pdf, Action::PdfTool(tool), &no_qpdf).is_empty());
+        }
+
+        // No Ghostscript ⇒ compress is gone.
+        let no_gs = table_without(EngineId::Ghostscript);
+        assert!(route(FileKind::Pdf, Action::PdfTool(PdfTool::Compress), &no_gs).is_empty());
+
+        // No Tesseract ⇒ searchable (and image OCR) are gone.
+        let no_tesseract = table_without(EngineId::Tesseract);
+        assert!(route(
+            FileKind::Pdf,
+            Action::PdfTool(PdfTool::Searchable),
+            &no_tesseract
+        )
+        .is_empty());
+        assert!(route(
+            FileKind::Image,
+            Action::ImageOcr(OcrOutput::Txt),
+            &no_tesseract
+        )
+        .is_empty());
+    }
+
+    /// Test 6: every action class with more than one candidate retries on the
+    /// second one exactly once (MAX_ATTEMPTS).
+    #[test]
+    fn every_multi_candidate_class_retries_once() {
+        let classes: Vec<(FileKind, Action)> = vec![
+            (
+                FileKind::Document,
+                Action::DocumentConvert(DocumentFormat::Docx),
+            ),
+            (FileKind::Pdf, Action::PdfTool(PdfTool::Split)),
+            (FileKind::Pdf, Action::PdfTool(PdfTool::Merge)),
+            (FileKind::Multi, Action::Multi(MultiOp::MergePdf)),
+            (FileKind::Image, Action::ImageConvert(ImageFormat::Png)),
+        ];
+        for (kind, action) in classes {
+            let candidates = route(kind, action, &table());
+            assert!(
+                candidates.len() >= 2,
+                "{kind:?}/{action:?} should offer a retry candidate"
+            );
+            let result = run_with_fallback(&candidates, |_| {
+                Err::<(), _>(EngineError::Failed("broken".into()))
+            });
+            let failure = result.expect_err("every candidate fails");
+            assert_eq!(
+                failure.attempts, MAX_ATTEMPTS,
+                "{kind:?}/{action:?} must retry exactly once"
+            );
+            assert_eq!(
+                failure.last_engine,
+                Some(candidates[MAX_ATTEMPTS - 1].engine),
+                "{kind:?}/{action:?} must fail on its second candidate"
+            );
+        }
     }
 }

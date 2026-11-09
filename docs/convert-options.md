@@ -28,7 +28,7 @@ Grounded in the current v0.7 code (read-only, from the shared tree):
 | `FileKind` | Image, Video, Audio, Document, Other | + `Pdf`, `Spreadsheet`, `Presentation`, `Multi` (several selected files) |
 | `SourceFormat` | images incl. `Svg`/`Pdf`, video, audio, 8 document formats | + `Heic`, `Heif`, `Doc`, `Xls`, `Xlsx`, `Ods`, `Csv`, `Tsv`, `Ppt`, `Pptx`, `Odp`, `Zip` |
 | `Tab` | ConvertTo, Optimize, Edit, Extract, ExtractText | + `PdfTools`, `Combine` (labels exactly `PDF tools`, `Combine` per §9) |
-| `Action` | 12 image/video/audio/document groups | + `PdfConvert`, `PdfTool`, `PdfExtract`, `SheetConvert`, `PresentConvert`, `MultiAction`, `ZipAction` |
+| `Action` | 12 image/video/audio/document groups | + `PdfConvert`, `PdfTool`, `PdfExtract`, `SheetConvert`, `PresentConvert`, `Multi`, `Zip` |
 | `OptionDef` | kind/tab/action/format/icon/label | + `id: &'static str` (kebab, unique, used for UIA name + tests); availability stays router-driven |
 | Jobs | one process per job (`jobs.rs`) | `Vec<Step>` pipeline, one temp dir per job, one progress bar over all steps, cancel kills the process tree + removes the temp dir |
 | `locate_engine` | 3 fixed paths | tolerant search of known sub-folders per engine (see `docs/engines.md`) |

@@ -17,8 +17,9 @@ use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
 use crate::convert::detect::SourceFormat;
 
 use super::{
-    Action, AudioFormat, DocumentFormat, EngineError, ImageFormat, ImageOptimize, OcrOutput,
-    VideoExtract, VideoFormat,
+    Action, AudioFormat, DocumentFormat, EngineError, ImageFormat, ImageOptimize, MultiOp,
+    OcrOutput, PdfExtract, PdfTarget, PdfTool, PresentFormat, SheetFormat, VideoExtract,
+    VideoFormat,
 };
 
 /// The container a job will produce, independent of which engine runs it.
@@ -28,6 +29,9 @@ pub enum TargetFormat {
     Video(VideoFormat),
     Audio(AudioFormat),
     Document(DocumentFormat),
+    /// Spreadsheet outputs (CSV, XLSX, …) and presentation outputs (PPTX, …).
+    Sheet(SheetFormat),
+    Present(PresentFormat),
 }
 
 impl TargetFormat {
@@ -73,6 +77,25 @@ impl TargetFormat {
                 DocumentFormat::Epub => "epub",
                 DocumentFormat::Rtf => "rtf",
                 DocumentFormat::Tex => "tex",
+                DocumentFormat::Pdf => "pdf",
+                DocumentFormat::Doc => "doc",
+            },
+            TargetFormat::Sheet(format) => match format {
+                SheetFormat::Pdf => "pdf",
+                SheetFormat::Csv => "csv",
+                SheetFormat::Xlsx => "xlsx",
+                SheetFormat::Ods => "ods",
+                SheetFormat::Html => "html",
+                SheetFormat::Xls => "xls",
+                SheetFormat::Tsv => "tsv",
+                SheetFormat::Json => "json",
+            },
+            TargetFormat::Present(format) => match format {
+                PresentFormat::Pdf => "pdf",
+                PresentFormat::Pptx => "pptx",
+                PresentFormat::Ppt => "ppt",
+                PresentFormat::Odp => "odp",
+                PresentFormat::Png => "png",
             },
         }
     }
@@ -119,6 +142,25 @@ impl TargetFormat {
                 DocumentFormat::Epub => "EPUB",
                 DocumentFormat::Rtf => "RTF",
                 DocumentFormat::Tex => "TEX",
+                DocumentFormat::Pdf => "PDF",
+                DocumentFormat::Doc => "DOC",
+            },
+            TargetFormat::Sheet(format) => match format {
+                SheetFormat::Pdf => "PDF",
+                SheetFormat::Csv => "CSV",
+                SheetFormat::Xlsx => "XLSX",
+                SheetFormat::Ods => "ODS",
+                SheetFormat::Html => "HTML",
+                SheetFormat::Xls => "XLS",
+                SheetFormat::Tsv => "TSV",
+                SheetFormat::Json => "JSON",
+            },
+            TargetFormat::Present(format) => match format {
+                PresentFormat::Pdf => "PDF",
+                PresentFormat::Pptx => "PPTX",
+                PresentFormat::Ppt => "PPT",
+                PresentFormat::Odp => "ODP",
+                PresentFormat::Png => "PNG",
             },
         }
     }
@@ -158,6 +200,40 @@ pub fn target_for(action: Action, source: SourceFormat) -> Option<TargetFormat> 
             Some(TargetFormat::Document(DocumentFormat::Txt))
         }
         Action::DocumentExtract(_) => None,
+        Action::PdfConvert(target) => match target {
+            PdfTarget::Docx => Some(TargetFormat::Document(DocumentFormat::Docx)),
+            PdfTarget::Odt => Some(TargetFormat::Document(DocumentFormat::Odt)),
+            PdfTarget::Txt => Some(TargetFormat::Document(DocumentFormat::Txt)),
+            PdfTarget::Markdown => Some(TargetFormat::Document(DocumentFormat::Markdown)),
+            // Every page becomes a folder of images, not a single file.
+            PdfTarget::Png | PdfTarget::Jpeg => None,
+        },
+        Action::PdfTool(tool) => match tool {
+            // One output file per page.
+            PdfTool::Split => None,
+            // Compress / rotate / merge / searchable / linearize keep PDF.
+            _ => Some(TargetFormat::Image(ImageFormat::Pdf)),
+        },
+        Action::PdfExtract(extract) => match extract {
+            // Clipboard only, or a folder of images.
+            PdfExtract::CopyText | PdfExtract::Images => None,
+            PdfExtract::Text => Some(TargetFormat::Document(DocumentFormat::Txt)),
+            PdfExtract::PagePng => Some(TargetFormat::Image(ImageFormat::Png)),
+        },
+        Action::SheetConvert(target) => Some(TargetFormat::Sheet(target)),
+        Action::PresentConvert(target) => match target {
+            // Slides become a folder of PNGs.
+            PresentFormat::Png => None,
+            other => Some(TargetFormat::Present(other)),
+        },
+        Action::Multi(op) => match op {
+            MultiOp::MergePdf => Some(TargetFormat::Image(ImageFormat::Pdf)),
+            // ZIP and batch jobs deliver several files or per-file outputs
+            // (their own builders, B3).
+            _ => None,
+        },
+        // Extracts in place beside the archive; several files come out.
+        Action::Zip(_) => None,
     }
 }
 
@@ -522,6 +598,9 @@ fn engine_magic_ok(target: TargetFormat, head: &[u8]) -> bool {
                 head.starts_with(b"PK\x03\x04")
             }
             DocumentFormat::Rtf => head.starts_with(b"{\\rtf"),
+            DocumentFormat::Pdf => head.starts_with(b"%PDF-"),
+            // Legacy binary Word: the OLE compound-file header.
+            DocumentFormat::Doc => head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]),
             DocumentFormat::Markdown
             | DocumentFormat::Html
             | DocumentFormat::Txt
@@ -530,6 +609,21 @@ fn engine_magic_ok(target: TargetFormat, head: &[u8]) -> bool {
                 // a binary container are acceptable.
                 !head.is_empty()
             }
+        },
+        TargetFormat::Sheet(format) => match format {
+            SheetFormat::Pdf => head.starts_with(b"%PDF-"),
+            SheetFormat::Xlsx | SheetFormat::Ods => head.starts_with(b"PK\x03\x04"),
+            SheetFormat::Xls => head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]),
+            // Text containers have no magic.
+            SheetFormat::Csv | SheetFormat::Tsv | SheetFormat::Json | SheetFormat::Html => {
+                !head.is_empty()
+            }
+        },
+        TargetFormat::Present(format) => match format {
+            PresentFormat::Pdf => head.starts_with(b"%PDF-"),
+            PresentFormat::Pptx | PresentFormat::Odp => head.starts_with(b"PK\x03\x04"),
+            PresentFormat::Ppt => head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]),
+            PresentFormat::Png => head.starts_with(&[0x89, b'P', b'N', b'G']),
         },
     }
 }

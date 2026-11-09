@@ -265,9 +265,14 @@ pub fn plan(
         TargetFormat::Video(VideoFormat::Gif) => (MEDIA_TIMEOUT, false),
         TargetFormat::Video(_) | TargetFormat::Audio(_) => (
             MEDIA_TIMEOUT,
-            matches!(action, Action::VideoConvert(_)) && canvas_remux(source, target, media),
+            (matches!(action, Action::VideoConvert(_)) && canvas_remux(source, target, media))
+                // "Remux" is the stream-copy job itself: always copy.
+                || matches!(action, Action::VideoOptimize(VideoOptimize::Remux)),
         ),
-        TargetFormat::Document(_) => return None,
+        // Office formats are LibreOffice's job, never FFmpeg's.
+        TargetFormat::Document(_) | TargetFormat::Sheet(_) | TargetFormat::Present(_) => {
+            return None
+        }
     };
 
     if remux {
@@ -287,7 +292,9 @@ pub fn plan(
             }
             TargetFormat::Video(format) => video_args(&mut args, action, format, media),
             TargetFormat::Audio(format) => audio_args(&mut args, action, format),
-            TargetFormat::Document(_) => return None,
+            TargetFormat::Document(_) | TargetFormat::Sheet(_) | TargetFormat::Present(_) => {
+                return None
+            }
         }
     }
 
@@ -494,6 +501,9 @@ fn video_args(args: &mut Vec<OsString>, action: Action, format: VideoFormat, med
                 filters.push(format!("scale=-2:min(ih,{height}):flags=lanczos"));
             }
             VideoOptimize::Mute => mute = true,
+            // Remux takes the `-c copy` path in `plan()` and never reaches
+            // the filter/encoder branch.
+            VideoOptimize::Remux => {}
         },
         Action::VideoEdit(edit) => match edit {
             VideoEdit::RotateLeft => filters.push("transpose=2".into()),

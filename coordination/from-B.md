@@ -95,6 +95,23 @@
   symbol A's branch uses (`SwitchChip`, `draw_small_button`, `.launch`,
   `add_minute`) alive behind `allow(dead_code)` so the merge stays clean.
   Next: rebase this branch onto `release/v0.8.0`, then B1 code.
+- **2026-11-09** — **B1 code complete; gates green; commit + push of
+  `agent-b/v0.8.0` with this entry.** Everything in phase B1 landed: four-engine
+  resolver + capability probe, `Action` +7 groups, router entries with the
+  documented orders and one fallback retry, the full data-driven options table
+  (~48 new rows, all eight source kinds, group A/B targets, own-format hiding,
+  `tab_strip_hidden`), magic-byte detection for HEIC/HEIF, OLE2 legacy Office,
+  the ZIP family, CSV/TSV and a first-class PDF card, the `Step`/`run_pipeline`
+  pipeline model (equal-weight progress to 1.0, cancel ⇒ `EngineError::Cancelled`
+  with the temp dir dropped by `Workspace` RAII — no deletion call in the
+  conversion path), and the exact §9 tooltip copy including all three chains.
+  Gates: `cargo fmt --check` 0, `cargo clippy --all-targets -- -D warnings` 0,
+  `cargo test` **204 passed / 0 failed / 1 ignored** (denylist + security
+  scanners inside). Evidence and the missing-engine list for the owner:
+  `coordination/ready-B-1.md`; changelog fragment
+  `changelog.d/B-1-convert-foundation.md`. Next: B2 (`docs/CONTRACTS.md`
+  adoption of `card_content_rect()` — still needs A's file/artboards) after the
+  user-rule installer smoke.
 
 ## Blocked
 

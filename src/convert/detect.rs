@@ -59,6 +59,20 @@ pub enum SourceFormat {
     Epub,
     Rtf,
     Tex,
+    /// v0.8 sources: HEIF-family photos, legacy Office binaries, spreadsheets,
+    /// presentations and plain ZIP archives.
+    Heic,
+    Heif,
+    Doc,
+    Xls,
+    Xlsx,
+    Ods,
+    Csv,
+    Tsv,
+    Ppt,
+    Pptx,
+    Odp,
+    Zip,
     Unknown,
 }
 
@@ -99,6 +113,18 @@ impl SourceFormat {
             SourceFormat::Epub => "EPUB",
             SourceFormat::Rtf => "RTF",
             SourceFormat::Tex => "TEX",
+            SourceFormat::Heic => "HEIC",
+            SourceFormat::Heif => "HEIF",
+            SourceFormat::Doc => "DOC",
+            SourceFormat::Xls => "XLS",
+            SourceFormat::Xlsx => "XLSX",
+            SourceFormat::Ods => "ODS",
+            SourceFormat::Csv => "CSV",
+            SourceFormat::Tsv => "TSV",
+            SourceFormat::Ppt => "PPT",
+            SourceFormat::Pptx => "PPTX",
+            SourceFormat::Odp => "ODP",
+            SourceFormat::Zip => "ZIP",
             SourceFormat::Unknown => "FILE",
         }
     }
@@ -129,7 +155,16 @@ impl SourceFormat {
             | SourceFormat::Txt
             | SourceFormat::Epub
             | SourceFormat::Rtf
-            | SourceFormat::Tex => design::FILE_DOC,
+            | SourceFormat::Tex
+            | SourceFormat::Doc
+            | SourceFormat::Xls
+            | SourceFormat::Xlsx
+            | SourceFormat::Ods
+            | SourceFormat::Csv
+            | SourceFormat::Tsv
+            | SourceFormat::Ppt
+            | SourceFormat::Pptx
+            | SourceFormat::Odp => design::FILE_DOC,
             SourceFormat::Jpeg
             | SourceFormat::Png
             | SourceFormat::WebP
@@ -137,8 +172,11 @@ impl SourceFormat {
             | SourceFormat::Bmp
             | SourceFormat::Ico
             | SourceFormat::Tiff
-            | SourceFormat::Avif => design::FILE_IMAGE,
+            | SourceFormat::Avif
+            | SourceFormat::Heic
+            | SourceFormat::Heif => design::FILE_IMAGE,
             SourceFormat::Svg => design::FILE_IMAGE,
+            SourceFormat::Zip => design::BADGE_ARCHIVE,
             SourceFormat::Unknown => design::BADGE_OTHER,
         }
     }
@@ -169,6 +207,16 @@ impl SourceFormat {
             | SourceFormat::Epub
             | SourceFormat::Rtf
             | SourceFormat::Tex
+            | SourceFormat::Doc
+            | SourceFormat::Xls
+            | SourceFormat::Xlsx
+            | SourceFormat::Ods
+            | SourceFormat::Csv
+            | SourceFormat::Tsv
+            | SourceFormat::Ppt
+            | SourceFormat::Pptx
+            | SourceFormat::Odp
+            | SourceFormat::Zip
             | SourceFormat::Pdf => IconId::File,
             SourceFormat::Unknown => IconId::File,
             _ => IconId::Image,
@@ -243,6 +291,31 @@ impl SourceFormat {
             SourceFormat::Epub => Some(DocumentFormat::Epub),
             SourceFormat::Rtf => Some(DocumentFormat::Rtf),
             SourceFormat::Tex => Some(DocumentFormat::Tex),
+            SourceFormat::Doc => Some(DocumentFormat::Doc),
+            _ => None,
+        }
+    }
+
+    /// Spreadsheet sources map onto the sheet target enum (their shared
+    /// variants), so `SourceKind::Sheet` can name both sides.
+    pub fn sheet_format(self) -> Option<crate::engines::SheetFormat> {
+        use crate::engines::SheetFormat;
+        match self {
+            SourceFormat::Xlsx => Some(SheetFormat::Xlsx),
+            SourceFormat::Xls => Some(SheetFormat::Xls),
+            SourceFormat::Ods => Some(SheetFormat::Ods),
+            SourceFormat::Csv => Some(SheetFormat::Csv),
+            SourceFormat::Tsv => Some(SheetFormat::Tsv),
+            _ => None,
+        }
+    }
+
+    pub fn present_format(self) -> Option<crate::engines::PresentFormat> {
+        use crate::engines::PresentFormat;
+        match self {
+            SourceFormat::Pptx => Some(PresentFormat::Pptx),
+            SourceFormat::Ppt => Some(PresentFormat::Ppt),
+            SourceFormat::Odp => Some(PresentFormat::Odp),
             _ => None,
         }
     }
@@ -265,9 +338,19 @@ pub enum ProbeKind {
     Video(SourceFormat),
     Audio(SourceFormat),
     Document(SourceFormat),
-    Unsupported { reason: String },
+    /// Spreadsheet source (XLSX, XLS, ODS, CSV, TSV).
+    Sheet(SourceFormat),
+    /// Presentation source (PPTX, PPT, ODP).
+    Present(SourceFormat),
+    /// A ZIP archive: a Document-kind card with one Extract tile (§2.9).
+    Zip,
+    Unsupported {
+        reason: String,
+    },
     CloudPending,
-    TooLarge { reason: String },
+    TooLarge {
+        reason: String,
+    },
     Missing,
     Folder,
 }
@@ -280,6 +363,10 @@ impl ProbeKind {
                 | ProbeKind::Video(_)
                 | ProbeKind::Audio(_)
                 | ProbeKind::Document(_)
+                | ProbeKind::Pdf
+                | ProbeKind::Sheet(_)
+                | ProbeKind::Present(_)
+                | ProbeKind::Zip
         )
     }
 
@@ -290,8 +377,11 @@ impl ProbeKind {
             ProbeKind::Image(_)
             | ProbeKind::Video(_)
             | ProbeKind::Audio(_)
-            | ProbeKind::Document(_) => None,
-            ProbeKind::Pdf => Some("PDF pages can't be converted yet."),
+            | ProbeKind::Document(_)
+            | ProbeKind::Pdf
+            | ProbeKind::Sheet(_)
+            | ProbeKind::Present(_)
+            | ProbeKind::Zip => None,
             ProbeKind::Unsupported { reason } => Some(reason.as_str()),
             ProbeKind::CloudPending => Some("This file isn't downloaded on this PC yet."),
             ProbeKind::TooLarge { reason } => Some(reason.as_str()),
@@ -318,6 +408,8 @@ impl Probe {
             ProbeKind::Video(format) | ProbeKind::Audio(format) | ProbeKind::Document(format) => {
                 *format
             }
+            ProbeKind::Sheet(format) | ProbeKind::Present(format) => *format,
+            ProbeKind::Zip => SourceFormat::Zip,
             _ => SourceFormat::Unknown,
         }
     }
@@ -460,6 +552,7 @@ fn probe_inner(path: &str) -> (u64, ProbeKind) {
 impl SourceFormat {
     fn kind(self) -> ProbeKind {
         match self {
+            SourceFormat::Pdf => ProbeKind::Pdf,
             SourceFormat::Mp4
             | SourceFormat::Mkv
             | SourceFormat::WebM
@@ -483,7 +576,24 @@ impl SourceFormat {
             | SourceFormat::Txt
             | SourceFormat::Epub
             | SourceFormat::Rtf
-            | SourceFormat::Tex => ProbeKind::Document(self),
+            | SourceFormat::Tex
+            | SourceFormat::Doc => ProbeKind::Document(self),
+            SourceFormat::Xls
+            | SourceFormat::Xlsx
+            | SourceFormat::Ods
+            | SourceFormat::Csv
+            | SourceFormat::Tsv => ProbeKind::Sheet(self),
+            SourceFormat::Ppt | SourceFormat::Pptx | SourceFormat::Odp => ProbeKind::Present(self),
+            SourceFormat::Zip => ProbeKind::Zip,
+            // HEIF-family photos are images the bundled decoder cannot
+            // inspect; WIC/FFmpeg decode them later, dimensions stay zero.
+            SourceFormat::Heic | SourceFormat::Heif => ProbeKind::Image(ImageInfo {
+                format: self,
+                width: 0,
+                height: 0,
+                has_alpha: false,
+                has_exif: false,
+            }),
             _ => ProbeKind::Unsupported {
                 reason: "This type can't be converted yet.".into(),
             },
@@ -503,9 +613,15 @@ pub fn file_kind(path: &str) -> crate::engines::FileKind {
         return crate::engines::FileKind::Image;
     }
     match format.kind() {
+        ProbeKind::Image(_) => crate::engines::FileKind::Image,
         ProbeKind::Video(_) => crate::engines::FileKind::Video,
         ProbeKind::Audio(_) => crate::engines::FileKind::Audio,
         ProbeKind::Document(_) => crate::engines::FileKind::Document,
+        ProbeKind::Pdf => crate::engines::FileKind::Pdf,
+        ProbeKind::Sheet(_) => crate::engines::FileKind::Spreadsheet,
+        ProbeKind::Present(_) => crate::engines::FileKind::Presentation,
+        // A ZIP archive opens the Document card (§2.9).
+        ProbeKind::Zip => crate::engines::FileKind::Document,
         _ => crate::engines::FileKind::Other,
     }
 }
@@ -648,6 +764,19 @@ fn sniff_bytes(bytes: &[u8], ext: &str) -> SourceFormat {
             b"qt  " => SourceFormat::Mov,
             b"M4A " | b"M4B " => SourceFormat::M4a,
             b"M4V " | b"M4VH" | b"M4VP" => SourceFormat::M4v,
+            // HEIF-family photos: HEVC-coded brands are HEIC, the generic
+            // structural brands are HEIF unless an AVIF payload says otherwise.
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis" | b"hevm" | b"hevs" => {
+                SourceFormat::Heic
+            }
+            b"mif1" | b"msf1" | b"heif" => {
+                let probe = &bytes[..bytes.len().min(64)];
+                if contains(probe, b"avif") {
+                    SourceFormat::Avif
+                } else {
+                    SourceFormat::Heif
+                }
+            }
             b"mp41" | b"mp42" | b"isom" | b"iso2" | b"avc1" | b"dash" => match ext {
                 "m4a" => SourceFormat::M4a,
                 "m4v" => SourceFormat::M4v,
@@ -689,6 +818,16 @@ fn sniff_bytes(bytes: &[u8], ext: &str) -> SourceFormat {
             _ => SourceFormat::Mp3,
         };
     }
+    // OLE compound files: the legacy Office binaries are told apart by their
+    // extension alone (the container itself is identical).
+    if bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        return match ext {
+            "doc" | "dot" => SourceFormat::Doc,
+            "xls" | "xlt" => SourceFormat::Xls,
+            "ppt" | "pot" | "pps" => SourceFormat::Ppt,
+            _ => SourceFormat::Unknown,
+        };
+    }
     // ZIP-based documents: local headers carry their entry names near the
     // start. We never open the archive, we only read what is already here.
     if bytes.starts_with(b"PK\x03\x04") {
@@ -699,10 +838,27 @@ fn sniff_bytes(bytes: &[u8], ext: &str) -> SourceFormat {
         if contains(probe, b"word/") {
             return SourceFormat::Docx;
         }
+        if contains(probe, b"xl/") {
+            return SourceFormat::Xlsx;
+        }
+        if contains(probe, b"ppt/") {
+            return SourceFormat::Pptx;
+        }
+        // The ODF `mimetype` entry is stored uncompressed right at the front.
+        if contains(probe, b"opendocument.spreadsheet") {
+            return SourceFormat::Ods;
+        }
+        if contains(probe, b"opendocument.presentation") {
+            return SourceFormat::Odp;
+        }
+        if contains(probe, b"opendocument.text") {
+            return SourceFormat::Odt;
+        }
         if contains(probe, b"content.xml") {
             return SourceFormat::Odt;
         }
-        return SourceFormat::Unknown;
+        // Every other archive is a plain ZIP (§2.9), not "unsupported".
+        return SourceFormat::Zip;
     }
     let head = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     if head.starts_with(b"{\\rtf") {
@@ -728,6 +884,8 @@ fn sniff_bytes(bytes: &[u8], ext: &str) -> SourceFormat {
             "tex" | "latex" => SourceFormat::Tex,
             "html" | "htm" => SourceFormat::Html,
             "txt" => SourceFormat::Txt,
+            "csv" => SourceFormat::Csv,
+            "tsv" => SourceFormat::Tsv,
             _ => SourceFormat::Unknown,
         };
     }
@@ -866,6 +1024,90 @@ mod tests {
         head.extend_from_slice(b"rest");
         assert_eq!(sniff_named(&head, "song.wma"), SourceFormat::Wma);
         assert_eq!(sniff_named(&head, "movie.wmv"), SourceFormat::Wmv);
+    }
+
+    /// The v0.8 source containers: HEIF photos, legacy Office binaries, the
+    /// ZIP family and delimited text (§1 of the options spec).
+    #[test]
+    fn v08_sources_are_classified() {
+        // HEIF-family photos by major brand; mif1 stays AVIF when an AVIF
+        // payload says so, HEIF otherwise.
+        assert_eq!(sniff(b"\x00\x00\x00\x18ftypheicrest"), SourceFormat::Heic);
+        assert_eq!(sniff(b"\x00\x00\x00\x18ftyphevcXrest"), SourceFormat::Heic);
+        assert_eq!(sniff(b"\x00\x00\x00\x18ftypmif1rest"), SourceFormat::Heif);
+        assert_eq!(
+            sniff(b"\x00\x00\x00\x20ftypmif1\x00\x00\x00\x00avif"),
+            SourceFormat::Avif
+        );
+
+        // Legacy OLE2 binaries, told apart by extension alone.
+        let ole = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0x00, 0x01];
+        assert_eq!(sniff_named(&ole, "old.doc"), SourceFormat::Doc);
+        assert_eq!(sniff_named(&ole, "book.xls"), SourceFormat::Xls);
+        assert_eq!(sniff_named(&ole, "deck.ppt"), SourceFormat::Ppt);
+        assert_eq!(sniff_named(&ole, "thing.bin"), SourceFormat::Unknown);
+
+        // The ZIP family by entry names, then a plain ZIP.
+        assert_eq!(
+            sniff_named(b"PK\x03\x04\x14\x00\x00\x00xl/workbook.xml", "a.xlsx"),
+            SourceFormat::Xlsx
+        );
+        assert_eq!(
+            sniff_named(b"PK\x03\x04\x14\x00\x00\x00ppt/presentation.xml", "a.pptx"),
+            SourceFormat::Pptx
+        );
+        assert_eq!(
+            sniff_named(
+                b"PK\x03\x04\x14\x00\x00\x00mimetypeapplication/vnd.oasis.opendocument.spreadsheet",
+                "a.ods"
+            ),
+            SourceFormat::Ods
+        );
+        assert_eq!(
+            sniff_named(
+                b"PK\x03\x04\x14\x00\x00\x00mimetypeapplication/vnd.oasis.opendocument.presentation",
+                "a.odp"
+            ),
+            SourceFormat::Odp
+        );
+        assert_eq!(
+            sniff_named(b"PK\x03\x04\x14\x00\x00\x00stuff", "archive.zip"),
+            SourceFormat::Zip
+        );
+
+        // Delimited text is decided by the extension, like TXT/MD.
+        assert_eq!(sniff_named(b"a,b\n1,2\n", "data.csv"), SourceFormat::Csv);
+        assert_eq!(sniff_named(b"a\tb\nc\td\n", "data.tsv"), SourceFormat::Tsv);
+    }
+
+    /// The probe maps the new containers onto their card kinds and reports
+    /// them convertible — no "can't be converted yet" for the v0.8 set.
+    #[test]
+    fn v08_sources_probe_as_convertible_cards() {
+        let dir = std::env::temp_dir().join("taskbar-island-detect-v08");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let zip = dir.join("archive.zip");
+        std::fs::write(&zip, b"PK\x03\x04\x14\x00\x00\x00stuff").unwrap();
+        let probe = probe_path(&zip.display().to_string());
+        assert!(matches!(probe.kind, ProbeKind::Zip));
+        assert!(probe.kind.convertible());
+        assert_eq!(probe.format(), SourceFormat::Zip);
+
+        let csv = dir.join("data.csv");
+        std::fs::write(&csv, b"a,b\n1,2\n").unwrap();
+        let probe = probe_path(&csv.display().to_string());
+        assert!(matches!(probe.kind, ProbeKind::Sheet(SourceFormat::Csv)));
+        assert!(probe.kind.convertible());
+
+        let pdf = dir.join("doc.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\n1 0 obj").unwrap();
+        let probe = probe_path(&pdf.display().to_string());
+        assert!(matches!(probe.kind, ProbeKind::Pdf));
+        assert!(probe.kind.convertible());
+        assert_eq!(probe.kind.notice(), None);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

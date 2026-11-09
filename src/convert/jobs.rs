@@ -28,11 +28,11 @@ use image::{
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref};
 
 use crate::design::{self, Color};
-use crate::engines::output::TargetFormat;
+use crate::engines::output::{TargetFormat, Workspace};
 use crate::engines::router::{self, Candidate, FallbackFailure};
 use crate::engines::{
-    self, Action, CancelToken, CapabilityTable, EngineError, EngineId, EnginePaths, FileKind,
-    ImageEdit, ImageFormat, ImageOptimize, Job, JobOutput, Progress, ProgressSink, Stage,
+    self, Action, CancelToken, CapabilityTable, DocumentFormat, EngineError, EngineId, EnginePaths,
+    FileKind, ImageEdit, ImageFormat, ImageOptimize, Job, JobOutput, Progress, ProgressSink, Stage,
 };
 
 use super::detect::{self, SourceFormat};
@@ -106,7 +106,10 @@ pub fn badge_color(target: TargetFormat) -> Color {
         },
         TargetFormat::Video(_) => design::BADGE_VIDEO,
         TargetFormat::Audio(_) => design::FILE_AUDIO,
+        // A PDF produced from a document still gets the PDF badge.
+        TargetFormat::Document(DocumentFormat::Pdf) => design::BADGE_PDF,
         TargetFormat::Document(_) => design::BADGE_DOC,
+        TargetFormat::Sheet(_) | TargetFormat::Present(_) => design::BADGE_DOC,
     }
 }
 
@@ -856,6 +859,86 @@ fn move_new(from: &Path, destination: &Path) -> Result<(), MoveError> {
     }
 }
 
+// -------------------------------------------------------------- pipeline
+
+/// A stage body: it sees the job's private workspace and the cancel token so
+/// a running child process can be killed.
+type StageRun = Box<dyn FnOnce(&Workspace, &CancelToken) -> Result<(), EngineError>>;
+
+/// One stage of a multi-step job (LibreOffice → Poppler → Pandoc …). Every
+/// stage writes only inside the job's private workspace.
+#[allow(dead_code)] // Wired into the PDF/Office runners in B3.
+pub struct Step {
+    /// Engine name for the log line ("libreoffice", "pdftoppm", …).
+    pub label: &'static str,
+    run: StageRun,
+}
+
+#[allow(dead_code)] // Wired into the PDF/Office runners in B3.
+impl Step {
+    pub fn new(
+        label: &'static str,
+        run: impl FnOnce(&Workspace, &CancelToken) -> Result<(), EngineError> + 'static,
+    ) -> Self {
+        Self {
+            label,
+            run: Box::new(run),
+        }
+    }
+}
+
+/// Runs a whole `Vec<Step>` inside one private workspace behind a single
+/// progress bar. Each finished step reports its equal share `(i + 1) / n`, so
+/// the marks sum to exactly 1.0 at the end of the run, and the delivery
+/// callback gets one final `1.0` with `Stage::Done`. Cancelling before,
+/// between or inside a stage stops the run with `EngineError::Cancelled` and
+/// `finish` is never called. The workspace is owned here and dropped on every
+/// path — that drop is what removes the temp dir, so this module itself
+/// contains no deletion call (the security test scans it).
+#[allow(dead_code)] // Wired into the PDF/Office runners in B3.
+pub fn run_pipeline<T>(
+    workspace: Workspace,
+    steps: Vec<Step>,
+    progress: ProgressSink<'_>,
+    cancel: &CancelToken,
+    finish: impl FnOnce(&Workspace) -> Result<T, EngineError>,
+) -> Result<T, EngineError> {
+    progress(Progress {
+        stage: Stage::Reading,
+        fraction: None,
+    });
+    if cancel.is_cancelled() {
+        return Err(EngineError::Cancelled);
+    }
+    let count = steps.len().max(1);
+    let total = count as f32;
+    for (index, step) in steps.into_iter().enumerate() {
+        if cancel.is_cancelled() {
+            return Err(EngineError::Cancelled);
+        }
+        crate::log::log(&format!(
+            "convert.pipeline step {}/{}: {}",
+            index + 1,
+            count,
+            step.label
+        ));
+        (step.run)(&workspace, cancel)?;
+        if cancel.is_cancelled() {
+            return Err(EngineError::Cancelled);
+        }
+        progress(Progress {
+            stage: Stage::Converting,
+            fraction: Some((index + 1) as f32 / total),
+        });
+    }
+    let value = finish(&workspace)?;
+    progress(Progress {
+        stage: Stage::Done,
+        fraction: Some(1.0),
+    });
+    Ok(value)
+}
+
 static TEMP_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 #[cfg(test)]
@@ -1360,5 +1443,81 @@ mod tests {
             "tesseract installed={} languages={:?}",
             tesseract.installed, tesseract.ocr_languages
         );
+    }
+
+    /// §6 test 9: equal-weight progress across the steps (the marks read
+    /// 1/3, 2/3, 1.0 and the delivery reports the final 1.0), and a cancel
+    /// raised inside step 1 stops the run before `finish` while the workspace
+    /// — the whole temp dir — is dropped by RAII on both paths.
+    #[test]
+    fn pipeline_progress_sums_to_one_and_cancel_drops_the_temp_dir() {
+        use crate::engines::output::Workspace;
+
+        // Success: three steps, delivery runs, temp dir gone afterwards.
+        let workspace = Workspace::new().unwrap();
+        let dir = workspace.dir().to_path_buf();
+        let cancel = CancelToken::new();
+        let mut marks: Vec<Option<f32>> = Vec::new();
+        let steps = vec![
+            Step::new("one", |_, _| Ok(())),
+            Step::new("two", |_, _| Ok(())),
+            Step::new("three", |ws, _| {
+                std::fs::write(ws.join("output.bin"), b"done")
+                    .map_err(|error| EngineError::Failed(error.to_string()))
+            }),
+        ];
+        let delivered = run_pipeline(
+            workspace,
+            steps,
+            &mut |progress| marks.push(progress.fraction),
+            &cancel,
+            |ws| {
+                assert!(ws.join("output.bin").is_file());
+                Ok(7usize)
+            },
+        )
+        .unwrap();
+        assert_eq!(delivered, 7);
+        let fractions: Vec<f32> = marks.iter().flatten().copied().collect();
+        assert_eq!(
+            fractions.len(),
+            4,
+            "three step marks + the done mark: {marks:?}"
+        );
+        for (index, (got, want)) in fractions
+            .iter()
+            .zip([1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0])
+            .enumerate()
+        {
+            assert!(
+                (got - want).abs() < 1e-6,
+                "progress mark {index} is {got}, want {want}"
+            );
+        }
+        assert!(!dir.exists(), "the workspace must be gone after success");
+
+        // Cancel raised while step 1 runs: step 2 and finish never happen.
+        let workspace = Workspace::new().unwrap();
+        let dir = workspace.dir().to_path_buf();
+        let cancel = CancelToken::new();
+        let mut delivered = false;
+        let steps = vec![
+            Step::new("one", {
+                let cancel = cancel.clone();
+                move |_, _| {
+                    cancel.cancel();
+                    Ok(())
+                }
+            }),
+            Step::new("two", |_, _| panic!("step two must not run after cancel")),
+        ];
+        let error = run_pipeline(workspace, steps, &mut |_| {}, &cancel, |_| {
+            delivered = true;
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(matches!(error, EngineError::Cancelled));
+        assert!(!delivered, "finish must never run after cancel");
+        assert!(!dir.exists(), "cancel must leave no temp dir behind");
     }
 }
