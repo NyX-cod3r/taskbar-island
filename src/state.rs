@@ -9,6 +9,34 @@
 
 use crate::design::ActivityKind;
 
+/// Pill content is selected independently of the expanded card so a call can
+/// be surfaced without changing which card the user has open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PillState {
+    Idle,
+    Music,
+    ClipboardPop { added: u32 },
+    TimerAlert,
+    ActiveCall,
+    IncomingCall,
+}
+
+pub fn pill_priority(states: &[PillState]) -> PillState {
+    let rank = |state: PillState| match state {
+        PillState::IncomingCall => 0,
+        PillState::ActiveCall => 1,
+        PillState::TimerAlert => 2,
+        PillState::ClipboardPop { .. } => 3,
+        PillState::Music => 4,
+        PillState::Idle => 5,
+    };
+    states
+        .iter()
+        .copied()
+        .min_by_key(|state| rank(*state))
+        .unwrap_or(PillState::Idle)
+}
+
 /// Priority numbers: smaller wins. Only live (non-empty) activities compete.
 pub fn rank(kind: ActivityKind, timer_finished: bool) -> u8 {
     match kind {
@@ -124,6 +152,23 @@ mod tests {
         ]));
         assert_eq!(r.main, Some(ActivityKind::Call));
         assert_eq!(r.second, Some(ActivityKind::Music));
+    }
+
+    #[test]
+    fn pill_priority_restores_the_next_live_state() {
+        assert_eq!(
+            pill_priority(&[PillState::Music, PillState::ClipboardPop { added: 3 }]),
+            PillState::ClipboardPop { added: 3 }
+        );
+        assert_eq!(
+            pill_priority(&[
+                PillState::Music,
+                PillState::ClipboardPop { added: 3 },
+                PillState::IncomingCall,
+            ]),
+            PillState::IncomingCall
+        );
+        assert_eq!(pill_priority(&[PillState::Music]), PillState::Music);
     }
 
     #[test]

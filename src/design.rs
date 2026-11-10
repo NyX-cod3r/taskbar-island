@@ -24,6 +24,11 @@ pub const GAP_TRAY: f32 = 12.0;
 /// surface ends at the top of the band, and the owner asked for the card to
 /// come down so it does not read as a detached popup.
 pub const GAP_TASKBAR: f32 = 6.0;
+/// Design-token name for the same 6 DIP gap between the card's bottom edge
+/// and the taskbar top (`design-tokens.json` → `flyout.bottom_gap_dip`).
+/// One value, two names: the token drift test checks this spelling.
+#[allow(dead_code)] // consumed by the design-tokens drift test
+pub const FLY_BOTTOM_GAP: f32 = GAP_TASKBAR;
 pub const WINDOW_W: f32 = 520.0;
 pub const WINDOW_TOP_PAD: f32 = 40.0;
 pub const PILL_TILE_GAP: f32 = 8.0;

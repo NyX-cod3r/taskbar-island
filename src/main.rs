@@ -23,6 +23,10 @@ mod settings;
 mod state;
 mod theme;
 mod thumb;
+// Token drift validation: the JSON document + parser are consumed by the
+// design-tokens test (and tooling), not by the hot path (`design` owns that).
+#[allow(dead_code)]
+mod tokens;
 mod tooltip;
 mod tray;
 mod uia;
