@@ -65,6 +65,12 @@ pub fn delay_ms(last_hidden: Option<Instant>, now: Instant) -> u32 {
 }
 
 /// Place a `size` popup against `anchor`, keeping it inside `work`.
+///
+/// Below/above placements anchor to the control's left edge, except when that
+/// would run past the work area's right edge: the tip then flips to the
+/// control's left side (spec §6, "left of row action buttons"), so it is never
+/// clipped by the screen. `align_right` (last column) keeps its right edge and
+/// clamps instead.
 pub fn place(
     anchor: RECT,
     size: (i32, i32),
@@ -76,6 +82,8 @@ pub fn place(
     let (w, h) = size;
     let mut x = if align_right {
         anchor.right - w
+    } else if anchor.left + w > work.right {
+        anchor.left - gap - w
     } else {
         anchor.left
     };
@@ -592,10 +600,18 @@ mod tests {
         let pos = place(anchor, (120, 36), work, false, false, 4);
         assert_eq!(pos, TipPosition { x: 900, y: 434 });
 
+        // Near the right edge the default placement would clip, so the tip
+        // flips to the left of the control instead (spec §6).
         let near_edge = rect(1900, 1000, 1920, 1020);
         let pos = place(near_edge, (200, 40), work, false, false, 4);
-        assert_eq!(pos.x, 1720, "clamped to the right work edge");
+        assert_eq!(pos.x, 1900 - 4 - 200, "left of the control");
+        assert!(pos.x + 200 <= work.right, "never clipped");
         assert!(pos.y + 40 <= work.bottom);
+
+        // Left of the control can itself overflow; then clamp to the edge.
+        let left_edge = rect(0, 400, 40, 430);
+        let pos = place(left_edge, (200, 36), work, false, false, 4);
+        assert_eq!(pos.x, 0, "clamped to the left work edge");
     }
 
     #[test]
