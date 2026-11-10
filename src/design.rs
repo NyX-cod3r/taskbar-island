@@ -787,6 +787,46 @@ mod tests {
         }
     }
 
+    /// A1 layout guard: at 100 / 125 / 150 / 175 % the physical content rect
+    /// is still the card inner minus the rail minus the padding, with every
+    /// edge rounded the same way (round-half-up on DIP × scale) so no edge
+    /// drifts a pixel between DPIs. The card itself stays 400 × 192 DIP.
+    #[test]
+    fn card_content_rect_is_card_inner_minus_rail_minus_padding_at_100_125_150_175() {
+        let fly = RectD::new(10.0, 20.0, FLY_W, FLY_H);
+        let content = card_content_rect(fly);
+        let px = |v: f32, scale: f32| (v * scale + 0.5).floor() as i32;
+        for dpi in [96u32, 120, 144, 168] {
+            let scale = dpi as f32 / 96.0;
+            assert_eq!(px(fly.w, scale), px(FLY_W, scale), "card width, dpi {dpi}");
+            assert_eq!(px(fly.h, scale), px(FLY_H, scale), "card height, dpi {dpi}");
+            assert_eq!(
+                px(content.x, scale),
+                px(fly.x + CARD_CONTENT_X + CARD_PAD, scale),
+                "left edge, dpi {dpi}"
+            );
+            assert_eq!(
+                px(content.right(), scale),
+                px(fly.x + FLY_W - CARD_PAD, scale),
+                "right edge, dpi {dpi}"
+            );
+            assert_eq!(
+                px(content.y, scale),
+                px(fly.y + CARD_PAD, scale),
+                "top edge, dpi {dpi}"
+            );
+            assert_eq!(
+                px(content.bottom(), scale),
+                px(fly.y + FLY_H - CARD_PAD, scale),
+                "bottom edge, dpi {dpi}"
+            );
+            // The rail column and its padding never eat into the content.
+            assert!(px(content.x, scale) >= px(fly.x + CARD_CONTENT_X, scale));
+            assert!(px(content.right(), scale) <= px(fly.x + FLY_W, scale));
+            assert!(px(content.bottom(), scale) <= px(fly.y + FLY_H, scale));
+        }
+    }
+
     /// v0.7 rail: five 32 x 32 tiles with 5 DIP gaps, 18 DIP glyphs and a
     /// 3 x 16 indicator 8 DIP below the tile top.
     #[test]
