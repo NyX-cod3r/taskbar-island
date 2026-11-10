@@ -123,6 +123,8 @@ pub const CALL_BTN_H: f32 = 40.0;
 pub const CALL_BTN_GAP: f32 = 8.0;
 pub const SIGNAL_W: f32 = 18.0;
 pub const SIGNAL_H: f32 = 16.0;
+/// Spec §8 empty state: one large muted icon, no sentences.
+pub const EMPTY_ICON_DIP: f32 = 36.0;
 
 // Shelf card. The shelf owns the whole content column from
 // `card_content_rect()` (CARD_PAD on all four sides), a 28 DIP toolbar, then a
@@ -488,6 +490,8 @@ pub const SHELF_BLUE: Color = rgb(0x60, 0xCD, 0xFF);
 pub const TIMER_AMBER: Color = rgb(0xFF, 0xB5, 0x47);
 pub const VOLUME_WHITE: Color = rgb(0xFF, 0xFF, 0xFF);
 pub const DARK_GLYPH: Color = rgb(0x0B, 0x0B, 0x0C);
+/// Spec §8 empty-state icon, `textFaint` in design-tokens.json.
+pub const EMPTY_ICON: Color = rgb(0x6A, 0x6A, 0x6A);
 
 // File badge colors (section 6.3)
 pub const BADGE_PDF: Color = rgb(0xFF, 0x6B, 0x6B);

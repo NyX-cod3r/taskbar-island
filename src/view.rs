@@ -102,6 +102,8 @@ pub enum Element {
     CallMic,
     CallOutput,
     CallOpen,
+    /// The muted phone icon of an unavailable Call idle card (spec §8).
+    CallIdle,
     TimerToggle,
     TimerPreset(u32),
     TimerStop,
@@ -244,6 +246,9 @@ pub struct CallBody {
     pub live: bool,
     pub mic_muted: bool,
     pub output_muted: bool,
+    /// Phone Link presence. Only read while `live` is false, where it picks
+    /// between real status and the muted empty state (A prompt §5).
+    pub link: crate::activities::call::PhoneLinkState,
 }
 
 #[derive(Debug, Clone)]
@@ -654,11 +659,22 @@ pub struct SecondView {
 }
 
 #[derive(Debug, Clone)]
+pub struct PillOverride {
+    /// Activity the pill click opens (spec: clicking the call pill opens the
+    /// Call card, even while another card is showing).
+    pub kind: ActivityKind,
+    pub pill: PillView,
+}
+
+#[derive(Debug, Clone)]
 pub struct ViewModel {
     pub main: Option<ActivityView>,
     pub second: Option<SecondView>,
     /// Shelf drag-over replaces only the pill, never the flyout.
     pub overlay_pill: Option<PillView>,
+    /// Live state that outranks the card behind it (call, clipboard pop, …).
+    /// Resolved independently of `main` so a call never swaps the open card.
+    pub pill_override: Option<PillOverride>,
 }
 
 impl ViewModel {
@@ -667,6 +683,7 @@ impl ViewModel {
             main: None,
             second: None,
             overlay_pill: None,
+            pill_override: None,
         }
     }
 
@@ -716,6 +733,7 @@ impl ViewModel {
     pub fn pill(&self) -> Option<&PillView> {
         self.overlay_pill
             .as_ref()
+            .or_else(|| self.pill_override.as_ref().map(|o| &o.pill))
             .or_else(|| self.main.as_ref().map(|m| &m.pill))
     }
 

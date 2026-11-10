@@ -37,6 +37,19 @@ pub fn pill_priority(states: &[PillState]) -> PillState {
         .unwrap_or(PillState::Idle)
 }
 
+/// The activity whose pill wins when several live states compete. `None`
+/// means no live state: the resting pill behind the card keeps showing.
+/// This is the bridge from the pure priority table to the live surface.
+pub fn pill_winner(states: &[PillState]) -> Option<ActivityKind> {
+    match pill_priority(states) {
+        PillState::Idle => None,
+        PillState::IncomingCall | PillState::ActiveCall => Some(ActivityKind::Call),
+        PillState::TimerAlert => Some(ActivityKind::Timer),
+        PillState::ClipboardPop { .. } => Some(ActivityKind::Clipboard),
+        PillState::Music => Some(ActivityKind::Music),
+    }
+}
+
 /// Priority numbers: smaller wins. Only live (non-empty) activities compete.
 pub fn rank(kind: ActivityKind, timer_finished: bool) -> u8 {
     match kind {
@@ -169,6 +182,30 @@ mod tests {
             PillState::IncomingCall
         );
         assert_eq!(pill_priority(&[PillState::Music]), PillState::Music);
+    }
+
+    #[test]
+    fn pill_winner_maps_the_ranked_state_to_an_activity() {
+        assert_eq!(pill_winner(&[]), None);
+        assert_eq!(pill_winner(&[PillState::Music]), Some(ActivityKind::Music));
+        // The clipboard pop interrupts music (spec §8 order), and a live
+        // call interrupts everything below it.
+        assert_eq!(
+            pill_winner(&[PillState::Music, PillState::ClipboardPop { added: 2 }]),
+            Some(ActivityKind::Clipboard)
+        );
+        assert_eq!(
+            pill_winner(&[
+                PillState::ClipboardPop { added: 2 },
+                PillState::TimerAlert,
+                PillState::ActiveCall,
+            ]),
+            Some(ActivityKind::Call)
+        );
+        assert_eq!(
+            pill_winner(&[PillState::TimerAlert, PillState::Music]),
+            Some(ActivityKind::Timer)
+        );
     }
 
     #[test]

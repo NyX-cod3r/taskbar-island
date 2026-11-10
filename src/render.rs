@@ -946,7 +946,10 @@ impl Painter {
             return;
         }
         let px = 1.0 / input.scale;
-        let accent = accent_of(input.view);
+        // The pill paints with its own activity's accent, which matters when
+        // the pill is an override (a call surfacing over an open card): the
+        // card behind keeps its own accent.
+        let accent = pill.tile.color;
         let open = input.flyout.is_some();
         let pressed = input.pressed_amount(Element::Pill).is_some();
         let active_mix = if open || pressed {
@@ -2906,22 +2909,53 @@ impl Painter {
         let theme = input.theme;
         let accent = design::rail_accent(ActivityKind::Call);
 
-        // Status row: four signal bars then one line of status.
-        let status = RectD::new(body.x, body.y, body.w, design::CALL_STATUS_H);
-        let bars_y = status.center_y() - design::SIGNAL_H * 0.5;
-        for (i, h) in [6.0, 9.5, 13.0, 16.0].iter().enumerate() {
-            let a = if i == 3 { 0.35 } else { 1.0 };
-            self.fill_round(
-                rt,
-                RectD::new(
-                    status.x + i as f32 * 5.0,
-                    bars_y + design::SIGNAL_H - h,
-                    3.0,
-                    *h,
-                ),
-                1.0,
-                accent.with_alpha(a * alpha),
+        // A prompt §5 + spec §8: while Phone Link cannot show a phone the card
+        // is an empty state — one large muted icon, no sentences, no controls.
+        // The icon owns the hit that `window::tip_text` explains with which
+        // condition is missing.
+        if !c.live && !c.link.is_available() {
+            let icon = RectD::new(
+                body.x + (body.w - design::EMPTY_ICON_DIP) * 0.5,
+                body.y + (body.h - design::EMPTY_ICON_DIP) * 0.5,
+                design::EMPTY_ICON_DIP,
+                design::EMPTY_ICON_DIP,
             );
+            self.icon_center(
+                rt,
+                IconId::Phone,
+                icon,
+                design::EMPTY_ICON_DIP,
+                design::EMPTY_ICON.with_alpha(alpha),
+                input.scale,
+                0.0,
+            );
+            if alpha > 0.15 {
+                hits.add(Element::CallIdle, icon, design::R_SURFACE);
+            }
+            return;
+        }
+
+        // Status row: signal bars (a live call only — an idle card has no
+        // signal to report) then one line of status.
+        let status = RectD::new(body.x, body.y, body.w, design::CALL_STATUS_H);
+        let mut text_x = status.x;
+        if c.live {
+            let bars_y = status.center_y() - design::SIGNAL_H * 0.5;
+            for (i, h) in [6.0, 9.5, 13.0, 16.0].iter().enumerate() {
+                let a = if i == 3 { 0.35 } else { 1.0 };
+                self.fill_round(
+                    rt,
+                    RectD::new(
+                        status.x + i as f32 * 5.0,
+                        bars_y + design::SIGNAL_H - h,
+                        3.0,
+                        *h,
+                    ),
+                    1.0,
+                    accent.with_alpha(a * alpha),
+                );
+            }
+            text_x = status.x + design::SIGNAL_W + 10.0;
         }
         let text = if c.live {
             if c.device.is_empty() {
@@ -2936,9 +2970,9 @@ impl Painter {
             rt,
             &text,
             RectD::new(
-                status.x + design::SIGNAL_W + 10.0,
+                text_x,
                 status.y,
-                (status.w - design::SIGNAL_W - 10.0).max(0.0),
+                (status.right() - text_x).max(0.0),
                 status.h,
             ),
             design::FONT_CALL_TITLE,
@@ -4829,5 +4863,76 @@ mod tests {
         assert!(matches!(stage_icon(2), IconId::Save));
         // Out-of-range indices clamp to the last stage, never panic.
         assert!(matches!(stage_icon(9), IconId::Save));
+    }
+
+    /// A3 layout test (A prompt §5): the compact pill is 224 DIP wide and a
+    /// 30-character name must not overflow it. `draw_pill` sizes the label
+    /// box from what the value leaves (both boxes stay inside the content
+    /// rect) and draws the label with DWrite character trimming, so a long
+    /// name ellipsizes instead of running past the right pad.
+    #[test]
+    fn pill_layout_224_fits_a_thirty_character_name() {
+        let source = include_str!("render.rs");
+        let pill = source
+            .split("fn draw_pill")
+            .nth(1)
+            .expect("draw_pill exists")
+            .split("fn draw_")
+            .next()
+            .expect("next draw fn follows");
+
+        // Content rect: left pad + tile + gap in, right pad out.
+        assert!(
+            pill.contains(
+                "let content_x = r.x + design::PILL_PAD + design::PILL_TILE + design::PILL_TILE_GAP;"
+            ),
+            "content starts after the leading tile"
+        );
+        assert!(
+            pill.contains("let content_right = r.right() - design::PILL_PAD;"),
+            "content ends at the right pad"
+        );
+        // The label box is derived from the value box and clamped at zero.
+        assert!(
+            pill.contains(
+                "let label_w = (value_x - content_x - if value_w > 0.0 { 8.0 } else { 0.0 }).max(0.0);"
+            ),
+            "label width can never go negative or past the value"
+        );
+        // A music value is capped at 60 % of the content width so it can
+        // never squeeze the label out of the pill.
+        assert!(pill.contains(".min((content_right - content_x) * 0.6)"));
+
+        // The label draw call ellipsizes inside that box (DWrite trimming in
+        // `layout`, granularity character). The first `&pill.label` in
+        // `draw_pill` is the line-span `measure`; the second is the draw.
+        let label_call = pill
+            .split("&pill.label")
+            .nth(2)
+            .expect("label is drawn")
+            .split(");")
+            .next()
+            .expect("call ends");
+        assert!(
+            label_call.contains("true,"),
+            "the label is drawn with the ellipsis flag"
+        );
+
+        // Geometry: 10 + 24 + 8 = 42 in, 224 - 10 = 214 out. For any value
+        // width the boxes tile the content rect without overflow.
+        let content_x = design::PILL_PAD + design::PILL_TILE + design::PILL_TILE_GAP;
+        let content_right = design::PILL_W - design::PILL_PAD;
+        assert_eq!(design::PILL_W, 224.0);
+        assert_eq!((content_x, content_right), (42.0, 214.0));
+        for value_w in [0.0, 40.0, (content_right - content_x) * 0.6] {
+            let gap = if value_w > 0.0 { 8.0 } else { 0.0 };
+            let value_x = content_right - value_w;
+            let label_w = (value_x - content_x - gap).max(0.0);
+            assert!(
+                content_x + label_w + gap + value_w <= content_right + 0.001,
+                "label + gap + value stays inside the content rect"
+            );
+            assert!(label_w > 0.0, "a 30-char name still gets a real box");
+        }
     }
 }

@@ -71,6 +71,7 @@ use crate::engines::{
 };
 use crate::gpu;
 use crate::render::{HitMap, Painter, ProgressVisual, RenderInput, WaveVisual};
+use crate::state::{pill_winner, PillState};
 use crate::theme::Theme;
 use crate::thumb::{ThumbWorker, WM_APP_THUMB};
 use crate::tooltip::{self, TipRequest, TooltipWindow};
@@ -547,6 +548,14 @@ struct Surface {
     /// `(row id, armed at)` while the 450 ms one-shot runs; cleared the moment
     /// the pointer leaves the row, the list scrolls or the card closes.
     clip_preview_arm: Option<(u64, Instant)>,
+    /// Set around a refresh that a user action drove (rail, wheel, drop): an
+    /// explicit choice may swap the open card. Automatic arbitration never
+    /// does while a call is involved (A prompt §5: a call never changes which
+    /// card is open).
+    user_card_switch: bool,
+    /// The Clipboard pin came from the transient "+N" pill, so the pop's
+    /// expiry releases it again instead of holding a card nobody chose.
+    pop_pin: bool,
 }
 
 thread_local! {
@@ -1225,7 +1234,24 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 if activate {
                     match hit {
                         Some(Element::Pill) => {
-                            if surface.view.flyout().is_some() {
+                            if let Some(over) = surface.view.pill_override.clone() {
+                                // The pill shows a live state that outranks the
+                                // card behind it; clicking opens that state's
+                                // card (spec: clicking the call pill opens the
+                                // Call card).
+                                surface.hide_tip();
+                                let now = Instant::now();
+                                if surface.flyout_open && surface.flyout_phase == FlyoutPhase::Open
+                                {
+                                    surface.activate_rail(over.kind);
+                                } else {
+                                    surface.pin = Some(over.kind);
+                                    surface.pop_pin = over.kind == ActivityKind::Clipboard
+                                        && surface.clip_pop_until.is_some_and(|until| until > now);
+                                    surface.refresh(now);
+                                    surface.open_flyout(now);
+                                }
+                            } else if surface.view.flyout().is_some() {
                                 let now = Instant::now();
                                 if surface.flyout_open
                                     && surface.flyout_phase != FlyoutPhase::Closing
@@ -1249,6 +1275,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                 }
                                 Element::CallOutput => {
                                     let _ = surface.audio_tx.send(AudioCommand::ToggleOutput);
+                                    None
+                                }
+                                // Real launches only: the detected call app
+                                // while one is live, Phone Link otherwise.
+                                Element::CallOpen | Element::CallIdle => {
+                                    surface.open_call_app();
                                     None
                                 }
                                 Element::TimerToggle => {
@@ -1807,6 +1839,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                     surface.advance_wave(now);
                     changed = true;
                 }
+                if surface.call_live() && !changed {
+                    // mm:ss for the call pill/card; the wave and timer
+                    // branches already refreshed in the same tick.
+                    surface.refresh(now);
+                    changed = true;
+                }
                 surface.sync_tick_timer();
                 if changed {
                     unsafe {
@@ -2029,6 +2067,8 @@ impl Surface {
             clip_pop_count: 0,
             clip_preview: None,
             clip_preview_arm: None,
+            user_card_switch: false,
+            pop_pin: false,
         })
     }
     fn apply_shelf(&mut self) {
@@ -2043,6 +2083,9 @@ impl Surface {
                 .any(|p| p.eq_ignore_ascii_case(path))
         });
         self.hide_tip();
+        // A shelf mutation is a user action (drop, remove, clear): it may
+        // retarget the open card where automatic arbitration may not.
+        self.user_card_switch = true;
         self.refresh(Instant::now());
     }
 
@@ -2208,6 +2251,7 @@ impl Surface {
         self.shelf_hover = false;
         self.view.overlay_pill = None;
         self.pin = Some(ActivityKind::Shelf);
+        self.pop_pin = false;
         self.show_shelf();
         // A card belonging to another activity cannot host the converter, and
         // a card that is closing must animate back in, so reopen it for the
@@ -2297,6 +2341,7 @@ impl Surface {
         self.shelf_hover = false;
         self.view.overlay_pill = None;
         self.pin = Some(ActivityKind::Shelf);
+        self.pop_pin = false;
         self.show_shelf();
         self.ensure_convert_flyout(now);
     }
@@ -2991,26 +3036,154 @@ impl Surface {
         }
     }
 
-    /// Re-resolve the pill after any state change. A manual pin survives until
-    /// another activity takes over (an incoming call, a new winner) or the
-    /// pinned activity ends.
+    /// Re-resolve the card after any state change. A manual pin survives until
+    /// another activity takes over or the pinned activity ends. A live call
+    /// no longer force-clears the pin: the pill is resolved separately (see
+    /// `sync_pill_override`) and the open card is frozen, so the user can
+    /// browse other cards during a call and the call pill still shows.
     fn refresh(&mut self, now: Instant) {
+        // One-shot: a user action (rail, wheel, drop) may swap the open card;
+        // automatic arbitration may not while a call is involved.
+        let user = self.user_card_switch;
+        self.user_card_switch = false;
         if self.convert.is_some() {
             // The converter owns the card until it is closed or rails away.
             self.show_shelf();
+            self.sync_pill_override(now);
             return;
         }
         let call_live = self.call_live();
         let auto = self.auto_winner(call_live, now);
         if let Some(pin) = self.pin {
-            if (call_live && pin != ActivityKind::Call)
-                || (auto != self.last_auto && auto != Some(pin))
-            {
+            if auto != self.last_auto && auto != Some(pin) {
                 self.pin = None;
+                self.pop_pin = false;
             }
         }
         self.last_auto = auto;
-        self.show(self.pin.or(auto), now);
+        let want = self.pin.or(auto);
+        // A call never changes which card is open (A prompt §5). While the
+        // card is up, a call starting must not steal it and a call ending
+        // must not yank it away: the card rebuilds in place from live state
+        // (an ended call falls back to "No call") and the pill — resolved
+        // separately below — still shows the call.
+        let main_kind = self.view.main.as_ref().map(|view| view.kind);
+        let call_swap = self.flyout_open
+            && !user
+            && ((call_live
+                && main_kind != Some(ActivityKind::Call)
+                && want == Some(ActivityKind::Call))
+                || (main_kind == Some(ActivityKind::Call)
+                    && !call_live
+                    && want != Some(ActivityKind::Call)));
+        if call_swap {
+            self.show(main_kind, now);
+        } else {
+            self.show(want, now);
+        }
+        self.sync_pill_override(now);
+    }
+
+    /// Resolve the pill independently of the card: incoming > active call >
+    /// timer alert > clipboard `+N` pop (2 s) > music > idle (A prompt §3,
+    /// `state::pill_priority`). The winner is built from live state only, so
+    /// a call surfaces on the pill without touching the open card; clicking
+    /// that pill opens the Call card.
+    fn sync_pill_override(&mut self, now: Instant) {
+        let mut states = Vec::with_capacity(3);
+        if self.call_live() {
+            states.push(PillState::ActiveCall);
+        }
+        if self.timer.active() && self.timer.finished {
+            states.push(PillState::TimerAlert);
+        }
+        if self.clip_pop_until.is_some_and(|until| until > now) {
+            states.push(PillState::ClipboardPop {
+                added: self.clip_pop_count.max(1),
+            });
+        }
+        if self.media_snapshot.is_some() {
+            states.push(PillState::Music);
+        }
+        let main_kind = self.view.main.as_ref().map(|view| view.kind);
+        let winner = pill_winner(&states);
+        // A call and the 2 s clipboard pop always interrupt; any other winner
+        // yields to an explicit pin (the wheel's choice is the user's).
+        let pinned = self.pin.is_some()
+            && !matches!(
+                winner,
+                Some(ActivityKind::Call) | Some(ActivityKind::Clipboard) | None
+            );
+        self.view.pill_override = match winner {
+            Some(kind) if !pinned && Some(kind) != main_kind => self
+                .pill_for(kind, now)
+                .map(|pill| crate::view::PillOverride { kind, pill }),
+            _ => None,
+        };
+    }
+
+    /// Build the pill for a winning live state without touching the card.
+    fn pill_for(&self, kind: ActivityKind, now: Instant) -> Option<PillView> {
+        match kind {
+            ActivityKind::Call => self.call_pill(),
+            ActivityKind::Timer => {
+                if !(self.timer.active() && self.timer.finished) {
+                    return None;
+                }
+                Some(PillView {
+                    icon: IconId::Clock,
+                    tile: TileView::colored(design::TIMER_AMBER),
+                    label: self.timer.name.clone(),
+                    value: "Done".into(),
+                    progress: Some(self.timer.remaining_fraction(now)),
+                    kind: PillKind::Finished,
+                    art: None,
+                })
+            }
+            ActivityKind::Clipboard => {
+                let count = self.clip.as_ref().map_or(0, |clip| clip.store.len());
+                let paused = self.clip.as_ref().is_some_and(ClipboardRuntime::is_paused);
+                let pop = self
+                    .clip_pop_until
+                    .filter(|until| *until > now)
+                    .map(|_| self.clip_pop_count.max(1));
+                Some(crate::view::clipboard_pill(count, pop, paused))
+            }
+            ActivityKind::Music => {
+                let snapshot = self.media_snapshot.as_ref()?;
+                Some(PillView {
+                    icon: IconId::Music,
+                    tile: TileView::colored(snapshot.accent),
+                    label: snapshot.title.clone(),
+                    value: snapshot.artist.clone(),
+                    progress: Some(snapshot.fraction(now)),
+                    kind: PillKind::Normal,
+                    art: snapshot.art.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// The active-call pill (spec CallPillActive minus the End button, which
+    /// stays NO-GO without a real call-control provider): green phone glyph,
+    /// the app holding the microphone, mm:ss.
+    fn call_pill(&self) -> Option<PillView> {
+        let runtime = self.call_runtime.lock().ok()?;
+        let detect = runtime.detect.as_ref()?;
+        let now = Instant::now();
+        let duration = detect.duration_at_fetch
+            + now.saturating_duration_since(detect.started).as_secs_f64()
+            - detect.duration_at_fetch;
+        Some(PillView {
+            icon: IconId::Phone,
+            tile: TileView::colored(design::CALL_GREEN),
+            label: detect.app_name.clone(),
+            value: crate::view::fmt_clock(duration),
+            progress: None,
+            kind: PillKind::Normal,
+            art: None,
+        })
     }
 
     fn show(&mut self, kind: Option<ActivityKind>, now: Instant) {
@@ -3110,10 +3283,16 @@ impl Surface {
             .unwrap_or(0);
         let next = (idx as isize + step).rem_euclid(Self::SHOW_ORDER.len() as isize) as usize;
         self.pin = Self::SHOW_ORDER[next];
+        // A Clipboard pin taken during the "+N" pop is as transient as the pop.
+        self.pop_pin = self.pin == Some(ActivityKind::Clipboard)
+            && self
+                .clip_pop_until
+                .is_some_and(|until| until > Instant::now());
         crate::log::log(&format!("activity.show: {:?}", self.pin));
         if self.flyout_open {
             self.begin_close_flyout(Instant::now());
         }
+        self.user_card_switch = true;
         self.refresh(Instant::now());
         self.sync_tick_timer();
     }
@@ -3622,6 +3801,12 @@ impl Surface {
         }
         self.clip_pop_until = None;
         self.clip_pop_count = 0;
+        if self.pop_pin {
+            // The pin came from the transient "+N" pill; the pop is over, so
+            // the pill (and any card it opened) returns to the real winner.
+            self.pop_pin = false;
+            self.pin = None;
+        }
         self.refresh(Instant::now());
     }
 
@@ -3814,6 +3999,9 @@ impl Surface {
                 live: true,
                 mic_muted: runtime.mic_muted,
                 output_muted: runtime.output_muted,
+                // Only read while `live` is false; the active-call card never
+                // draws the idle empty state, and show_call runs at 1 Hz.
+                link: crate::activities::call::PhoneLinkState::Available,
             }),
         };
         self.view.main = Some(ActivityView {
@@ -3924,40 +4112,47 @@ impl Surface {
                     }),
                 },
             },
-            ActivityKind::Call => ActivityView {
-                kind,
-                accent: design::CALL_GREEN,
-                pill: PillView {
-                    icon: IconId::Phone,
-                    tile: TileView::colored(design::CALL_GREEN),
-                    label: "Call".into(),
-                    value: "No call".into(),
-                    progress: None,
-                    kind: PillKind::Normal,
-                    art: None,
-                },
-                flyout: FlyoutView {
-                    kind: ActivityKind::Call,
-                    leading: Leading::Glyph {
+            ActivityKind::Call => {
+                // A prompt §5: with no usable phone the card is an empty
+                // state whose icon tooltip says which condition is missing.
+                let link = crate::activities::call::phone_link_state();
+                ActivityView {
+                    kind,
+                    accent: design::CALL_GREEN,
+                    pill: PillView {
                         icon: IconId::Phone,
-                        bg: design::CALL_GREEN,
-                        fg: design::DARK_GLYPH,
+                        tile: TileView::colored(design::CALL_GREEN),
+                        label: "Call".into(),
+                        value: "No call".into(),
+                        progress: None,
+                        kind: PillKind::Normal,
+                        art: None,
                     },
-                    title: "Call".into(),
-                    subtitle: Subtitle::default(),
-                    status: "No call".into(),
-                    status_accent: true,
-                    trailing: Trailing::None,
-                    body: Body::Call(crate::view::CallBody {
-                        device: "No active call".into(),
-                        app_name: "call".into(),
-                        elapsed: String::new(),
-                        live: false,
-                        mic_muted: false,
-                        output_muted: false,
-                    }),
-                },
-            },
+                    flyout: FlyoutView {
+                        kind: ActivityKind::Call,
+                        leading: Leading::Glyph {
+                            icon: IconId::Phone,
+                            bg: design::CALL_GREEN,
+                            fg: design::DARK_GLYPH,
+                        },
+                        title: "Call".into(),
+                        subtitle: Subtitle::default(),
+                        status: "No call".into(),
+                        status_accent: true,
+                        trailing: Trailing::None,
+                        body: Body::Call(crate::view::CallBody {
+                            device: "No active call".into(),
+                            // The idle card's action opens the real app.
+                            app_name: "Phone Link".into(),
+                            elapsed: String::new(),
+                            live: false,
+                            mic_muted: false,
+                            output_muted: false,
+                            link,
+                        }),
+                    },
+                }
+            }
             ActivityKind::Timer => ActivityView {
                 kind,
                 accent: design::TIMER_AMBER,
@@ -4072,6 +4267,10 @@ impl Surface {
             // smooth cadence as an open card.
             80
         } else if self.timer.running() {
+            1000
+        } else if self.call_live() {
+            // The active-call pill and card carry an mm:ss clock; one tick a
+            // second keeps it honest without polling the registry.
             1000
         } else {
             0
@@ -4271,6 +4470,9 @@ impl Surface {
             return;
         };
         self.pin = Some(kind);
+        self.pop_pin =
+            kind == ActivityKind::Clipboard && self.clip_pop_until.is_some_and(|until| until > now);
+        self.user_card_switch = true;
         self.refresh(now);
         let actual = self.view.main.as_ref().map(|view| view.kind);
         self.flyout_owner = actual;
@@ -4427,6 +4629,7 @@ impl Surface {
                 | Element::MusicRepeat
                 | Element::CallMic
                 | Element::CallOutput
+                | Element::CallIdle
                 | Element::ClipFilter(_)
                 | Element::ClipPause
                 | Element::ClipClear
@@ -4466,8 +4669,8 @@ impl Surface {
         match element {
             Element::Rail(ActivityKind::Music) => text("Music"),
             Element::Rail(ActivityKind::Timer) => text("Timer"),
-            Element::Rail(ActivityKind::Call) => text("Calls"),
-            Element::Rail(ActivityKind::Shelf) => text("File shelf"),
+            Element::Rail(ActivityKind::Call) => text("Call"),
+            Element::Rail(ActivityKind::Shelf) => text("Shelf"),
             Element::Rail(ActivityKind::Clipboard) => text("Clipboard"),
             Element::ClipFilter(filter) => text(filter.label()),
             Element::ClipPause => Some((
@@ -4609,6 +4812,19 @@ impl Surface {
                 Some(crate::view::RepeatMode::Track) => "Repeat track",
                 _ => "Repeat off",
             }),
+            Element::CallIdle => {
+                // Only drawn for an unavailable phone, so the line always
+                // says which of the conditions from A prompt §5 applies.
+                let link = self
+                    .view
+                    .main
+                    .as_ref()
+                    .and_then(|view| match &view.flyout.body {
+                        Body::Call(call) => Some(call.link),
+                        _ => None,
+                    })?;
+                text(link.idle_tip()?)
+            }
             Element::CallMic => text(if self.call_mic_muted() {
                 "Unmute microphone"
             } else {
@@ -4635,6 +4851,27 @@ impl Surface {
             .lock()
             .map(|runtime| runtime.output_muted)
             .unwrap_or(false)
+    }
+
+    /// Best-effort launch of what the Call card points at: the detected call
+    /// app while a call is live, the real Phone Link app otherwise. A failed
+    /// launch is logged as such and does nothing — never a fake control.
+    fn open_call_app(&mut self) {
+        let launch = self
+            .call_runtime
+            .lock()
+            .ok()
+            .and_then(|runtime| {
+                runtime
+                    .detect
+                    .as_ref()
+                    .map(|detect| detect.launch.clone())
+                    .filter(|launch| !launch.is_empty())
+            })
+            .unwrap_or_else(crate::activities::call::phone_link_launch);
+        if !crate::activities::call::open_app(&launch) {
+            crate::log::log("call.open failed");
+        }
     }
 
     /// Anchor rectangle in physical screen pixels.
@@ -5161,6 +5398,9 @@ impl Surface {
         {
             self.show_shelf();
         }
+        // Re-resolve from live state: anything the open card froze (a call
+        // that ended, a pin that a higher state had overtaken) lands now.
+        self.refresh(Instant::now());
         // SAFETY: the timer ids belong to this window.
         unsafe {
             let _ = KillTimer(Some(self.hwnd), FLYOUT_TIMER_ID);
