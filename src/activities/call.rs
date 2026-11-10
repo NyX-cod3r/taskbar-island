@@ -94,6 +94,54 @@ pub fn subscribe_audio(
     Ok(tx)
 }
 
+/// Debug-only call simulator (A prompt §5: "a debug-only simulator that
+/// fires fake call events is welcome"). It exists so the call pill, the call
+/// card and the pill priority rules can be exercised on a machine with no
+/// linked phone. It is compiled out of release builds entirely, only runs
+/// when `TBI_SIMULATE_CALLS` is set, and labels itself "Simulated" so it can
+/// never be mistaken for a caller.
+#[cfg(debug_assertions)]
+const SIMULATED_CALL_NAME: &str = "Simulated call";
+
+#[cfg(debug_assertions)]
+pub fn subscribe_simulated(hwnd: HWND, shared: Arc<Mutex<CallRuntime>>) {
+    if std::env::var("TBI_SIMULATE_CALLS").is_err() {
+        return;
+    }
+    let hwnd_value = hwnd.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("taskbar-island-call-sim".into())
+        .spawn(move || simulate(hwnd_value, shared));
+}
+
+/// Alternates a live call and an idle gap (12 s on / 8 s off) so both the
+/// ticking clock and the priority hand-back get a workout over a soak. The
+/// real watcher keeps its own view of the runtime; this thread only runs in
+/// dev builds where there is no watcher data to contradict.
+#[cfg(debug_assertions)]
+fn simulate(hwnd: isize, shared: Arc<Mutex<CallRuntime>>) {
+    const ON: Duration = Duration::from_secs(12);
+    const OFF: Duration = Duration::from_secs(8);
+    loop {
+        {
+            let mut runtime = shared.lock().expect("call runtime mutex poisoned");
+            let now = Instant::now();
+            runtime.detect = Some(CallDetect {
+                app_name: SIMULATED_CALL_NAME.into(),
+                launch: phone_link_launch(),
+                started: now,
+                duration_at_fetch: 0.0,
+            });
+            runtime.device = "Simulated output".into();
+        }
+        post(hwnd, WM_APP_CALL);
+        std::thread::sleep(ON);
+        shared.lock().expect("call runtime mutex poisoned").detect = None;
+        post(hwnd, WM_APP_CALL);
+        std::thread::sleep(OFF);
+    }
+}
+
 fn watch(hwnd: isize, allowlist: Vec<String>, shared: Arc<Mutex<CallRuntime>>) {
     if audio::init_mta().is_err() {
         log::log("call.watch: COM init failed");

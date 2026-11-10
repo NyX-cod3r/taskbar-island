@@ -643,6 +643,9 @@ pub fn create(
         call_runtime.clone(),
     )?;
     let audio_tx = call::subscribe_audio(hwnd, call_runtime.clone())?;
+    // Debug builds only: opt-in call events for the QA soak and screenshots.
+    #[cfg(debug_assertions)]
+    call::subscribe_simulated(hwnd, call_runtime.clone());
     // SAFETY: the UI thread owns the island window and remains initialized
     // until the window is destroyed.
     if unsafe { OleInitialize(None).is_err() } {
