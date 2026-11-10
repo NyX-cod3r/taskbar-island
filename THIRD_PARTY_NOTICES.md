@@ -31,8 +31,9 @@ Engines are optional installer components. Core TaskbarIsland functionality
   with it remotely over a network, you must offer them the corresponding
   source. Bundling it as an unmodified local process in a desktop installer
   does not by itself trigger source disclosure for TaskbarIsland's own code,
-  but it is the strictest license in this list — see `coordination/from-B.md`
-  before deciding to keep it.
+  but it is the strictest license in this list. **Owner decision (2026-11-10):
+  keep it** — it ships as an optional installer component when its payload is
+  present, and this file travels with the installer.
 - **Tesseract language data** (`engines\tesseract\tessdata\*.traineddata`) is
   separately licensed per language (mostly Apache-2.0 or the respective
   dataset's terms — for example `eng.traineddata` from `tessdata_fast` is

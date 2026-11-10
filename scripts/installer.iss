@@ -1,4 +1,4 @@
-; TaskbarIsland 0.7.0 — per-user installer (Inno Setup 6.7+).
+; TaskbarIsland 0.8.0 — per-user installer (Inno Setup 6.7+).
 ; Build with: .\scripts\build.ps1 Installer [-EnginesDir <dir>]
 ;
 ; The engine payloads are shipped inside this setup and copied under
@@ -71,25 +71,19 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Name: "full"; Description: "Full installation"
 Name: "custom"; Description: "Custom installation"; Flags: iscustom
 
-; The full installation selects every engine. Modify mode deselects the ones
-; the user removed last time from [Code]; sizes come from [Files].
+; Core is this script's; every engine lives in the include fragment
+; installer\engines.iss (components, payload lists, sizes and the
+; "add or remove engines later" modify flow). The full type selects
+; each engine except LibreOffice, the largest, which starts unticked.
 [Components]
 Name: "core"; Description: "{#MyAppName} (required)"; Types: full custom; Flags: fixed
-Name: "ffmpeg"; Description: "FFmpeg — video, audio and AVIF conversion"; Types: full custom
-Name: "pandoc"; Description: "Pandoc — document conversion"; Types: full custom
-Name: "tesseract"; Description: "Tesseract — text from images"; Types: full custom
-#include "generated\engine-langs.iss"
+#include "..\installer\engines.iss"
 
 [Files]
 ; The AfterInstall hook re-copies the freshly downloaded GitHub payload over
 ; this file once it lands, so the newest build is on disk before [Run starts
 ; the app. With no update pending the hook is a no-op (see update.iss).
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion; Components: core; AfterInstall: ApplyUpdatePayload
-Source: "{#EngineRoot}\ffmpeg\*"; DestDir: "{app}\engines\ffmpeg"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: ffmpeg
-Source: "{#EngineRoot}\pandoc\*"; DestDir: "{app}\engines\pandoc"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: pandoc
-; OCR language data is added per component by the generated include.
-Source: "{#EngineRoot}\tesseract\*"; DestDir: "{app}\engines\tesseract"; Excludes: "tessdata\*"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: tesseract
-#include "generated\engine-lang-files.iss"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Comment: "Dynamic Island-style companion for the Windows taskbar"
@@ -111,75 +105,12 @@ FinishedLabel={#MyAppName} is ready. Look for the island beside your system tray
 FinishedLabelNoIcons={#MyAppName} is ready. Look for the island beside your system tray.
 
 [Code]
-const
-  ENGINES_KEY = 'Software\TaskbarIsland\Engines';
-
-#include "generated\engine-lang-code.iss"
 #include "update.iss"
 
-{ Kept next to the app so the tray's "Manage engines" entry can rerun this
-  setup in modify mode. Running from that copy skips the self-copy. }
-procedure KeepSetupCopy;
-var
-  Source, Target: String;
-begin
-  Source := ExpandConstant('{srcexe}');
-  Target := ExpandConstant('{app}\{#SetupCopyName}');
-  if CompareText(Source, Target) <> 0 then
-    if not CopyFile(Source, Target, False) then
-      Log('Manage engines: could not keep a setup copy at ' + Target);
-end;
-
-procedure SelectEngine(Name: String);
-var
-  V: Cardinal;
-begin
-  if RegQueryDWordValue(HKEY_CURRENT_USER, ENGINES_KEY, Name, V) and (V <> 0) then
-    WizardSelectComponents(Name)
-  else
-    WizardSelectComponents('!' + Name);
-end;
-
-procedure PreselectEngines;
-begin
-  { Fresh install: every engine is already on. Modify: restore the last choice. }
-  if not RegValueExists(HKEY_CURRENT_USER, ENGINES_KEY, 'seeded') then
-    PreselectLanguages(False)
-  else
-  begin
-    SelectEngine('ffmpeg');
-    SelectEngine('pandoc');
-    SelectEngine('tesseract');
-    if WizardIsComponentSelected('tesseract') then
-      PreselectLanguages(True);
-  end;
-end;
-
-procedure RecordEngines;
-begin
-  RegWriteDWordValue(HKEY_CURRENT_USER, ENGINES_KEY, 'seeded', 1);
-  RegWriteDWordValue(HKEY_CURRENT_USER, ENGINES_KEY, 'ffmpeg', Ord(WizardIsComponentSelected('ffmpeg')));
-  RegWriteDWordValue(HKEY_CURRENT_USER, ENGINES_KEY, 'pandoc', Ord(WizardIsComponentSelected('pandoc')));
-  RegWriteDWordValue(HKEY_CURRENT_USER, ENGINES_KEY, 'tesseract', Ord(WizardIsComponentSelected('tesseract')));
-  RecordLanguageSelection;
-end;
-
-procedure RemoveDeselectedEngines;
-var
-  Root: String;
-begin
-  Root := ExpandConstant('{app}\engines');
-  if not WizardIsComponentSelected('ffmpeg') then
-    DelTree(Root + '\ffmpeg', True, True, True);
-  if not WizardIsComponentSelected('pandoc') then
-    DelTree(Root + '\pandoc', True, True, True);
-  if WizardIsComponentSelected('tesseract') then
-    RemoveDeselectedLanguages
-  else
-    DelTree(Root + '\tesseract', True, True, True);
-  { Empty folder after removing the last engine; a no-op otherwise. }
-  RemoveDir(Root);
-end;
+{ Fresh-install defaults, the modify-mode restore and the setup-copy the
+  tray's "Manage engines..." entry reruns all live in
+  ..\installer\engines.iss with the rest of the engine installer; this
+  section owns only the app-level events. }
 
 procedure InitializeWizard;
 begin

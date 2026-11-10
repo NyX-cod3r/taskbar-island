@@ -184,11 +184,38 @@
     `cargo clippy --all-targets -- -D warnings` 0, `cargo test`
     **256 passed / 0 failed / 1 ignored**. Evidence:
     `coordination/ready-B-4.md` (full SKIP list); changelog fragment
-    `changelog.d/B-4-engine-jobs-golden.md`. **Owner decisions still open**:
-    drop the four engines + `tessdata` into `ENGINES_DIR` (skipped rows then
-    run unmodified), and Ghostscript AGPL-3.0 keep/drop. Next: B5
+    `changelog.d/B-4-engine-jobs-golden.md`. Next: B5
     (installer `engines.<ext>` fragment, `THIRD_PARTY_NOTICES.md`, changelog
     assembly, self-test), then A5 release.
+- **2026-11-10** — **B5 complete; gates green; commit + push of
+    `agent-b/v0.8.0` with this entry. B-scope (B1–B5) is now fully done.**
+    New `installer/engines.iss` include fragment owns every engine
+    component: sized descriptions (`{#EngineSize…}` from
+    `scripts/generated/engine-sizes.iss`), payload file lists to
+    `{app}\engines\<name>`, and the "add or remove engines later" modify
+    flow (registry restore + `KeepSetupCopy` for the tray's "Manage
+    engines..." rerun). `scripts/engine-includes.ps1` now probes all seven
+    engines by executable name anywhere in the folder (recursive, so a
+    wrapper directory counts) and emits `Have*` defines for the four new
+    ones — an engine without payload is never offered, packed, or touched
+    by the modify flow. `scripts/installer.iss` shrank to Core +
+    app-level events. **Owner decisions (2026-11-10): LibreOffice starts
+    unticked on every fresh install (largest engine, clearly sized,
+    opt-in); Ghostscript is kept despite AGPL-3.0.**
+    `THIRD_PARTY_NOTICES.md` covers all seven engines (versions verified
+    against the binaries: FFmpeg 9.0.2, Pandoc 3.12, Tesseract
+    5.4.0.20240606) and now ships inside every install at `{app}`.
+    Self-test: `engine-includes.ps1` run against the real payload (7
+    sizes, no `Have*`) and a fake 7-engine payload (all `Have*`,
+    wrapper-dir Poppler found, eng+deu languages); ISCC 6.7.3 compiled
+    both — real payload full build (241 s) and fake payload with every
+    `#ifdef` branch exercised (all four new engines packed, LibreOffice
+    without `Types`, doubled `[Code]` accepted); `update-smoke.iss`
+    unaffected. Gates: `cargo fmt --check` 0, `cargo clippy --all-targets
+    -- -D warnings` 0, `cargo test` **256 passed / 0 failed / 1
+    ignored**. Evidence: `coordination/ready-B-5.md`; changelog fragment
+    `changelog.d/B-5-installer-engines.md`. Next: A-scope work
+    (Phone Link, Call, release 0.8.0).
 
 ## Blocked
 
@@ -198,6 +225,8 @@
 - Artboards (request 2) block B2 onward, not B1.
 - Golden engine tests (`TI_ENGINES_DIR`) will be skipped until LibreOffice,
   Poppler, qpdf, Ghostscript and `tessdata` are present; they report skips, not
-  failures, per §9.2.
-- Ghostscript AGPL-3.0 keep/drop is an owner decision, still pending (notices
-  written in `docs/third-party-notices` work either way).
+  failures, per §9.2. The installer fragment picks the same engines up
+  automatically on the next build — no code change needed either way.
+- ~~Ghostscript AGPL-3.0 keep/drop~~ - resolved 2026-11-10: **keep**,
+  documented in `THIRD_PARTY_NOTICES.md`, which now ships with the installer.
+  Same date: LibreOffice default resolved - **unticked** on fresh installs.
