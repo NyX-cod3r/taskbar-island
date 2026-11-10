@@ -4633,6 +4633,8 @@ impl Surface {
                 | Element::CallMic
                 | Element::CallOutput
                 | Element::CallIdle
+                | Element::TimerToggle
+                | Element::TimerStop
                 | Element::ClipFilter(_)
                 | Element::ClipPause
                 | Element::ClipClear
@@ -4838,6 +4840,20 @@ impl Surface {
             } else {
                 "Mute speaker"
             }),
+            // Design §6: every icon control carries a tooltip whose text is
+            // also its UIA name. The timer toggle follows the countdown state
+            // (spec §9 has no fixed Timer copy, so the verbs follow the
+            // Play/Pause glyph the card draws).
+            Element::TimerToggle => text(if self.timer.running() {
+                "Pause"
+            } else if self.timer.finished {
+                "Start again"
+            } else if self.timer.active() {
+                "Resume"
+            } else {
+                "Start"
+            }),
+            Element::TimerStop => text("Stop timer"),
             _ => None,
         }
     }
