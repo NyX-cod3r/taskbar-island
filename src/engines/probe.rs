@@ -143,8 +143,9 @@ impl Engine for NativeEngine {
 pub struct ExternalEngine {
     id: EngineId,
     exe: Option<PathBuf>,
-    /// Tesseract's Markdown/DOCX outputs are post-processed by Pandoc.
-    helper: Option<PathBuf>,
+    /// Every other executable a job may chain into (Pandoc finishing OCR,
+    /// Poppler feeding qpdf, LibreOffice → Poppler).
+    paths: super::EnginePaths,
 }
 
 impl ExternalEngine {
@@ -152,12 +153,12 @@ impl ExternalEngine {
         Self {
             id,
             exe,
-            helper: None,
+            paths: super::EnginePaths::default(),
         }
     }
 
-    pub fn with_helper(mut self, helper: Option<PathBuf>) -> Self {
-        self.helper = helper;
+    pub fn with_paths(mut self, paths: super::EnginePaths) -> Self {
+        self.paths = paths;
         self
     }
 }
@@ -185,7 +186,7 @@ impl Engine for ExternalEngine {
         cancel: &super::CancelToken,
     ) -> Result<JobOutput, EngineError> {
         let exe = self.exe.as_deref().ok_or(EngineError::NotFound)?;
-        super::run_external(self.id, exe, self.helper.as_deref(), job, progress, cancel)
+        super::run_external(self.id, exe, &self.paths, job, progress, cancel)
     }
 }
 

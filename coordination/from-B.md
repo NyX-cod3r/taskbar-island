@@ -159,6 +159,36 @@
    — still gated on the owner dropping LibreOffice/Poppler/qpdf/Ghostscript +
    `tessdata` into `ENGINES_DIR` — plus PDF/Office/sheet/present UI), then B5
    (installer engine fragment, `THIRD_PARTY_NOTICES.md`, changelog assembly).
+- **2026-11-10** — **B4 code complete; gates green; commit + push of
+    `agent-b/v0.8.0` with this entry.** All four new engine runners landed
+    (`ghostscript` with `-dSAFER` first and the no-gain contract, `qpdf`
+    rotate/linearize/merge, `poppler` text/raster/images/split/merge with
+    blank-page scan detection, `libreoffice` with the exact spec argv, a
+    private macro/link-free profile and a one-job-at-a-time lock), plus
+    `convert/multi.rs` (image/PDF merge, ZIP + extract with zip-slip and
+    size/ratio caps, batch maps, native CSV → JSON), the Pandoc → DOCX →
+    LibreOffice PDF chain, and collision-safe delivery (`stem (2).ext`,
+    staging temps in the destination folder). The Convert card got the
+    **hybrid card kind** (all-PDF batches stay on the PDF card, 2+
+    convertible files open the Several-files card) and **§5 needs-dimming**
+    (40 % opacity, "needs 2+ …" tooltip, clicks ignored on needs tiles).
+    §9.2's **golden suite** (`src/convert/golden.rs`, 13 tests, one per §4
+    row) runs the real engines on in-test fixtures and asserts the whole
+    delivery contract; rows whose engine is missing print
+    `SKIP golden <row>: …` and pass — this machine runs 23 conversions
+    (FFmpeg/Pandoc/Native) and skips 22 lines naming LibreOffice, Poppler,
+    qpdf, Ghostscript and the missing `tessdata`. §9.4 security tests added:
+    zip bomb refused before any write, zip-slip + hostile names, single-argv
+    hostile names, remote-image HTML under `--sandbox`, GS `-dSAFER`, LO
+    profile disables macros/link updates. Gates: `cargo fmt --check` 0,
+    `cargo clippy --all-targets -- -D warnings` 0, `cargo test`
+    **256 passed / 0 failed / 1 ignored**. Evidence:
+    `coordination/ready-B-4.md` (full SKIP list); changelog fragment
+    `changelog.d/B-4-engine-jobs-golden.md`. **Owner decisions still open**:
+    drop the four engines + `tessdata` into `ENGINES_DIR` (skipped rows then
+    run unmodified), and Ghostscript AGPL-3.0 keep/drop. Next: B5
+    (installer `engines.<ext>` fragment, `THIRD_PARTY_NOTICES.md`, changelog
+    assembly, self-test), then A5 release.
 
 ## Blocked
 

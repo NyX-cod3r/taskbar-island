@@ -71,6 +71,7 @@ image = { version = "0.25", default-features = false, features = [
 webp = "0.3"
 pdf-writer = "0.15"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 kamadak-exif = "0.6"

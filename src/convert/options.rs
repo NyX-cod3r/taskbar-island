@@ -1201,6 +1201,32 @@ pub fn engine_hint(kind: FileKind, action: Action, caps: &CapabilityTable) -> Op
     }
 }
 
+/// §5 rule 3: a tile that needs more input than the session has stays in the
+/// grid at 40 % opacity with a tip saying what is missing. `selected` is how
+/// many files the card can act on — every convertible file is a PDF on the PDF
+/// card, so one count serves both cards. Two files or more and the tile is
+/// fully lit again.
+pub fn needs_hint(action: Action, selected: usize) -> Option<String> {
+    if selected >= 2 {
+        return None;
+    }
+    match action {
+        // "Merge with selected" on the PDF card merges PDFs.
+        Action::PdfTool(PdfTool::Merge) => Some("needs 2+ PDFs".to_owned()),
+        // The Several-files card: merge, zip and every batch job refuse a
+        // single input (the runtimes say "Select at least two files…").
+        Action::Multi(
+            MultiOp::MergePdf
+            | MultiOp::Zip
+            | MultiOp::BatchConvert
+            | MultiOp::BatchResize
+            | MultiOp::BatchCompress
+            | MultiOp::BatchStripMetadata,
+        ) => Some("needs 2+ files".to_owned()),
+        _ => None,
+    }
+}
+
 /// Why an option is not offered; tests use it to pin the table to the router.
 #[cfg(test)]
 pub fn routable(kind: FileKind, action: Action, caps: &CapabilityTable) -> bool {
@@ -1734,6 +1760,43 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// §5 rule 3: a tile that needs more input than exists is drawn at 40 %
+    /// and its tip names exactly what is missing — never anything else.
+    #[test]
+    fn needs_hints_name_the_missing_input() {
+        let one = 1;
+        let two = 2;
+        assert_eq!(
+            needs_hint(Action::PdfTool(PdfTool::Merge), one).as_deref(),
+            Some("needs 2+ PDFs")
+        );
+        assert_eq!(needs_hint(Action::PdfTool(PdfTool::Merge), two), None);
+        // Every Several-files job refuses a single input at run time, so each
+        // tile dims the same way on the same selection.
+        for op in [
+            MultiOp::MergePdf,
+            MultiOp::Zip,
+            MultiOp::BatchConvert,
+            MultiOp::BatchResize,
+            MultiOp::BatchCompress,
+            MultiOp::BatchStripMetadata,
+        ] {
+            assert_eq!(
+                needs_hint(Action::Multi(op), one).as_deref(),
+                Some("needs 2+ files"),
+                "{op:?} with one file"
+            );
+            assert_eq!(needs_hint(Action::Multi(op), two), None, "{op:?} with two");
+        }
+        // Ordinary conversions and single-file ZIP extraction never dim.
+        assert_eq!(
+            needs_hint(Action::ImageConvert(ImageFormat::Png), one),
+            None
+        );
+        assert_eq!(needs_hint(Action::Zip(ZipOp::ExtractHere), one), None);
+        assert_eq!(needs_hint(Action::PdfTool(PdfTool::RotateLeft), one), None);
     }
 
     #[test]

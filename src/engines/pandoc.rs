@@ -13,12 +13,13 @@ use crate::convert::detect::{self, SourceFormat};
 use super::exec::{self, Spec};
 use super::output::{self, TargetFormat, Workspace};
 use super::{
-    argv_path, Action, CancelToken, DocumentExtract, DocumentFormat, EngineError, Job, JobOutput,
-    Progress, ProgressSink, Stage, DOCUMENT_TIMEOUT,
+    argv_path, Action, CancelToken, DocumentExtract, DocumentFormat, EngineError, EngineId,
+    EnginePaths, Job, JobOutput, Progress, ProgressSink, Stage, DOCUMENT_TIMEOUT,
 };
 
 pub fn run(
     exe: &Path,
+    paths: &EnginePaths,
     job: &Job,
     progress: ProgressSink<'_>,
     cancel: &CancelToken,
@@ -39,6 +40,45 @@ pub fn run(
     }
 
     match job.action {
+        // Pandoc has no PDF writer: it writes DOCX and LibreOffice finishes
+        // the chain. `route_source` only offers this route when LibreOffice
+        // is installed, so the second step is a gate, not a fallback.
+        Action::DocumentConvert(DocumentFormat::Pdf) => {
+            let office = paths
+                .location(EngineId::LibreOffice)
+                .ok_or(EngineError::NotFound)?;
+            let stem = job
+                .input
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "converted".into());
+            let intermediate = workspace.join(&format!("{stem}.docx"));
+            let args = plan(source, DocumentFormat::Docx, &intermediate, job)?;
+            progress(Progress {
+                stage: Stage::Converting,
+                fraction: None,
+            });
+            exec::run(
+                &Spec {
+                    exe,
+                    args: &args,
+                    dir: workspace.dir(),
+                    timeout: DOCUMENT_TIMEOUT,
+                },
+                cancel,
+                |_| {},
+            )?;
+            output::verify(&intermediate, TargetFormat::Document(DocumentFormat::Docx)).map_err(
+                |_| EngineError::Failed("Pandoc produced an unreadable document.".into()),
+            )?;
+            let office_job = Job {
+                input: intermediate,
+                output: job.output.clone(),
+                action: Action::DocumentConvert(DocumentFormat::Pdf),
+                language: job.language.clone(),
+            };
+            super::libreoffice::run(office, paths, &office_job, progress, cancel)
+        }
         Action::DocumentConvert(format) => {
             let output_path = workspace.join(&format!("out.{}", extension(format)));
             let args = plan(source, format, &output_path, job)?;
@@ -79,6 +119,7 @@ pub fn run(
                 output: delivered,
                 format: Some(target),
                 text: None,
+                note: None,
             })
         }
         Action::DocumentExtract(DocumentExtract::PlainText) => {
@@ -121,6 +162,7 @@ pub fn run(
                 output: delivered,
                 format: Some(target),
                 text: None,
+                note: None,
             })
         }
         Action::DocumentExtract(DocumentExtract::Images) => {
@@ -163,6 +205,7 @@ pub fn run(
                 output: delivered,
                 format: None,
                 text: None,
+                note: None,
             })
         }
         _ => Err(EngineError::Unsupported),

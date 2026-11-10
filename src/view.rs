@@ -336,6 +336,9 @@ pub struct ConvertOptionView {
     /// Tooltip and accessibility name.
     #[allow(dead_code)] // Option tooltips land with the Convert card (B2).
     pub label: String,
+    /// §5 rule 3: the tile needs more input than the selection has, so it is
+    /// drawn at 40 % opacity and its tip says what is missing.
+    pub needs: bool,
 }
 
 #[derive(Debug, Clone)]

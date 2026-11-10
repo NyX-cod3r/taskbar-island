@@ -542,6 +542,9 @@ pub const CONVERT_UNDO: Color = rgb(0xE8, 0x9C, 0x9C);
 /// Drag-over tile fill from section 4.4.
 pub const CONVERT_DROP_FILL_A: f32 = 0.28;
 pub const CONVERT_DROP_DIM_A: f32 = 0.45;
+/// §5 rule 3: a tile that needs more input than the selection has is drawn at
+/// 40 % opacity and its tip says what is missing.
+pub const CONVERT_NEEDS_A: f32 = 0.4;
 
 // v0.6 option tiles (exact artboard hexes for the dark card).
 pub const CONVERT_OPTION_FILL: Color = rgb(0x30, 0x30, 0x30);

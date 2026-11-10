@@ -2320,10 +2320,13 @@ impl Surface {
         if session.phase != ConvertPhase::Choosing || session.convertible.is_empty() {
             return;
         }
-        let Some(primary) = session.probes.get(session.primary) else {
+        // A dimmed tile (§5 rule 3) only explains itself in its tip; it
+        // never starts a job the selection can't satisfy.
+        if options::needs_hint(action, session.convertible.len()).is_some() {
             return;
-        };
-        if !options::action_available(file_kind(primary), action, &self.caps) {
+        }
+        let kind = card_kind(session);
+        if !options::action_available(kind, action, &self.caps) {
             return;
         }
         self.begin_conversion(action);
@@ -2607,13 +2610,11 @@ impl Surface {
         {
             let caps = self.caps.clone();
             if let Some(session) = self.convert.as_mut() {
-                if let Some(primary) = session.probes.get(session.primary) {
-                    let kind = file_kind(primary);
-                    let sources = source_kinds(session);
-                    let tabs = options::tabs(kind, &caps, &sources);
-                    if !tabs.is_empty() && !tabs.contains(&session.tab) {
-                        session.tab = tabs[0];
-                    }
+                let kind = card_kind(session);
+                let sources = source_kinds(session);
+                let tabs = options::tabs(kind, &caps, &sources);
+                if !tabs.is_empty() && !tabs.contains(&session.tab) {
+                    session.tab = tabs[0];
                 }
             }
         }
@@ -2690,22 +2691,18 @@ impl Surface {
         }
 
         // Everything the card may offer lives in the options table; the card
-        // only maps the visible rows into view data. A mixed batch shares no
-        // job, so the card says so instead of offering a type-specific grid.
-        let kind = file_kind(primary);
-        let mixed = mixed_kinds(&session.probes, &session.convertible);
+        // only maps the visible rows into view data. Two or more convertible
+        // files open the Several-files card — except an all-PDF selection,
+        // which keeps the PDF card and its tools.
+        let kind = card_kind(session);
         let sources = source_kinds(session);
-        let all_tabs: Vec<ConvertTabView> = if mixed {
-            Vec::new()
-        } else {
-            options::tabs(kind, &self.caps, &sources)
-                .into_iter()
-                .map(|tab| ConvertTabView {
-                    tab,
-                    label: tab.label().to_string(),
-                })
-                .collect()
-        };
+        let all_tabs: Vec<ConvertTabView> = options::tabs(kind, &self.caps, &sources)
+            .into_iter()
+            .map(|tab| ConvertTabView {
+                tab,
+                label: tab.label().to_string(),
+            })
+            .collect();
         let active_tab = all_tabs
             .iter()
             .find(|tab| tab.tab == session.tab)
@@ -2716,15 +2713,15 @@ impl Surface {
         // Presentation and Several files ship one; a missing engine can
         // collapse any other card too). The grid then takes the strip's
         // space — the active tab still comes from the full list above.
-        let tabs: Vec<ConvertTabView> =
-            if mixed || options::tab_strip_hidden(kind, &self.caps, &sources) {
-                Vec::new()
-            } else {
-                all_tabs
-            };
-        let grid_options: Vec<ConvertOptionView> = if mixed {
+        let tabs: Vec<ConvertTabView> = if options::tab_strip_hidden(kind, &self.caps, &sources) {
             Vec::new()
         } else {
+            all_tabs
+        };
+        // §5 rule 3: a tile that needs more input than the session has is
+        // drawn at 40 % and its tip says what is missing.
+        let selected = session.convertible.len();
+        let grid_options: Vec<ConvertOptionView> =
             options::options(kind, active_tab, &self.caps, &sources)
                 .into_iter()
                 .map(|def| ConvertOptionView {
@@ -2736,9 +2733,11 @@ impl Surface {
                         Some(def.icon)
                     },
                     label: def.label.to_string(),
+                    needs: def
+                        .action
+                        .is_some_and(|action| options::needs_hint(action, selected).is_some()),
                 })
-                .collect()
-        };
+                .collect();
 
         let state = match session.phase {
             ConvertPhase::Working { .. } => {
@@ -2846,10 +2845,6 @@ impl Surface {
                 });
                 ConvertState::Failed { title, detail }
             }
-            ConvertPhase::Choosing if mixed => ConvertState::Notice {
-                title: "Different file types".into(),
-                detail: "Convert files of one type at a time.".into(),
-            },
             ConvertPhase::Choosing => match session.notice() {
                 Some((title, detail)) => ConvertState::Notice {
                     title: title.into(),
@@ -4582,13 +4577,16 @@ impl Surface {
             Element::ConvertTab(tab) => text(tab.label()),
             Element::ConvertOption(action) => {
                 let title = options::label_for(action)?;
-                let hint = self
-                    .convert
-                    .as_ref()
-                    .and_then(|session| session.probes.get(session.primary))
-                    .and_then(|primary| {
-                        options::engine_hint(file_kind(primary), action, &self.caps)
-                    });
+                let session = self.convert.as_ref();
+                let selected = session.map_or(0, |session| session.convertible.len());
+                // §5 rule 3: a dimmed tile's tip says what is missing instead
+                // of which engine would run it.
+                if let Some(need) = options::needs_hint(action, selected) {
+                    return Some((title.to_string(), Some(need)));
+                }
+                let hint = session.and_then(|session| {
+                    options::engine_hint(card_kind(session), action, &self.caps)
+                });
                 Some((title.to_string(), hint))
             }
             Element::MusicPlay => text(
@@ -5586,18 +5584,27 @@ fn file_kind(probe: &Probe) -> FileKind {
     }
 }
 
-/// A batch spanning more than one class shares no job, so the card offers no
-/// grid at all.
-fn mixed_kinds(probes: &[Probe], convertible: &[usize]) -> bool {
-    let mut kinds = convertible
+/// The class the option table is keyed by for this session. Two or more
+/// convertible files open the Several-files card — except a selection that is
+/// all PDFs, which keeps the PDF card and its merge tools (options spec
+/// §2.5/§2.7). A single file keeps its own class.
+fn card_kind(session: &ConvertSession) -> FileKind {
+    if session.convertible.len() < 2 {
+        return session
+            .probes
+            .get(session.primary)
+            .map_or(FileKind::Other, file_kind);
+    }
+    let all_pdfs = session
+        .convertible
         .iter()
-        .filter_map(|index| probes.get(*index))
-        .filter(|probe| probe.kind.convertible())
-        .map(file_kind);
-    let Some(first) = kinds.next() else {
-        return false;
-    };
-    kinds.any(|other| other != first)
+        .filter_map(|index| session.probes.get(*index))
+        .all(|probe| file_kind(probe) == FileKind::Pdf);
+    if all_pdfs {
+        FileKind::Pdf
+    } else {
+        FileKind::Multi
+    }
 }
 
 /// Exact containers in the batch, so a tile never offers the file's own
@@ -5636,26 +5643,47 @@ mod tests {
     }
 
     #[test]
-    fn one_class_batch_is_not_mixed() {
-        let probes = vec![
-            image(crate::convert::detect::SourceFormat::Jpeg),
-            image(crate::convert::detect::SourceFormat::Png),
-            probe(ProbeKind::Video(crate::convert::detect::SourceFormat::Mp4)),
-        ];
-        assert!(!mixed_kinds(&probes, &[0, 1]));
-        assert!(!mixed_kinds(&probes, &[]));
+    fn two_files_open_the_multi_card() {
+        let session = ConvertSession::new(
+            vec![
+                image(crate::convert::detect::SourceFormat::Jpeg),
+                image(crate::convert::detect::SourceFormat::Png),
+            ],
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(card_kind(&session), FileKind::Multi);
     }
 
     #[test]
-    fn different_classes_share_no_grid() {
-        let probes = vec![
-            image(crate::convert::detect::SourceFormat::Jpeg),
-            probe(ProbeKind::Video(crate::convert::detect::SourceFormat::Mp4)),
-            probe(ProbeKind::Missing),
-        ];
-        assert!(mixed_kinds(&probes, &[0, 1]));
-        // The unsupported probe is not convertible, so it cannot mix the set.
-        assert!(!mixed_kinds(&probes, &[0, 2]));
+    fn an_all_pdf_batch_stays_on_the_pdf_card() {
+        let session = ConvertSession::new(
+            vec![probe(ProbeKind::Pdf), probe(ProbeKind::Pdf)],
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(card_kind(&session), FileKind::Pdf);
+    }
+
+    #[test]
+    fn a_single_file_keeps_its_own_card() {
+        let jpeg = ConvertSession::new(
+            vec![image(crate::convert::detect::SourceFormat::Jpeg)],
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(card_kind(&jpeg), FileKind::Image);
+        // An unsupported probe is not convertible, so it cannot turn one
+        // image into a Several-files batch.
+        let with_missing = ConvertSession::new(
+            vec![
+                image(crate::convert::detect::SourceFormat::Jpeg),
+                probe(ProbeKind::Missing),
+            ],
+            Instant::now(),
+        )
+        .unwrap();
+        assert_eq!(card_kind(&with_missing), FileKind::Image);
     }
 
     /// Copy-back paste only fires for the window that was in front when the row

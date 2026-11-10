@@ -10,6 +10,28 @@ use super::{
     FileKind, ImageFormat, ImageOptimize, JobOutput, MultiOp, OcrOutput, PdfTarget, PdfTool,
     PresentFormat, SheetFormat, VideoExtract, VideoFormat,
 };
+use crate::convert::detect::SourceFormat;
+
+/// Which engine of record a document source has (B prompt §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DocGroup {
+    /// Markdown, LaTeX, EPUB, plain text — Pandoc's readers.
+    Markup,
+    /// HTML — LibreOffice's web filter keeps the layout.
+    Web,
+    /// DOCX, ODT, RTF, DOC and anything unrecognised — LibreOffice's.
+    Office,
+}
+
+fn doc_group(source: Option<SourceFormat>) -> DocGroup {
+    match source {
+        Some(
+            SourceFormat::Markdown | SourceFormat::Tex | SourceFormat::Epub | SourceFormat::Txt,
+        ) => DocGroup::Markup,
+        Some(SourceFormat::Html) => DocGroup::Web,
+        _ => DocGroup::Office,
+    }
+}
 
 /// One automatic retry, exactly as the spec asks: the chosen engine, then the
 /// next candidate, then failure.
@@ -32,6 +54,19 @@ impl Candidate {
 /// Ordered candidates for one source class and action. An empty result means
 /// the UI must hide the option entirely.
 pub fn route(kind: FileKind, action: Action, capabilities: &CapabilityTable) -> Vec<Candidate> {
+    route_source(kind, None, action, capabilities)
+}
+
+/// Same as `route`, but the source container can re-order the candidates for
+/// the one case where the engine of record depends on what the file is: a
+/// markup document is Pandoc's, an HTML document is LibreOffice's web filter,
+/// and everything else is LibreOffice's (B prompt §4).
+pub fn route_source(
+    kind: FileKind,
+    source: Option<SourceFormat>,
+    action: Action,
+    capabilities: &CapabilityTable,
+) -> Vec<Candidate> {
     let mut candidates = Vec::new();
     match (kind, action) {
         (FileKind::Image, Action::ImageConvert(target)) => {
@@ -112,24 +147,66 @@ pub fn route(kind: FileKind, action: Action, capabilities: &CapabilityTable) -> 
                 candidates.push(Candidate::new(EngineId::Ffmpeg, 0));
             }
         }
-        (FileKind::Document, Action::DocumentConvert(target)) => match target {
-            // Word-processing outputs: LibreOffice is the engine of record
-            // (group A sources). Pandoc writes DOCX as well, so it stays as
-            // the one automatic retry for markup sources (group B).
-            Doc::Pdf | Doc::Doc | Doc::Docx => {
-                push_document(
-                    &mut candidates,
-                    capabilities,
-                    EngineId::LibreOffice,
-                    0,
-                    target,
-                );
-                if target == Doc::Docx {
+        (FileKind::Document, Action::DocumentConvert(target)) => {
+            match (doc_group(source), target) {
+                // Markup (md, tex, epub, txt): Pandoc reads the source, so it
+                // goes first and LibreOffice is the one automatic retry.
+                (DocGroup::Markup, Doc::Docx) => {
+                    push_document(&mut candidates, capabilities, EngineId::Pandoc, 0, target);
+                    push_document(
+                        &mut candidates,
+                        capabilities,
+                        EngineId::LibreOffice,
+                        10,
+                        target,
+                    );
+                }
+                // Pandoc has no offline PDF writer: the job is a chain
+                // (Pandoc → DOCX → LibreOffice → PDF), so LibreOffice gates
+                // the route instead of retrying it.
+                (DocGroup::Markup, Doc::Pdf) => {
+                    if capabilities.installed(EngineId::LibreOffice) {
+                        push_document(
+                            &mut candidates,
+                            capabilities,
+                            EngineId::Pandoc,
+                            0,
+                            Doc::Docx,
+                        );
+                    }
+                }
+                // HTML keeps its layout in LibreOffice's web filter; Pandoc
+                // is the fallback that strips it.
+                (DocGroup::Web, Doc::Pdf | Doc::Docx) => {
+                    push_document(
+                        &mut candidates,
+                        capabilities,
+                        EngineId::LibreOffice,
+                        0,
+                        target,
+                    );
                     push_document(&mut candidates, capabilities, EngineId::Pandoc, 10, target);
                 }
+                // Word-processing outputs: LibreOffice is the engine of record
+                // (group A sources). Pandoc writes DOCX as well, so it stays
+                // as the one automatic retry.
+                (_, Doc::Pdf | Doc::Doc | Doc::Docx) => {
+                    push_document(
+                        &mut candidates,
+                        capabilities,
+                        EngineId::LibreOffice,
+                        0,
+                        target,
+                    );
+                    if target == Doc::Docx {
+                        push_document(&mut candidates, capabilities, EngineId::Pandoc, 10, target);
+                    }
+                }
+                (_, other) => {
+                    push_document(&mut candidates, capabilities, EngineId::Pandoc, 0, other)
+                }
             }
-            other => push_document(&mut candidates, capabilities, EngineId::Pandoc, 0, other),
-        },
+        }
         (FileKind::Document, Action::DocumentExtract(extract)) => match extract {
             // Extracting embedded images is Native's unpack job (§2.2).
             crate::engines::DocumentExtract::Images => {

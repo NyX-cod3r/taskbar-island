@@ -324,6 +324,25 @@ pub fn deliver_in(
     action: Action,
     target: TargetFormat,
 ) -> Result<(PathBuf, bool), String> {
+    deliver_ext(
+        destination,
+        engine_output,
+        input,
+        target.extension(),
+        suffix(action),
+    )
+}
+
+/// The delivery body: copy into the destination volume under a temp name,
+/// then rename into the first free `stem (n).extension`. An existing file is
+/// never replaced.
+pub fn deliver_ext(
+    destination: Option<&Path>,
+    engine_output: &Path,
+    input: &Path,
+    extension: &str,
+    name_suffix: Option<&'static str>,
+) -> Result<(PathBuf, bool), String> {
     if !engine_output.is_file() {
         return Err("The engine produced no output.".into());
     }
@@ -345,11 +364,10 @@ pub fn deliver_in(
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| "converted".into());
-    let stem = match suffix(action) {
+    let stem = match name_suffix {
         Some(suffix) => format!("{stem}{suffix}"),
         None => stem,
     };
-    let extension = target.extension();
     let temp = dir.join(format!(
         ".taskbar-island-{}-{}.tmp",
         std::process::id(),
@@ -376,6 +394,49 @@ pub fn deliver_in(
     Err("There are too many files with this name.".into())
 }
 
+/// Delivers one file under an exact, caller-chosen name (an extracted ZIP
+/// entry keeps its own name). Collisions become `name (2).ext`; nothing is
+/// ever overwritten.
+pub fn deliver_as(dir: &Path, engine_output: &Path, file_name: &str) -> Result<PathBuf, String> {
+    if !engine_output.is_file() {
+        return Err("The engine produced no output.".into());
+    }
+    let name = Path::new(file_name);
+    let stem = name
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "file".into());
+    let extension = name
+        .extension()
+        .map(|ext| ext.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temp = dir.join(format!(
+        ".taskbar-island-{}-{}.tmp",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    copy_file(engine_output, &temp)?;
+    for index in 0..1000u32 {
+        let name = if index == 0 {
+            format!("{stem}.{extension}")
+        } else {
+            format!("{stem} ({}).{extension}", index + 1)
+        };
+        let destination = dir.join(&name);
+        match move_new(&temp, &destination) {
+            Ok(()) => return Ok(destination),
+            Err(MoveError::Exists) => continue,
+            Err(MoveError::Failed(reason)) => {
+                let _ = fs::remove_file(&temp);
+                return Err(reason);
+            }
+        }
+    }
+    let _ = fs::remove_file(&temp);
+    Err("There are too many files with this name.".into())
+}
+
 /// Moves an engine-produced folder (extracted images) beside the original.
 /// The folder is first copied inside the destination directory's own volume,
 /// then renamed into an unused `name_images` directory, so the user never sees
@@ -384,6 +445,18 @@ pub fn deliver_folder_in(
     destination: Option<&Path>,
     source: &Path,
     input: &Path,
+) -> Result<(PathBuf, bool), String> {
+    deliver_folder_named_in(destination, source, input, "images")
+}
+
+/// Same as `deliver_folder_in` with a caller-chosen folder label: `_pages`
+/// for split documents, `_slides` for presentation renders, `_images` for
+/// unpacked document media.
+pub fn deliver_folder_named_in(
+    destination: Option<&Path>,
+    source: &Path,
+    input: &Path,
+    label: &str,
 ) -> Result<(PathBuf, bool), String> {
     if !source.is_dir() {
         return Err("The engine produced no output.".into());
@@ -417,9 +490,9 @@ pub fn deliver_folder_in(
     }
     for index in 0..1000u32 {
         let name = if index == 0 {
-            format!("{stem}_images")
+            format!("{stem}_{label}")
         } else {
-            format!("{stem}_images ({})", index + 1)
+            format!("{stem}_{label} ({})", index + 1)
         };
         let destination = dir.join(&name);
         match move_new(&temp, &destination) {
@@ -507,12 +580,12 @@ fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
         .map_err(|error| format!("The file couldn't be written: {error}."))
 }
 
-enum MoveError {
+pub(crate) enum MoveError {
     Exists,
     Failed(String),
 }
 
-fn move_new(from: &Path, destination: &Path) -> Result<(), MoveError> {
+pub(crate) fn move_new(from: &Path, destination: &Path) -> Result<(), MoveError> {
     let from_wide = HSTRING::from(from.as_os_str());
     let to_wide = HSTRING::from(destination.as_os_str());
     // SAFETY: both strings are NUL-terminated and live for the call.

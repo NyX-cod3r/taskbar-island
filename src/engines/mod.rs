@@ -7,9 +7,13 @@
 
 pub mod exec;
 pub mod ffmpeg;
+pub mod ghostscript;
+pub mod libreoffice;
 pub mod output;
 pub mod pandoc;
+pub mod poppler;
 pub mod probe;
+pub mod qpdf;
 pub mod router;
 pub mod tesseract;
 
@@ -26,6 +30,10 @@ pub const IMAGE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 pub const MEDIA_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 pub const DOCUMENT_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub const OCR_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// LibreOffice is the slowest engine by far: a cold `soffice` plus a DOCX
+/// round-trip can take minutes on a cold profile, so it gets its own ceiling
+/// (B prompt §3: one job at a time, 180 s timeout for the convert itself).
+pub const OFFICE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// Where development builds point at a pre-installed engine folder. Installed
 /// builds resolve `<exe dir>\engines` instead.
@@ -456,13 +464,17 @@ pub struct Job {
     pub language: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct JobOutput {
     pub output: PathBuf,
     /// The container that was written, when the job produces one file.
     pub format: Option<TargetFormat>,
     /// OCR-to-clipboard results; every other job leaves this `None`.
     pub text: Option<String>,
+    /// A delivery note shown instead of a file name (Ghostscript's "no gain"
+    /// report: the result would not have been smaller than the original, so
+    /// nothing was written beside it).
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -582,25 +594,26 @@ impl EnginePaths {
 
 /// Runs one external job. Shared by `Engine::run` and the batch runner so the
 /// dispatch table lives in exactly one place.
+///
+/// `paths` carries every other executable the job may need as a later step
+/// (Pandoc finishing OCR, Poppler feeding qpdf, LibreOffice → Poppler chains).
 pub fn run_external(
     id: EngineId,
     exe: &std::path::Path,
-    helper: Option<&std::path::Path>,
+    paths: &EnginePaths,
     job: &Job,
     progress: ProgressSink<'_>,
     cancel: &CancelToken,
 ) -> Result<JobOutput, EngineError> {
     match id {
         EngineId::Ffmpeg => ffmpeg::run(exe, job, progress, cancel),
-        EngineId::Pandoc => pandoc::run(exe, job, progress, cancel),
-        EngineId::Tesseract => tesseract::run(exe, helper, job, progress, cancel),
-        // The v0.8 engines run as pipeline steps (jobs.rs `Step`), not as a
-        // whole-job runner; their argv builders land with B3.
-        EngineId::LibreOffice
-        | EngineId::Poppler
-        | EngineId::Qpdf
-        | EngineId::Ghostscript
-        | EngineId::Native => Err(EngineError::Unsupported),
+        EngineId::Pandoc => pandoc::run(exe, paths, job, progress, cancel),
+        EngineId::Tesseract => tesseract::run(exe, paths.helper(), job, progress, cancel),
+        EngineId::LibreOffice => libreoffice::run(exe, paths, job, progress, cancel),
+        EngineId::Poppler => poppler::run(exe, paths, job, progress, cancel),
+        EngineId::Qpdf => qpdf::run(exe, paths, job, progress, cancel),
+        EngineId::Ghostscript => ghostscript::run(exe, paths, job, progress, cancel),
+        EngineId::Native => Err(EngineError::Unsupported),
     }
 }
 
@@ -712,20 +725,16 @@ impl EngineSet {
         }
 
         if rebuilt {
-            let pandoc = self.locations[EngineId::Pandoc.index()].clone();
+            let paths = self.paths();
             self.engines = EngineId::ALL
                 .iter()
                 .map(|id| {
                     let engine: Box<dyn Engine> = match id {
                         EngineId::Native => Box::new(probe::NativeEngine),
-                        EngineId::Tesseract => Box::new(
+                        _ => Box::new(
                             probe::ExternalEngine::new(*id, self.locations[id.index()].clone())
-                                .with_helper(pandoc.clone()),
+                                .with_paths(paths.clone()),
                         ),
-                        _ => Box::new(probe::ExternalEngine::new(
-                            *id,
-                            self.locations[id.index()].clone(),
-                        )),
                     };
                     (*id, engine)
                 })
@@ -762,17 +771,29 @@ pub fn refresh_shared() {
 }
 
 /// Dev builds read `TBI_ENGINES_DIR`; installed builds read the `engines`
-/// folder next to the executable. This is the only resolver.
+/// folder next to the executable. When that folder does not exist (a test
+/// binary under `target\`), the dev/test fallback from `docs/engines.md`
+/// applies: `%LOCALAPPDATA%\Filee\engines`. This is the only resolver.
 pub fn engines_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os(ENGINES_ENV) {
         if !dir.is_empty() {
             return PathBuf::from(dir);
         }
     }
-    std::env::current_exe()
+    let beside_exe = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|parent| parent.join("engines")))
-        .unwrap_or_else(|| PathBuf::from("engines"))
+        .and_then(|exe| exe.parent().map(|parent| parent.join("engines")));
+    match beside_exe {
+        Some(dir) if dir.is_dir() => dir,
+        // Dev / test fallback documented in docs/engines.md; absent on any
+        // machine that never installed the engine payload.
+        _ => std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .map(|local| local.join("Filee").join("engines"))
+            .filter(|dir| dir.is_dir())
+            .or(beside_exe)
+            .unwrap_or_else(|| PathBuf::from("engines")),
+    }
 }
 
 /// A dropped file name is always one argv item. A leading dash is prefixed so
@@ -800,6 +821,42 @@ mod tests {
         assert_eq!(argv_path(path).to_string_lossy(), ".\\-rf.png");
         let normal = std::path::Path::new(r"C:\pics\photo.png");
         assert_eq!(argv_path(normal).to_string_lossy(), r"C:\pics\photo.png");
+    }
+
+    /// §9.4 hostile names: spaces, both quote styles, shell metacharacters,
+    /// a 300-character name and non-ASCII text all stay exactly one argv item;
+    /// only a leading dash is transformed (`.\\` prefix), never split.
+    #[test]
+    fn hostile_file_names_stay_single_argv_items() {
+        let long = format!("{}.png", "x".repeat(300));
+        for name in [
+            "-rf --recursive.png",
+            "two words and \"double\" quotes.png",
+            "single 'quotes' here.png",
+            long.as_str(),
+            "नमस्ते फ़ाइल.png",
+            "emoji-🎨-file.png",
+            "semi;colon&amp&paren().png",
+        ] {
+            let argv = argv_path(std::path::Path::new(name));
+            if name.starts_with('-') {
+                assert!(
+                    argv.to_string_lossy().starts_with(".\\"),
+                    "{name:?} became {argv:?}"
+                );
+            } else {
+                assert_eq!(
+                    argv,
+                    std::path::Path::new(name).as_os_str(),
+                    "{name:?} must pass through unchanged"
+                );
+            }
+            // One item: no embedded NUL can split it, and the whole name is
+            // still present after the transformation.
+            let text = argv.to_string_lossy();
+            assert!(!text.contains('\0'), "{name:?}");
+            assert!(text.contains(name), "{name:?} was mangled into {text:?}");
+        }
     }
 
     #[test]

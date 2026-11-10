@@ -7,8 +7,14 @@
 
 pub mod detect;
 pub mod jobs;
+pub mod multi;
 pub mod options;
 pub mod shell;
+
+/// §9.2 golden conversions against the real engines in `ENGINES_DIR`; rows
+/// whose engine is missing print a SKIP line instead of failing.
+#[cfg(test)]
+mod golden;
 
 pub use detect::{probe_all, Probe, ProbeKind};
 

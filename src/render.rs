@@ -3800,7 +3800,10 @@ impl Painter {
                     let pressed = element.and_then(|e| input.pressed_amount(e));
                     let hovered = element.map(|e| input.hovered(e)).unwrap_or(false);
                     let drop_target = c.drag_target.is_some() && option.action == c.drag_target;
-                    let a = if c.drag_target.is_some() && !drop_target {
+                    let a = if option.needs {
+                        // §5 rule 3: not enough input yet — the tip says what.
+                        alpha * design::CONVERT_NEEDS_A
+                    } else if c.drag_target.is_some() && !drop_target {
                         alpha * design::CONVERT_DROP_DIM_A
                     } else {
                         alpha

@@ -31,9 +31,12 @@ use crate::design::{self, Color};
 use crate::engines::output::{TargetFormat, Workspace};
 use crate::engines::router::{self, Candidate, FallbackFailure};
 use crate::engines::{
-    self, Action, CancelToken, CapabilityTable, DocumentFormat, EngineError, EngineId, EnginePaths,
-    FileKind, ImageEdit, ImageFormat, ImageOptimize, Job, JobOutput, Progress, ProgressSink, Stage,
+    self, Action, CancelToken, CapabilityTable, DocumentExtract, DocumentFormat, EngineError,
+    EngineId, EnginePaths, FileKind, ImageEdit, ImageFormat, ImageOptimize, Job, JobOutput,
+    Progress, ProgressSink, SheetFormat, Stage,
 };
+
+use super::multi;
 
 use super::detect::{self, SourceFormat};
 use super::{MAX_DECODE_BYTES, MAX_FILE_BYTES, MAX_INPUTS, MAX_PIXELS};
@@ -50,6 +53,9 @@ pub struct Created {
     pub format: Option<TargetFormat>,
     /// OCR text that went to the clipboard; every other job leaves this `None`.
     pub text: Option<String>,
+    /// Shown instead of a file name when the job deliberately wrote nothing
+    /// (Ghostscript "no gain": the compressed result would not be smaller).
+    pub note: Option<String>,
     pub input_bytes: u64,
     pub output_bytes: u64,
 }
@@ -143,6 +149,19 @@ pub fn run_batch(
     let mut outcome = Outcome::default();
     let inputs: Vec<&String> = inputs.iter().take(MAX_INPUTS).collect();
     let total = inputs.len();
+
+    // Merge, ZIP and archive extraction consume the whole selection at once
+    // and never run per file.
+    if multi::is_whole_batch(action) {
+        let owned: Vec<String> = inputs.iter().map(|input| (*input).clone()).collect();
+        let mut whole = multi::run_whole_batch(&owned, action, paths, cancel, progress, on_engine);
+        outcome.created.append(&mut whole.created);
+        outcome.failed.append(&mut whole.failed);
+        outcome.cancelled |= whole.cancelled;
+        progress(total, total, "");
+        return outcome;
+    }
+
     for (index, input) in inputs.iter().enumerate() {
         if cancel.is_cancelled() {
             outcome.cancelled = true;
@@ -150,9 +169,27 @@ pub fn run_batch(
         }
         let name = file_name(input);
         progress(index, total, &name);
+
+        // A batch op becomes a concrete per-file action; a file the op does
+        // not apply to is reported instead of silently skipped.
+        let mut effective = action;
+        if let Action::Multi(op) = action {
+            match multi::batch_action(op, input) {
+                Some(mapped) => effective = mapped,
+                None => {
+                    outcome.failed.push(Failure {
+                        input: (*input).clone(),
+                        input_name: name,
+                        reason: multi::batch_skip_reason(op, input).to_string(),
+                    });
+                    continue;
+                }
+            }
+        }
+
         let mut sink = |progress: Progress| on_engine(index, total, progress);
         match catch_unwind(AssertUnwindSafe(|| {
-            run_routed(input, action, language, caps, paths, cancel, &mut sink)
+            run_routed(input, effective, language, caps, paths, cancel, &mut sink)
         })) {
             Ok(Ok(created)) => outcome.created.push(created),
             Ok(Err(reason)) => outcome.failed.push(Failure {
@@ -185,8 +222,21 @@ fn run_routed(
     cancel: &CancelToken,
     on_engine: &mut dyn FnMut(Progress),
 ) -> Result<Created, String> {
+    // Two Native jobs that the router already points at Native but that are
+    // not image codecs: unpacking a document package and CSV → JSON.
+    match action {
+        Action::DocumentExtract(DocumentExtract::Images) => {
+            return multi::unpack_document_images(input)
+        }
+        Action::SheetConvert(SheetFormat::Json) => match detect::quick_format(input) {
+            Some(SourceFormat::Csv | SourceFormat::Tsv) => return multi::csv_to_json(input),
+            _ => return Err("Only CSV files can be turned into JSON.".into()),
+        },
+        _ => {}
+    }
     let kind = detect::file_kind(input);
-    let candidates = router::route(kind, action, caps);
+    let source = detect::quick_format(input);
+    let candidates = router::route_source(kind, source, action, caps);
     if candidates.is_empty() {
         return Err(missing_engine(kind));
     }
@@ -209,7 +259,7 @@ fn run_routed(
                 engines::run_external(
                     id,
                     exe,
-                    paths.helper(),
+                    paths,
                     &job,
                     &mut |progress| on_engine(progress),
                     cancel,
@@ -255,10 +305,11 @@ fn created_from(input: &str, output: JobOutput) -> Created {
         output_name,
         format: output.format,
         text: output.text,
+        note: output.note,
     }
 }
 
-fn path_bytes(path: &Path) -> u64 {
+pub(crate) fn path_bytes(path: &Path) -> u64 {
     if path.is_dir() {
         return std::fs::read_dir(path)
             .map(|entries| {
@@ -296,6 +347,7 @@ pub fn run_one(path: &str, action: Action) -> Result<Created, String> {
         output,
         format: Some(TargetFormat::Image(format)),
         text: None,
+        note: None,
         input_bytes,
         output_bytes: encoded.len() as u64,
     })
@@ -367,6 +419,7 @@ pub fn run_job(
         output,
         format: Some(TargetFormat::Image(format)),
         text: None,
+        note: None,
     })
 }
 
@@ -383,7 +436,7 @@ fn native_write(format: ImageFormat) -> bool {
     )
 }
 
-fn file_name(path: &str) -> String {
+pub(crate) fn file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -392,7 +445,7 @@ fn file_name(path: &str) -> String {
 
 // ----------------------------------------------------------------- decode
 
-fn decode(path: &str) -> Result<(DynamicImage, SourceFormat, u64), String> {
+pub(crate) fn decode(path: &str) -> Result<(DynamicImage, SourceFormat, u64), String> {
     let meta =
         std::fs::metadata(path).map_err(|_| "This file is no longer where it was.".to_string())?;
     if meta.is_dir() {
@@ -537,9 +590,7 @@ fn encode(image: &DynamicImage, format: ImageFormat, action: Action) -> Result<V
         ImageFormat::Ico => {
             encode_ico(image).map_err(|_| "This image couldn't be encoded.".to_string())
         }
-        ImageFormat::Pdf => {
-            encode_pdf(image).map_err(|_| "This image couldn't be encoded.".to_string())
-        }
+        ImageFormat::Pdf => encode_pdf_pages(std::slice::from_ref(image)),
         ImageFormat::Tiff | ImageFormat::Avif => {
             return Err("This format needs an installed engine.".into())
         }
@@ -645,66 +696,85 @@ fn encode_bmp(image: &DynamicImage) -> image::ImageResult<Vec<u8>> {
     Ok(out)
 }
 
-fn encode_pdf(image: &DynamicImage) -> image::ImageResult<Vec<u8>> {
-    let width = image.width();
-    let height = image.height();
-    let has_alpha = image.color().has_alpha();
-
+pub(crate) fn encode_pdf_pages(images: &[DynamicImage]) -> Result<Vec<u8>, String> {
+    if images.is_empty() {
+        return Err("There is nothing to write.".into());
+    }
     let mut pdf = Pdf::new();
     let catalog_id = Ref::new(1);
     let page_tree_id = Ref::new(2);
-    let page_id = Ref::new(3);
-    let image_id = Ref::new(4);
-    let mask_id = Ref::new(5);
-    let content_id = Ref::new(6);
-
     pdf.catalog(catalog_id).pages(page_tree_id);
-    pdf.pages(page_tree_id).kids([page_id]).count(1);
 
-    let mut page = pdf.page(page_id);
-    page.media_box(Rect::new(0.0, 0.0, width as f32, height as f32));
-    page.parent(page_tree_id);
-    page.contents(content_id);
-    page.resources().x_objects().pair(Name(b"Im1"), image_id);
-    page.finish();
+    // Four objects per page: the page, its image, the optional soft mask and
+    // the content stream. Ids are handed out in order so the document stays
+    // deterministic (and diffable in tests).
+    let mut kids = Vec::with_capacity(images.len());
+    let mut next_id = 3i32;
+    for image in images {
+        let page_id = Ref::new(next_id);
+        let image_id = Ref::new(next_id + 1);
+        let mask_id = Ref::new(next_id + 2);
+        let content_id = Ref::new(next_id + 3);
+        next_id += 4;
+        kids.push(page_id);
 
-    let (filter, payload, mask) = if has_alpha {
-        let rgb = image.to_rgb8();
-        let rgba = image.to_rgba8();
-        let alphas: Vec<u8> = rgba.pixels().map(|pixel| pixel.0[3]).collect();
-        (Filter::FlateDecode, zlib(rgb.as_raw()), Some(zlib(&alphas)))
-    } else {
-        (Filter::DctDecode, encode_jpeg(image, 88)?, None)
-    };
+        let width = image.width();
+        let height = image.height();
+        let has_alpha = image.color().has_alpha();
 
-    let mut xobject = pdf.image_xobject(image_id, &payload);
-    xobject.filter(filter);
-    xobject.width(width as i32);
-    xobject.height(height as i32);
-    xobject.color_space().device_rgb();
-    xobject.bits_per_component(8);
-    if mask.is_some() {
-        xobject.s_mask(mask_id);
+        let mut page = pdf.page(page_id);
+        page.media_box(Rect::new(0.0, 0.0, width as f32, height as f32));
+        page.parent(page_tree_id);
+        page.contents(content_id);
+        page.resources().x_objects().pair(Name(b"Im1"), image_id);
+        page.finish();
+
+        let (filter, payload, mask) = if has_alpha {
+            let rgb = image.to_rgb8();
+            let rgba = image.to_rgba8();
+            let alphas: Vec<u8> = rgba.pixels().map(|pixel| pixel.0[3]).collect();
+            (Filter::FlateDecode, zlib(rgb.as_raw()), Some(zlib(&alphas)))
+        } else {
+            (
+                Filter::DctDecode,
+                encode_jpeg(image, 88)
+                    .map_err(|_| "This image couldn't be encoded.".to_string())?,
+                None,
+            )
+        };
+
+        let mut xobject = pdf.image_xobject(image_id, &payload);
+        xobject.filter(filter);
+        xobject.width(width as i32);
+        xobject.height(height as i32);
+        xobject.color_space().device_rgb();
+        xobject.bits_per_component(8);
+        if mask.is_some() {
+            xobject.s_mask(mask_id);
+        }
+        xobject.finish();
+
+        if let Some(mask) = &mask {
+            let mut smask = pdf.image_xobject(mask_id, mask);
+            smask.filter(Filter::FlateDecode);
+            smask.width(width as i32);
+            smask.height(height as i32);
+            smask.color_space().device_gray();
+            smask.bits_per_component(8);
+            smask.finish();
+        }
+
+        let mut content = Content::new();
+        content.save_state();
+        content.transform([width as f32, 0.0, 0.0, height as f32, 0.0, 0.0]);
+        content.x_object(Name(b"Im1"));
+        content.restore_state();
+        pdf.stream(content_id, &content.finish());
     }
-    xobject.finish();
 
-    if let Some(mask) = &mask {
-        let mut smask = pdf.image_xobject(mask_id, mask);
-        smask.filter(Filter::FlateDecode);
-        smask.width(width as i32);
-        smask.height(height as i32);
-        smask.color_space().device_gray();
-        smask.bits_per_component(8);
-        smask.finish();
-    }
-
-    let mut content = Content::new();
-    content.save_state();
-    content.transform([width as f32, 0.0, 0.0, height as f32, 0.0, 0.0]);
-    content.x_object(Name(b"Im1"));
-    content.restore_state();
-    pdf.stream(content_id, &content.finish());
-
+    pdf.pages(page_tree_id)
+        .kids(kids)
+        .count(images.len() as i32);
     Ok(pdf.finish())
 }
 
@@ -775,7 +845,7 @@ fn write_beside(
     write_beside_in(None, input, action, format, bytes)
 }
 
-fn write_beside_in(
+pub(crate) fn write_beside_in(
     dir: Option<&Path>,
     input: &str,
     action: Action,

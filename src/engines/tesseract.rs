@@ -97,6 +97,7 @@ pub fn run(
                 output: PathBuf::new(),
                 format: None,
                 text: Some(text),
+                note: None,
             }
         }
         OcrOutput::Txt => finish_file(
@@ -163,6 +164,7 @@ fn finish_file(path: &Path, target: TargetFormat, job: &Job) -> Result<JobOutput
         output: delivered,
         format: Some(target),
         text: None,
+        note: None,
     })
 }
 
@@ -178,12 +180,12 @@ fn language(requested: Option<&str>) -> Option<String> {
     valid.then(|| language.to_owned())
 }
 
-fn tessdata_dir(exe: &Path) -> Option<PathBuf> {
+pub(crate) fn tessdata_dir(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?.join("tessdata");
     dir.is_dir().then_some(dir)
 }
 
-fn read_text(path: &Path) -> Result<String, EngineError> {
+pub(crate) fn read_text(path: &Path) -> Result<String, EngineError> {
     let metadata = std::fs::metadata(path)
         .map_err(|_| EngineError::Failed("Tesseract produced no text.".into()))?;
     if metadata.len() > MAX_TEXT_BYTES {
@@ -209,7 +211,7 @@ fn ocr_failure(message: &str) -> String {
 
 /// Puts plain text on the clipboard. The worker owns the clipboard only for
 /// the duration of this call; retries cover another app holding it open.
-fn copy_to_clipboard(text: &str) -> Result<(), String> {
+pub(crate) fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut wide: Vec<u16> = text.encode_utf16().collect();
     wide.push(0);
     let mut opened = false;
