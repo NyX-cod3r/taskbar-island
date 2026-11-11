@@ -49,13 +49,6 @@ impl Json {
             _ => None,
         }
     }
-
-    pub fn as_object(&self) -> Option<&[(String, Json)]> {
-        match self {
-            Json::Obj(o) => Some(o),
-            _ => None,
-        }
-    }
 }
 
 pub fn parse(text: &str) -> Result<Json, String> {

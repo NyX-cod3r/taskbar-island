@@ -19,7 +19,7 @@ pub struct Enabled {
     pub call: bool,
     pub shelf: bool,
     pub timer: bool,
-    pub volume: bool,
+    pub clipboard: bool,
 }
 
 impl Default for Enabled {
@@ -29,19 +29,20 @@ impl Default for Enabled {
             call: true,
             shelf: true,
             timer: true,
-            volume: true,
+            clipboard: true,
         }
     }
 }
 
 impl Enabled {
+    #[allow(dead_code)] // Activity gating lands with the pill/activity work (A).
     pub fn allows(self, kind: ActivityKind) -> bool {
         match kind {
             ActivityKind::Music => self.music,
             ActivityKind::Call => self.call,
             ActivityKind::Shelf => self.shelf,
             ActivityKind::Timer => self.timer,
-            ActivityKind::Volume => self.volume,
+            ActivityKind::Clipboard => self.clipboard,
         }
     }
 }
@@ -52,6 +53,8 @@ pub struct Settings {
     pub run_at_startup: bool,
     pub call_app_allowlist: Vec<String>,
     pub enabled: Enabled,
+    /// Clipboard capture paused by the user; survives restarts.
+    pub clipboard_paused: bool,
 }
 
 impl Default for Settings {
@@ -68,6 +71,7 @@ impl Default for Settings {
                 "Slack".into(),
             ],
             enabled: Enabled::default(),
+            clipboard_paused: false,
         }
     }
 }
@@ -97,6 +101,9 @@ impl Settings {
                 settings.call_app_allowlist = values;
             }
         }
+        if let Some(v) = json.get("clipboardPaused").and_then(Json::as_bool) {
+            settings.clipboard_paused = v;
+        }
         if let Some(enabled) = json.get("enabled") {
             settings.enabled = Enabled {
                 music: enabled
@@ -115,10 +122,10 @@ impl Settings {
                     .get("timer")
                     .and_then(Json::as_bool)
                     .unwrap_or(settings.enabled.timer),
-                volume: enabled
-                    .get("volume")
+                clipboard: enabled
+                    .get("clipboard")
                     .and_then(Json::as_bool)
-                    .unwrap_or(settings.enabled.volume),
+                    .unwrap_or(settings.enabled.clipboard),
             };
         }
         settings
@@ -134,7 +141,7 @@ impl Settings {
             ("call".into(), Json::Bool(self.enabled.call)),
             ("shelf".into(), Json::Bool(self.enabled.shelf)),
             ("timer".into(), Json::Bool(self.enabled.timer)),
-            ("volume".into(), Json::Bool(self.enabled.volume)),
+            ("clipboard".into(), Json::Bool(self.enabled.clipboard)),
         ]);
         let doc = Json::Obj(vec![
             (
@@ -152,6 +159,7 @@ impl Settings {
                 ),
             ),
             ("enabled".into(), enabled),
+            ("clipboardPaused".into(), Json::Bool(self.clipboard_paused)),
         ]);
         let _ = std::fs::write(path, json::to_string_pretty(&doc));
     }
@@ -177,10 +185,6 @@ pub fn settings_path() -> PathBuf {
 
 pub fn shelf_path() -> PathBuf {
     data_dir().join("shelf.json")
-}
-
-pub fn log_path() -> PathBuf {
-    data_dir().join("log.txt")
 }
 
 pub fn autostart_enabled() -> bool {
@@ -278,7 +282,9 @@ fn read_run_value() -> Option<String> {
         return None;
     }
     let wide: Vec<u16> = data
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .take_while(|c| *c != 0)
         .collect();
@@ -302,8 +308,10 @@ mod tests {
 
     #[test]
     fn enabled_gates_activities() {
-        let mut e = Enabled::default();
-        e.music = false;
+        let e = Enabled {
+            music: false,
+            ..Enabled::default()
+        };
         assert!(!e.allows(ActivityKind::Music));
         assert!(e.allows(ActivityKind::Call));
     }
@@ -312,7 +320,6 @@ mod tests {
     fn defaults_are_sane() {
         let s = Settings::default();
         assert_eq!(s.slot_offset_dip, 0);
-        assert!(s.enabled.volume);
         assert!(s.call_app_allowlist.iter().any(|v| v == "Teams"));
     }
 }

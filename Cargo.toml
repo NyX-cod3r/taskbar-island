@@ -1,8 +1,16 @@
 [package]
 name = "taskbar-island"
-version = "0.1.0"
+version = "0.8.0"
 edition = "2021"
 description = "A Dynamic-Island-style pill anchored to the Windows 11 taskbar"
+license = "MIT"
+repository = "https://github.com/NyX-cod3r/taskbar-island"
+
+[features]
+default = []
+# Video conversion is intentionally unavailable in v1: no ffmpeg, no bundled
+# tool, no download. The Convert board shows the disabled video options.
+video = []
 
 [dependencies]
 windows = { version = "0.62", features = [
@@ -23,8 +31,12 @@ windows = { version = "0.62", features = [
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",
     "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Ole",
@@ -37,6 +49,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -44,9 +57,32 @@ windows-core = "0.62"
 windows-future = "0.3"
 windows-numerics = "0.3"
 
+# Offline image pipeline. All codecs are linked into the executable; nothing is
+# fetched or loaded at runtime. `image` and `webp` are pure-Rust/C-vendored and
+# `pdf-writer` only serializes bytes.
+image = { version = "0.25", default-features = false, features = [
+    "bmp",
+    "gif",
+    "ico",
+    "jpeg",
+    "png",
+    "webp",
+] }
+webp = "0.3"
+pdf-writer = "0.15"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+kamadak-exif = "0.6"
+
 [profile.release]
-opt-level = "z"
+# Conversion is CPU bound (decode, Lanczos, PNG/zlib). Optimize for speed;
+# the binary is installed once and the extra bytes cost nothing at runtime.
+opt-level = 3
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# Malformed files are caught with catch_unwind, so the release build must
+# unwind: panic = "abort" would turn a decoder panic into a process exit.
+panic = "unwind"

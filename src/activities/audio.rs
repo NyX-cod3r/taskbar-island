@@ -1,9 +1,9 @@
-//! audio.rs — shared WASAPI helpers for the volume HUD and call mutes.
+//! audio.rs — shared WASAPI helpers for call audio controls.
 //!
 //! WASAPI is COM/WinRT-ish and can block, so every caller runs these helpers
 //! on its own worker thread. The UI only sees plain booleans/strings.
 
-use windows::core::{Error, GUID, HRESULT, PWSTR};
+use windows::core::{Error, GUID, PWSTR};
 use windows::Win32::Foundation::{PROPERTYKEY, RPC_E_CHANGED_MODE};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
@@ -100,11 +100,6 @@ pub fn init_mta() -> windows::core::Result<()> {
     } else {
         Err(Error::from_hresult(hr))
     }
-}
-
-/// Small helper for worker threads that report a failure through a channel.
-pub fn driver_error(message: &str) -> Error {
-    Error::new(HRESULT(-2147467259), message.to_string())
 }
 
 #[allow(dead_code)]

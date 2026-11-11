@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use windows::core::{implement, Error, Ref, Result, HRESULT};
@@ -23,20 +24,53 @@ use windows::Win32::System::Ole::{
     DoDragDrop, IDropSource, IDropSource_Impl, IDropTarget, IDropTarget_Impl, RegisterDragDrop,
     ReleaseStgMedium, RevokeDragDrop,
 };
-use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
+use windows::Win32::System::SystemServices::{MK_CONTROL, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows::Win32::UI::Shell::{DragQueryFileW, SHCreateStdEnumFmtEtc, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
-use crate::json::{self, Json};
+use crate::json::{self};
 use crate::settings;
 
 pub const WM_APP_SHELF: u32 = WM_APP + 4;
 pub const SHELF_DROP: u32 = 0;
 pub const SHELF_HOVER_ENTER: u32 = 1;
 pub const SHELF_HOVER_LEAVE: u32 = 2;
+/// Ctrl was held when the files were dropped: open the converter instead of
+/// parking them on the shelf.
+pub const SHELF_DROP_CTRL: u32 = 3;
+/// Ctrl is held while the pointer is over the island.
+pub const SHELF_HOVER_CONVERT: u32 = 4;
+/// Pointer position during a drag, packed into LPARAM. The converter card is
+/// spring-loaded under the pointer, so the drop can land on an option tile.
+pub const SHELF_DRAG_AT: u32 = 5;
 
-const MAX_ENTRIES: usize = 24;
+/// Pack a screen point into an LPARAM. Both halves are 32 bit, which covers
+/// the whole virtual desktop.
+pub fn pack_point(x: i32, y: i32) -> LPARAM {
+    LPARAM(((x as u32 as u64) | ((y as u32 as u64) << 32)) as isize)
+}
+
+/// The shelf accepts far more than the grid can show; older entries fall off
+/// silently and the toolbar's count tooltip warns when that happened.
+pub const MAX_ENTRIES: usize = 500;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DragMode {
+    Idle,
+    Shelf,
+    Convert,
+}
+
+impl DragMode {
+    fn for_keys(keys: MODIFIERKEYS_FLAGS) -> Self {
+        if keys.contains(MK_CONTROL) {
+            Self::Convert
+        } else {
+            Self::Shelf
+        }
+    }
+}
 
 /// Persistent, newest-first list of parked paths.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -62,7 +96,7 @@ impl ShelfStore {
                     .collect()
             })
             .unwrap_or_default();
-        paths.retain(|p| Path::new(p).is_file());
+        paths.retain(|p| Path::new(p).exists());
         paths.truncate(MAX_ENTRIES);
         Self { paths }
     }
@@ -79,10 +113,12 @@ impl ShelfStore {
         self.paths.len()
     }
 
-    /// Newest first, deduplicated, case-insensitive (Windows paths).
-    pub fn add<I: IntoIterator<Item = String>>(&mut self, incoming: I) {
+    /// Newest first, deduplicated, case-insensitive (Windows paths). Files and
+    /// folders are both parked; folders keep their whole subtree. Returns
+    /// whether the soft cap pushed entries out.
+    pub fn add<I: IntoIterator<Item = String>>(&mut self, incoming: I) -> bool {
         for path in incoming {
-            if !Path::new(&path).is_file() {
+            if !Path::new(&path).exists() {
                 continue;
             }
             if self.paths.iter().any(|p| p.eq_ignore_ascii_case(&path)) {
@@ -90,28 +126,59 @@ impl ShelfStore {
             }
             self.paths.insert(0, path);
         }
+        let overflow = self.paths.len() > MAX_ENTRIES;
         self.paths.truncate(MAX_ENTRIES);
         self.save();
+        overflow
     }
 
-    pub fn remove(&mut self, index: usize) -> Option<String> {
-        if index >= self.paths.len() {
-            return None;
+    /// Removes several parked references at once; indices may arrive in any
+    /// order and duplicates are ignored.
+    pub fn remove_indices(&mut self, indices: &[usize]) {
+        if indices.is_empty() {
+            return;
         }
-        let removed = self.paths.remove(index);
+        let mut unique: Vec<usize> = indices.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        for index in unique.into_iter().rev() {
+            if index < self.paths.len() {
+                self.paths.remove(index);
+            }
+        }
         self.save();
-        Some(removed)
     }
 
+    /// Removes every parked reference. The files on disk are never touched.
     pub fn clear(&mut self) {
         self.paths.clear();
         self.save();
     }
 
-    /// Drops entries whose file disappeared.
+    /// The toolbar's Clear action: selected references only when there is a
+    /// selection, otherwise the whole shelf. Never touches files on disk.
+    pub fn remove_or_clear(&mut self, selected: &[usize]) {
+        if selected.is_empty() {
+            self.clear();
+        } else {
+            self.remove_indices(selected);
+        }
+    }
+
+    /// Drops the entries that were dragged out with a move effect.
+    pub fn remove_paths(&mut self, gone: &[String]) {
+        let before = self.paths.len();
+        self.paths
+            .retain(|p| !gone.iter().any(|g| g.eq_ignore_ascii_case(p)));
+        if self.paths.len() != before {
+            self.save();
+        }
+    }
+
+    /// Drops entries whose file or folder disappeared.
     pub fn prune(&mut self) -> bool {
         let before = self.paths.len();
-        self.paths.retain(|p| Path::new(p).is_file());
+        self.paths.retain(|p| Path::new(p).exists());
         if self.paths.len() != before {
             self.save();
             true
@@ -121,12 +188,23 @@ impl ShelfStore {
     }
 
     pub fn save(&self) {
-        let path = settings::shelf_path();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        // Unit tests must never rewrite the signed-in user's real shelf.
+        #[cfg(test)]
+        let _ = self;
+        #[cfg(not(test))]
+        {
+            let path = settings::shelf_path();
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let doc = json::Json::Arr(
+                self.paths
+                    .iter()
+                    .map(|p| json::Json::Str(p.clone()))
+                    .collect(),
+            );
+            let _ = std::fs::write(path, json::to_string_pretty(&doc));
         }
-        let doc = Json::Arr(self.paths.iter().map(|p| Json::Str(p.clone())).collect());
-        let _ = std::fs::write(path, json::to_string_pretty(&doc));
     }
 }
 
@@ -137,21 +215,23 @@ impl ShelfStore {
 struct FileDropTarget {
     hwnd: isize,
     slot: Arc<Mutex<Vec<String>>>,
-    hover: Cell<bool>,
+    mode: Cell<DragMode>,
+    /// Whether the open convert card has at least one option for the batch.
+    /// A mixed or unsupported set turns the cursor into "no drop".
+    convert_accepts: Arc<AtomicBool>,
 }
 
 impl FileDropTarget_Impl {
-    fn set_hover(&self, on: bool) {
-        if self.hover.replace(on) != on {
-            let _ = post_shelf(
-                self.hwnd,
-                if on {
-                    SHELF_HOVER_ENTER
-                } else {
-                    SHELF_HOVER_LEAVE
-                },
-            );
+    fn set_mode(&self, mode: DragMode) {
+        if self.mode.replace(mode) == mode {
+            return;
         }
+        let event = match mode {
+            DragMode::Idle => SHELF_HOVER_LEAVE,
+            DragMode::Shelf => SHELF_HOVER_ENTER,
+            DragMode::Convert => SHELF_HOVER_CONVERT,
+        };
+        let _ = post_shelf(self.hwnd, event);
     }
 
     fn accept(data: Option<&IDataObject>) -> bool {
@@ -162,52 +242,88 @@ impl FileDropTarget_Impl {
         let format = hdrop_format();
         unsafe { data.QueryGetData(&format) }.is_ok()
     }
+
+    /// The convert card is spring-loaded but offers nothing for this batch.
+    fn convert_refuses(&self) -> bool {
+        !self.convert_accepts.load(Ordering::Relaxed)
+    }
 }
 
 impl IDropTarget_Impl for FileDropTarget_Impl {
     fn DragEnter(
         &self,
         dataobject: Ref<'_, IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
+        grfkeystate: MODIFIERKEYS_FLAGS,
+        pt: &POINTL,
         pdweffect: *mut windows::Win32::System::Ole::DROPEFFECT,
     ) -> Result<()> {
+        let accepted = Self::accept(dataobject.as_ref());
         // SAFETY: OLE owns the out pointer for the duration of the call.
         unsafe {
-            if Self::accept(dataobject.as_ref()) {
+            if accepted {
                 *pdweffect = windows::Win32::System::Ole::DROPEFFECT_COPY;
-                self.set_hover(true);
             } else {
                 *pdweffect = windows::Win32::System::Ole::DROPEFFECT_NONE;
-                self.set_hover(false);
+                self.set_mode(DragMode::Idle);
+                return Ok(());
             }
         }
+        // The paths are read once on enter so the UI can spring-load the
+        // converter card while the drag is still in flight. Ctrl may be
+        // pressed later, and DragOver never sees the data object.
+        if let Some(data) = dataobject.as_ref() {
+            // SAFETY: the data object belongs to the caller for this call.
+            if let Some(paths) = unsafe { extract_files(data) } {
+                if !paths.is_empty() {
+                    *self.slot.lock().expect("shelf slot mutex poisoned") = paths;
+                }
+            }
+        }
+        self.set_mode(DragMode::for_keys(grfkeystate));
+        let _ = post_shelf_at(self.hwnd, SHELF_DRAG_AT, pt.x, pt.y);
         Ok(())
     }
 
     fn DragOver(
         &self,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
+        grfkeystate: MODIFIERKEYS_FLAGS,
+        pt: &POINTL,
         pdweffect: *mut windows::Win32::System::Ole::DROPEFFECT,
     ) -> Result<()> {
+        // Ctrl can be pressed or released without leaving the island, so the
+        // mode is refreshed on every DragOver rather than only on enter.
+        if self.mode.get() != DragMode::Idle {
+            self.set_mode(DragMode::for_keys(grfkeystate));
+        }
+        if self.mode.get() == DragMode::Convert {
+            let _ = post_shelf_at(self.hwnd, SHELF_DRAG_AT, pt.x, pt.y);
+        }
         // SAFETY: OLE owns the out pointer for the duration of the call.
         unsafe {
-            *pdweffect = windows::Win32::System::Ole::DROPEFFECT_COPY;
+            let copy = match self.mode.get() {
+                DragMode::Idle => false,
+                DragMode::Shelf => true,
+                DragMode::Convert => !self.convert_refuses(),
+            };
+            *pdweffect = if copy {
+                windows::Win32::System::Ole::DROPEFFECT_COPY
+            } else {
+                windows::Win32::System::Ole::DROPEFFECT_NONE
+            };
         }
         Ok(())
     }
 
     fn DragLeave(&self) -> Result<()> {
-        self.set_hover(false);
+        self.set_mode(DragMode::Idle);
         Ok(())
     }
 
     fn Drop(
         &self,
         dataobject: Ref<'_, IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
-        _pt: &POINTL,
+        grfkeystate: MODIFIERKEYS_FLAGS,
+        pt: &POINTL,
         pdweffect: *mut windows::Win32::System::Ole::DROPEFFECT,
     ) -> Result<()> {
         // SAFETY: OLE owns the out pointer; extract_files releases its medium.
@@ -215,19 +331,25 @@ impl IDropTarget_Impl for FileDropTarget_Impl {
             .as_ref()
             .and_then(|data| unsafe { extract_files(data) })
             .unwrap_or_default();
+        let ctrl = grfkeystate.contains(MK_CONTROL);
+        // A convert drop with nothing on offer is refused outright: the file
+        // is not parked on the shelf either.
+        let refused = ctrl && self.convert_refuses();
         // SAFETY: see above.
         unsafe {
-            *pdweffect = if paths.is_empty() {
+            *pdweffect = if paths.is_empty() || refused {
                 windows::Win32::System::Ole::DROPEFFECT_NONE
             } else {
                 windows::Win32::System::Ole::DROPEFFECT_COPY
             };
         }
-        if !paths.is_empty() {
+        if !paths.is_empty() && !refused {
             *self.slot.lock().expect("shelf slot mutex poisoned") = paths;
-            let _ = post_shelf(self.hwnd, SHELF_DROP);
+            let event = if ctrl { SHELF_DROP_CTRL } else { SHELF_DROP };
+            // The drop point decides whether the file landed on an option.
+            let _ = post_shelf_at(self.hwnd, event, pt.x, pt.y);
         }
-        self.set_hover(false);
+        self.set_mode(DragMode::Idle);
         Ok(())
     }
 }
@@ -240,11 +362,13 @@ impl IDropTarget_Impl for FileDropTarget_Impl {
 pub unsafe fn register_drop_target(
     hwnd: HWND,
     slot: Arc<Mutex<Vec<String>>>,
+    convert_accepts: Arc<AtomicBool>,
 ) -> Result<IDropTarget> {
     let target: IDropTarget = FileDropTarget {
         hwnd: hwnd.0 as isize,
         slot,
-        hover: Cell::new(false),
+        mode: Cell::new(DragMode::Idle),
+        convert_accepts,
     }
     .into();
     // SAFETY: caller guarantees OLE is initialized on this thread.
@@ -270,13 +394,17 @@ fn hdrop_format() -> FORMATETC {
 }
 
 fn post_shelf(hwnd: isize, event: u32) -> Result<()> {
+    post_shelf_at(hwnd, event, 0, 0)
+}
+
+fn post_shelf_at(hwnd: isize, event: u32, x: i32, y: i32) -> Result<()> {
     // SAFETY: posting to a window owned by this process is always safe.
     unsafe {
         PostMessageW(
             Some(HWND(hwnd as *mut _)),
             WM_APP_SHELF,
             WPARAM(event as usize),
-            LPARAM(0),
+            pack_point(x, y),
         )
     }
 }
@@ -370,7 +498,7 @@ impl IDataObject_Impl for FileDataObject_Impl {
         // SAFETY: OLE passes a valid FORMATETC pointer.
         let format = unsafe { &*format };
         if format.cfFormat != windows::Win32::System::Ole::CF_HDROP.0
-            || (format.tymed as u32 & TYMED_HGLOBAL.0 as u32) == 0
+            || (format.tymed & TYMED_HGLOBAL.0 as u32) == 0
         {
             return Err(Error::from_hresult(
                 windows::Win32::Foundation::DV_E_FORMATETC,
@@ -393,7 +521,7 @@ impl IDataObject_Impl for FileDataObject_Impl {
         // SAFETY: OLE passes a valid FORMATETC pointer.
         let format = unsafe { &*format };
         if format.cfFormat == windows::Win32::System::Ole::CF_HDROP.0
-            && (format.tymed as u32 & TYMED_HGLOBAL.0 as u32) != 0
+            && (format.tymed & TYMED_HGLOBAL.0 as u32) != 0
         {
             HRESULT(0)
         } else {
@@ -464,15 +592,31 @@ impl IDropSource_Impl for FileDropSource_Impl {
     }
 }
 
-/// Starts an OLE drag for one parked file. Blocking (modal drag loop), so call
-/// it after temporarily taking `App` out of its slot. Returns true when the
-/// target accepted the drop (move or copy), meaning the entry should be
-/// removed from the shelf.
+/// What the drop target did with a parked entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DragOutcome {
+    /// A copy was made; the parked entry is still valid.
+    Copy,
+    /// The target took the item away; drop it from the shelf.
+    Move,
+    /// Escape or the target refused the data.
+    Cancel,
+}
+
+/// Starts an OLE drag for one or more parked paths. Blocking (modal drag loop),
+/// so call it after releasing the borrow on the app state. Offering both
+/// effects lets Explorer copy (Ctrl, cross-volume) or move (Shift, same volume).
 ///
 /// # Safety
-/// OLE must be initialized on this thread and `hwnd` must be our window.
-pub unsafe fn start_drag(path: String, _hwnd: HWND) -> bool {
-    let data: IDataObject = FileDataObject { paths: vec![path] }.into();
+/// OLE must be initialized on this thread.
+pub unsafe fn start_drag(paths: &[String]) -> DragOutcome {
+    if paths.is_empty() {
+        return DragOutcome::Cancel;
+    }
+    let data: IDataObject = FileDataObject {
+        paths: paths.to_vec(),
+    }
+    .into();
     let source: IDropSource = FileDropSource.into();
     let mut effect = windows::Win32::System::Ole::DROPEFFECT_NONE;
     // SAFETY: data object and drop source outlive the modal drag loop.
@@ -485,7 +629,16 @@ pub unsafe fn start_drag(path: String, _hwnd: HWND) -> bool {
             &mut effect,
         )
     };
-    result.is_ok() && effect != windows::Win32::System::Ole::DROPEFFECT_NONE
+    if result.is_err() {
+        return DragOutcome::Cancel;
+    }
+    if effect.contains(windows::Win32::System::Ole::DROPEFFECT_MOVE) {
+        DragOutcome::Move
+    } else if effect != windows::Win32::System::Ole::DROPEFFECT_NONE {
+        DragOutcome::Copy
+    } else {
+        DragOutcome::Cancel
+    }
 }
 
 /// Best-effort launch of a shelved file.
@@ -512,6 +665,7 @@ pub fn open(path: &str) -> bool {
 }
 
 /// Folder that contains the file, for the single-file subtitle.
+#[allow(dead_code)] // The Convert card's single-file subtitle (B2).
 pub fn parent_name(path: &str) -> Option<String> {
     Path::new(path)
         .parent()
@@ -520,6 +674,7 @@ pub fn parent_name(path: &str) -> Option<String> {
 }
 
 /// A stable display key for the tray/menu and tests.
+#[allow(dead_code)] // Tray/menu display key; tests also use it.
 pub fn file_name(path: &str) -> String {
     Path::new(path)
         .file_name()
@@ -536,14 +691,15 @@ mod tests {
 
     #[test]
     fn newest_first_and_deduped() {
-        let dir = std::env::temp_dir().join("taskbar-island-shelf-test");
+        let dir = std::env::temp_dir().join("taskbar-island-shelf-store-test");
         std::fs::create_dir_all(&dir).unwrap();
         let a = dir.join("a.txt");
         let b = dir.join("b.txt");
         std::fs::write(&a, b"a").unwrap();
         std::fs::write(&b, b"b").unwrap();
-        let mut store = ShelfStore::default();
-        store.paths = vec![a.display().to_string(), b.display().to_string()];
+        let mut store = ShelfStore {
+            paths: vec![a.display().to_string(), b.display().to_string()],
+        };
         store.add(vec![a.display().to_string()]);
         assert_eq!(store.len(), 2);
         assert!(store.paths()[0].ends_with("a.txt"));
@@ -558,11 +714,130 @@ mod tests {
     }
 
     #[test]
+    fn folders_are_parked_and_moved_away() {
+        let dir = std::env::temp_dir().join("taskbar-island-shelf-folder-test");
+        let folder = dir.join("invoices");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut store = ShelfStore::default();
+        store.add(vec![folder.display().to_string()]);
+        assert_eq!(store.len(), 1, "a folder should be accepted");
+        store.remove_paths(&[folder.display().to_string()]);
+        assert!(store.is_empty(), "a moved folder leaves the shelf");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn names_and_parents_are_display_ready() {
         assert_eq!(file_name(r"C:\Users\me\Invoice.pdf"), "Invoice.pdf");
         assert_eq!(
             parent_name(r"C:\Users\me\Invoice.pdf").as_deref(),
             Some("me")
         );
+    }
+
+    #[test]
+    fn removing_references_never_deletes_files() {
+        let dir = std::env::temp_dir().join("taskbar-island-shelf-clear-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("keep-a.txt");
+        let b = dir.join("keep-b.txt");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let mut store = ShelfStore::default();
+        store.add(vec![b.display().to_string(), a.display().to_string()]);
+        assert_eq!(store.len(), 2);
+        store.remove_indices(&[0]);
+        assert_eq!(store.len(), 1);
+        store.clear();
+        assert!(store.is_empty());
+        assert!(a.exists(), "Clear must not delete the file");
+        assert!(b.exists(), "Clear must not delete the file");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn remove_indices_accepts_unsorted_and_duplicate_indices() {
+        let dir = std::env::temp_dir().join("taskbar-island-shelf-indices-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths: Vec<String> = (0..4)
+            .map(|n| {
+                let p = dir.join(format!("{n}.txt"));
+                std::fs::write(&p, b"x").unwrap();
+                p.display().to_string()
+            })
+            .collect();
+        let mut store = ShelfStore::default();
+        store.add(paths);
+        store.remove_indices(&[2, 0, 2]);
+        assert_eq!(store.len(), 2);
+        // Newest first: the original order 0..3 arrives as [3, 2, 1, 0], and
+        // indices 2 and 0 (1.txt and 3.txt) are the ones removed.
+        assert!(store.paths()[0].ends_with("2.txt"));
+        assert!(store.paths()[1].ends_with("0.txt"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clear_removes_selection_when_present_otherwise_everything() {
+        let dir = std::env::temp_dir().join("taskbar-island-shelf-remove-or-clear-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths: Vec<String> = (0..3)
+            .map(|n| {
+                let p = dir.join(format!("{n}.txt"));
+                std::fs::write(&p, b"x").unwrap();
+                p.display().to_string()
+            })
+            .collect();
+        let mut store = ShelfStore::default();
+        store.add(paths.clone());
+        store.remove_or_clear(&[1]);
+        assert_eq!(store.len(), 2, "a selection removes only those tiles");
+        store.remove_or_clear(&[]);
+        assert!(store.is_empty(), "no selection clears the shelf");
+        for path in &paths {
+            assert!(Path::new(path).exists(), "the file on disk survives");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn add_reports_soft_cap_overflow() {
+        let dir = std::env::temp_dir().join("taskbar-island-shelf-cap-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let before = (0..MAX_ENTRIES)
+            .map(|n| {
+                let p = dir.join(format!("{n}.txt"));
+                std::fs::write(&p, b"x").unwrap();
+                p.display().to_string()
+            })
+            .collect::<Vec<_>>();
+        let mut store = ShelfStore::default();
+        store.add(before);
+        assert_eq!(store.len(), MAX_ENTRIES);
+        assert!(!store.add(Vec::new()), "no overflow without new items");
+        let extra = dir.join("extra.txt");
+        std::fs::write(&extra, b"x").unwrap();
+        assert!(store.add(vec![extra.display().to_string()]));
+        assert_eq!(store.len(), MAX_ENTRIES, "soft cap holds");
+        assert!(store.paths()[0].ends_with("extra.txt"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The Clear path and the per-tile remove path remove references only.
+    /// The source of this module must not contain a file-deletion call.
+    #[test]
+    fn shelf_source_has_no_disk_deletion() {
+        let source = include_str!("shelf.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("test module follows production code");
+        let forbidden = [["remove_", "file"].concat(), ["Delete", "File"].concat()];
+        for needle in forbidden {
+            assert!(
+                !production.contains(&needle),
+                "shelf.rs must never delete files from disk ({needle})"
+            );
+        }
     }
 }

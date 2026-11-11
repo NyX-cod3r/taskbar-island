@@ -37,6 +37,7 @@ const MIC_CONSENT_KEY: PCWSTR =
 pub struct CallDetect {
     pub app_name: String,
     /// Registry key (decoded path or package family) used for "Open app".
+    #[allow(dead_code)] // Read by the Call card's "Open app" action (A-scope).
     pub launch: String,
     pub started: Instant,
     /// Duration at the moment the snapshot was produced; the UI adds the
@@ -54,6 +55,7 @@ pub struct CallRuntime {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioCommand {
+    #[allow(dead_code)] // Sent when the Call card re-reads the audio state.
     Refresh,
     ToggleMic,
     ToggleOutput,
@@ -90,6 +92,54 @@ pub fn subscribe_audio(
         .spawn(move || audio_worker(hwnd_value, shared, rx))
         .map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))?;
     Ok(tx)
+}
+
+/// Debug-only call simulator (A prompt §5: "a debug-only simulator that
+/// fires fake call events is welcome"). It exists so the call pill, the call
+/// card and the pill priority rules can be exercised on a machine with no
+/// linked phone. It is compiled out of release builds entirely, only runs
+/// when `TBI_SIMULATE_CALLS` is set, and labels itself "Simulated" so it can
+/// never be mistaken for a caller.
+#[cfg(debug_assertions)]
+const SIMULATED_CALL_NAME: &str = "Simulated call";
+
+#[cfg(debug_assertions)]
+pub fn subscribe_simulated(hwnd: HWND, shared: Arc<Mutex<CallRuntime>>) {
+    if std::env::var("TBI_SIMULATE_CALLS").is_err() {
+        return;
+    }
+    let hwnd_value = hwnd.0 as isize;
+    let _ = std::thread::Builder::new()
+        .name("taskbar-island-call-sim".into())
+        .spawn(move || simulate(hwnd_value, shared));
+}
+
+/// Alternates a live call and an idle gap (12 s on / 8 s off) so both the
+/// ticking clock and the priority hand-back get a workout over a soak. The
+/// real watcher keeps its own view of the runtime; this thread only runs in
+/// dev builds where there is no watcher data to contradict.
+#[cfg(debug_assertions)]
+fn simulate(hwnd: isize, shared: Arc<Mutex<CallRuntime>>) {
+    const ON: Duration = Duration::from_secs(12);
+    const OFF: Duration = Duration::from_secs(8);
+    loop {
+        {
+            let mut runtime = shared.lock().expect("call runtime mutex poisoned");
+            let now = Instant::now();
+            runtime.detect = Some(CallDetect {
+                app_name: SIMULATED_CALL_NAME.into(),
+                launch: phone_link_launch(),
+                started: now,
+                duration_at_fetch: 0.0,
+            });
+            runtime.device = "Simulated output".into();
+        }
+        post(hwnd, WM_APP_CALL);
+        std::thread::sleep(ON);
+        shared.lock().expect("call runtime mutex poisoned").detect = None;
+        post(hwnd, WM_APP_CALL);
+        std::thread::sleep(OFF);
+    }
 }
 
 fn watch(hwnd: isize, allowlist: Vec<String>, shared: Arc<Mutex<CallRuntime>>) {
@@ -415,6 +465,146 @@ fn filetime_now() -> u64 {
     116_444_736_000_000_000 + now.as_secs() * 10_000_000 + u64::from(now.subsec_nanos()) / 100
 }
 
+// ------------------------------------------------------- Phone Link state
+
+/// What the island can prove about the Windows Phone Link app, fully offline
+/// (no network, no WinRT, no private API).
+///
+/// Windows exposes no "is my phone connected" API, so this only reports what
+/// the local AppX registration and Phone Link's own device metadata say. The
+/// card never claims a live connection: [`PhoneLinkState::Available`] means
+/// "a phone is linked on this PC", the strongest honest statement available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhoneLinkState {
+    /// No `Microsoft.YourPhone_*` package is registered for this user.
+    NotInstalled,
+    /// Installed, but it has never written local device metadata: no sign-in
+    /// or pairing has happened on this PC.
+    NotSignedIn,
+    /// Installed and set up, but no phone is linked to it.
+    NotConnected,
+    /// Installed with a linked phone — or metadata this build cannot read,
+    /// where reporting "not connected" would be a guess.
+    Available,
+}
+
+impl PhoneLinkState {
+    /// Whether the Call card may show real status instead of the muted
+    /// empty state (spec §8, A prompt §5).
+    pub fn is_available(self) -> bool {
+        self == PhoneLinkState::Available
+    }
+
+    /// The one line the muted CallIdle icon explains itself with: A prompt §5
+    /// asks for "a tooltip that says which". `None` when there is nothing to
+    /// explain.
+    pub fn idle_tip(self) -> Option<&'static str> {
+        match self {
+            PhoneLinkState::NotInstalled => Some("Phone Link not installed"),
+            PhoneLinkState::NotSignedIn => Some("Phone Link not signed in"),
+            PhoneLinkState::NotConnected => Some("Phone not connected"),
+            PhoneLinkState::Available => None,
+        }
+    }
+}
+
+const PHONELINK_PACKAGE_PREFIX: &str = "Microsoft.YourPhone_";
+/// Package *family* — stable across versions, and what the LocalCache path
+/// is built from (the registered key carries the full package name).
+const PHONELINK_PACKAGE_FAMILY: &str = "Microsoft.YourPhone_8wekyb3d8bbwe";
+const PHONELINK_PACKAGES_KEY: &str = "Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages";
+/// The Call card is rebuilt on every refresh (music ticks at 80 ms) while
+/// this probe reads the registry plus a small JSON file, so results are
+/// reused. Installing Phone Link mid-session is picked up after this window.
+const PHONE_LINK_TTL: Duration = Duration::from_secs(30);
+
+static PHONE_LINK_CACHE: Mutex<Option<(Instant, PhoneLinkState)>> = Mutex::new(None);
+
+/// Best-effort Phone Link state, cached for [`PHONE_LINK_TTL`].
+pub fn phone_link_state() -> PhoneLinkState {
+    if let Ok(cache) = PHONE_LINK_CACHE.lock() {
+        if let Some((at, state)) = *cache {
+            if at.elapsed() < PHONE_LINK_TTL {
+                return state;
+            }
+        }
+    }
+    let state = probe_phone_link();
+    if let Ok(mut cache) = PHONE_LINK_CACHE.lock() {
+        *cache = Some((Instant::now(), state));
+    }
+    state
+}
+
+fn probe_phone_link() -> PhoneLinkState {
+    if !phone_link_installed() {
+        return PhoneLinkState::NotInstalled;
+    }
+    let Some(base) = std::env::var_os("LOCALAPPDATA") else {
+        // No profile path, nothing readable: claim nothing negative.
+        return PhoneLinkState::Available;
+    };
+    let path = std::path::Path::new(&base)
+        .join("Packages")
+        .join(PHONELINK_PACKAGE_FAMILY)
+        .join("LocalCache")
+        .join("DeviceMetadataStorage.json");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => derive_state(Some(linked_phone(&text))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => derive_state(None),
+        // Unreadable metadata: "not connected" would be a guess, so fall
+        // back to the state that asserts nothing negative.
+        Err(_) => PhoneLinkState::Available,
+    }
+}
+
+/// `linked` is `None` when Phone Link has never written device metadata
+/// (no sign-in or pairing on this PC) and otherwise what it records.
+fn derive_state(linked: Option<bool>) -> PhoneLinkState {
+    match linked {
+        None => PhoneLinkState::NotSignedIn,
+        Some(true) => PhoneLinkState::Available,
+        Some(false) => PhoneLinkState::NotConnected,
+    }
+}
+
+/// Whether the metadata records at least one linked phone. Tolerates both
+/// spacings .NET writes (`"IsLinked":true` and `"IsLinked": true`).
+fn linked_phone(text: &str) -> bool {
+    text.match_indices("\"IsLinked\"").any(|(index, _)| {
+        let rest = text[index + "\"IsLinked\"".len()..].trim_start();
+        let rest = rest.strip_prefix(':').unwrap_or(rest).trim_start();
+        rest.starts_with("true")
+    })
+}
+
+/// Whether the Phone Link package is registered for the current user. The
+/// `WindowsApps` execution alias is absent on machines that do have it
+/// installed, so the per-user AppX registration is what counts.
+fn phone_link_installed() -> bool {
+    let mut key = HKEY::default();
+    let wide = windows::core::HSTRING::from(PHONELINK_PACKAGES_KEY);
+    // SAFETY: path is NUL-terminated and `key` is closed by `RegKey`.
+    let opened = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, &wide, Some(0), KEY_READ, &mut key) };
+    if opened.is_err() {
+        return false;
+    }
+    let key = RegKey(key);
+    family_registered(&subkeys(key.0))
+}
+
+fn family_registered(names: &[String]) -> bool {
+    names
+        .iter()
+        .any(|name| name.starts_with(PHONELINK_PACKAGE_PREFIX))
+}
+
+/// Shell target that opens the real Phone Link app (the AUMID is the Start
+/// menu entry for it). A launch, never a fake control.
+pub fn phone_link_launch() -> String {
+    format!("shell:AppsFolder\\{PHONELINK_PACKAGE_FAMILY}!App")
+}
+
 /// Best-effort "Open app" for the detected call app. Returns whether the
 /// shell accepted the request; it never pretends a failed launch worked.
 pub fn open_app(launch: &str) -> bool {
@@ -455,7 +645,7 @@ mod tests {
 
     #[test]
     fn allowlist_matching_is_case_insensitive_and_not_browser_default() {
-        let list = vec!["Teams".to_string(), "WhatsApp".to_string()];
+        let list = ["Teams".to_string(), "WhatsApp".to_string()];
         assert!(list.iter().any(|v| "MicrosoftTeams_8wekyb3d8bbwe"
             .to_ascii_lowercase()
             .contains(&v.to_ascii_lowercase())));
@@ -469,5 +659,72 @@ mod tests {
         let decoded = "MicrosoftTeams_8wekyb3d8bbwe";
         let launch = format!("shell:AppsFolder\\{decoded}");
         assert!(launch.starts_with("shell:AppsFolder"));
+    }
+
+    #[test]
+    fn phone_link_package_is_recognised_by_family_prefix() {
+        let registered = vec!["Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_string()];
+        assert!(!family_registered(&registered));
+        let registered = vec![
+            "Microsoft.WindowsTerminal_8wekyb3d8bbwe".to_string(),
+            "Microsoft.YourPhone_1.26092.119.0_x64__8wekyb3d8bbwe".to_string(),
+        ];
+        assert!(family_registered(&registered));
+    }
+
+    #[test]
+    fn phone_link_metadata_decides_between_not_signed_in_and_not_connected() {
+        assert_eq!(derive_state(None), PhoneLinkState::NotSignedIn);
+        assert_eq!(derive_state(Some(false)), PhoneLinkState::NotConnected);
+        assert_eq!(derive_state(Some(true)), PhoneLinkState::Available);
+    }
+
+    #[test]
+    fn linked_phone_read_tolerates_both_json_spacings() {
+        assert!(linked_phone(r#"{"Devices":[{"IsLinked":true}]}"#));
+        assert!(linked_phone("{\"Devices\":[{\"IsLinked\": true}]}"));
+        assert!(!linked_phone(r#"{"Devices":[{"IsLinked":false}]}"#));
+        assert!(!linked_phone(r#"{"Devices":[]}"#));
+        // The search must not read past the end of the document.
+        assert!(!linked_phone(r#"{"note":"IsLinked""#));
+    }
+
+    #[test]
+    fn idle_tip_says_which_condition_and_never_claims_a_connection() {
+        assert_eq!(
+            PhoneLinkState::NotInstalled.idle_tip(),
+            Some("Phone Link not installed")
+        );
+        assert_eq!(
+            PhoneLinkState::NotSignedIn.idle_tip(),
+            Some("Phone Link not signed in")
+        );
+        assert_eq!(
+            PhoneLinkState::NotConnected.idle_tip(),
+            Some("Phone not connected")
+        );
+        assert_eq!(PhoneLinkState::Available.idle_tip(), None);
+        // Only the installed-with-a-phone state draws real status.
+        assert!(!PhoneLinkState::NotInstalled.is_available());
+        assert!(PhoneLinkState::Available.is_available());
+    }
+
+    #[test]
+    fn phone_link_launch_is_the_installed_app_id() {
+        assert_eq!(
+            phone_link_launch(),
+            "shell:AppsFolder\\Microsoft.YourPhone_8wekyb3d8bbwe!App"
+        );
+    }
+
+    #[test]
+    fn phone_link_state_is_observed_not_invented() {
+        // Whatever this machine reports, it must be one of the four states
+        // and a negative tip must always come with a negative state.
+        let state = phone_link_state();
+        assert!(state.idle_tip().is_some() || state.is_available());
+        if state.idle_tip().is_some() {
+            assert!(!state.is_available());
+        }
     }
 }
