@@ -1,0 +1,22 @@
+# Line endings policy
+# Default to LF for all text files; Windows editors often use CRLF, but this repo uses LF
+* text=auto eol=lf
+
+# Explicitly declare line endings for key files
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+
+# Denote that certain binary files are not subject to line-ending conversion
+*.png binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.installer binary
+*.zip binary
+*.7z binary
+
+# Git LFS would be used for large binary assets, but this repo avoids LFS
+# by keeping engine binaries runtime-local via ENGINES_DIR.
