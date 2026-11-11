@@ -87,6 +87,26 @@ const
   last time. Engines this build does not ship are left alone: no
   selection is recorded and no folder is removed for them. }
 
+{ True when setup was started with an explicit /NAME=... switch. An
+  explicit /COMPONENTS list must win over the remembered selection:
+  scripted and silent installs use it to choose engines for this run. }
+function CommandLineHas(Switch: String): Boolean;
+var
+  I: Integer;
+  P: String;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    P := Uppercase(ParamStr(I));
+    if Pos('/' + Uppercase(Switch) + '=', P) = 1 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
 procedure SelectEngine(Name: String);
 var
   V: Cardinal;
@@ -101,6 +121,12 @@ procedure PreselectEngines;
 begin
   if not RegValueExists(HKEY_CURRENT_USER, ENGINES_KEY, 'seeded') then
     PreselectLanguages(False)
+  else if CommandLineHas('COMPONENTS') then
+  begin
+    { Keep the explicit selection; only the OCR language default is ours. }
+    if not WizardIsComponentSelected('tesseract') then
+      PreselectLanguages(False);
+  end
   else
   begin
     SelectEngine('ffmpeg');
