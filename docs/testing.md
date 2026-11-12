@@ -9,7 +9,8 @@ the workspace root before those were deleted by the v0.9 cleanup
 
 | Gate | Command | Last known result |
 | --- | --- | --- |
-| Unit/integration tests | `cargo test` | **272 passed, 0 failed, 1 ignored** (v0.9 baseline, branch `v0.9` before feature work) |
+| Unit/integration tests | `cargo test` | **272 passed, 0 failed, 1 ignored** — re-run green after the v0.9 cleanup (post-delete gate, branch `chore/cleanup`) |
+| Release build | `cargo build --release` | Green after the cleanup (5 m 32 s from an empty `target/`) |
 | Ignored test | `convert::jobs::live_external_engines_convert_real_files` | Needs live engines in `%LOCALAPPDATA%\Filee\engines`; run manually when engines are installed |
 | Clippy | `cargo clippy --all-targets -- -D warnings` | Clean at the v0.8.0 release; re-run after v0.9 changes |
 | Format | `cargo fmt --check` | Clean at the v0.8.0 release; re-run after v0.9 changes |

@@ -124,38 +124,100 @@ governance docs (`CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `PRIVACY.md`, `SECURIT
 
 ## 4. Commits on `chore/cleanup`
 
-1. `docs: add cleanup plan (inventory, sizes, decisions)` — this file.
-2. `docs: archive superseded prompts/design, add current v0.9 prompt, design and tokens`
+1. `8b3c139` `docs: add cleanup plan (inventory, before-sizes, decisions)` — this file.
+2. `dbd8fdb` `docs: archive superseded prompts/design, add current v0.9 prompt, design and tokens`
    — workspace-root archives into `docs/archive/`, `docs/design/`, `docs/prompts/`.
-3. `refactor: restructure scripts/ → tools/ + installer/, tokens, notices rename`
+3. `cb3df8f` `refactor: restructure scripts/ → tools/ + installer/, tokens, notices rename`
    — `git mv` for every tracked move, references updated (`AGENTS.md`, `*.iss`, `*.ps1`,
    `src/tokens.rs`, `.github` PR template).
-4. `chore: delete build output, stale worktrees and scratch files` — `target/`, the three
-   stale worktrees (`ti-agent-a`, `ti-agent-b`, `ti-release-v08`), workspace-root scratch,
-   logs, duplicate installers, empty repo-root scratch files; `_to_delete/` created for
-   `ti-backup.bundle`.
-5. `gitignore: cover build output, engines, caches, logs and scratch patterns`.
+4. `d78eb7d` `docs: add testing.md, quoting the v0.8.0 release-gate evidence…`
+   — the `rv8-*`/`test-*` log results are quoted **before** the logs are deleted.
+5. `40ba3e8` `gitignore: cover engines, bundles, backups, logs, scratch output…`
+
+The physical deletions (`target/`, worktrees, workspace-root scratch) were all
+**untracked** files, so git records nothing for them — their full list is §7 and
+the pattern that keeps them out is commit 5.
 
 Gate after the deletes: `cargo build --release` and `cargo test` must both pass on the
-cleaned tree (recorded in `docs/testing.md`).
+cleaned tree (recorded in `docs/testing.md`). **Ran and passed**: release build
+finished in 5 m 32 s, `cargo test` → 272 passed / 0 failed / 1 ignored, exit 0.
 
 ## 5. Ambiguous — owner decision required
 
 | Item | Where it went | Question |
 | --- | --- | --- |
 | `ti-backup.bundle` (139.7 MB) | `_to_delete/ti-backup.bundle` | Keep as a history backup, or delete? It duplicates `.git` history. |
+| `from-B.agent-a-worktree.md` (5 KB) | `_to_delete/from-B.agent-a-worktree.md` | Older snapshot of the archived `docs/archive/coordination/from-B.md` — delete, or keep as the agent-A-era record? |
+| Root `AGENTS.md`, `.gitignore` (0 bytes) | `_to_delete/AGENTS.workspace-root.md`, `_to_delete/gitignore.workspace-root.md` | Both empty and untracked in the zero-commit workspace repo — delete, or were they placeholders you want back? |
 | Committed binaries in git history (~40–60 MB of the 134.92 MB `.git`) | untouched | Purge with a history rewrite (`git filter-repo`), or leave history alone? |
 
-## 6. Sizes after *(filled in after the delete commit)*
+## 6. Sizes after
+
+Measured after the delete commit, before the gate rebuild finished filling
+`target/` back in.
 
 | Scope | Bytes | Human |
 | --- | ---: | --- |
-| Repo working tree (no `.git`, no `target/`) | _pending_ | |
-| Repo `.git/` | _pending_ | |
-| Repo `target/` (after the `--release` gate rebuild) | _pending_ | |
-| **Repo total** | _pending_ | |
-| Workspace root outside `taskbar-island/` | _pending_ | |
+| Repo working tree (no `.git`, no `target/`) | 146,628,994 | 139.84 MB — **139.7 MB of this is `_to_delete/ti-backup.bundle`, awaiting the owner's decision; excluding it the tree is ~6.6 MB** (was 2.94 MB; it grew because the archived PDFs/prompt material now live inside `docs/`) |
+| Repo `.git/` | 144,272,057 | 137.59 MB (was 134.92 MB; +2.7 MB from committing the v0.9 artboards/prompt — no history rewritten) |
+| Repo `target/` (after the `--release` gate rebuild) | 1,163,018,690 | 1.08 GB (was 10.44 GB — a clean rebuild of release + test profile; the old tree carried years of stale artifacts) |
+| **Repo total** | **1,447,920,544** | **1.35 GB (was 10.58 GB — −87 %)** |
+| Workspace root outside `taskbar-island/` | 27,254 | 26.6 KB (was 4.36 GB) |
 
-## 7. Everything removed *(filled in after the delete commit)*
+Workspace root went **4.36 GB → 26.6 KB**: the three stale worktrees
+(`ti-agent-a`, `ti-agent-b`, `ti-release-v08` ≈ 4.5 GB on disk including their
+own build output), `tbi-dist/`, `.recon/`, the Inno Setup download, 15 scratch
+logs, 5 scratch `.py` scripts, the stale token/audit stubs and the duplicate
+`cargo-winlibs.cmd` are gone. Repo `target/` went 10.44 GB → 0 and is rebuilt
+by the gate.
 
-_pending._
+## 7. Everything removed
+
+### Worktrees (git metadata pruned, branch refs kept in the main repo)
+
+- `D:\dynamic\ti-agent-a` (429 KB) — stale, `prunable`, work merged in PR #2.
+  Its untracked `coordination/from-B.md` differed from the archived copy; it is
+  an **older snapshot** (90 lines vs 232; its "unique" lines are the
+  pre-resolution wording of bullets the archive shows struck through), preserved
+  anyway at `_to_delete/from-B.agent-a-worktree.md`.
+- `D:\dynamic\ti-agent-b` (2.89 GB) — clean, parked at tag `v0.8.0`.
+- `D:\dynamic\ti-release-v08` (1.63 GB) — clean, parked at tag `v0.8.0`.
+
+### Repository
+
+- `target/` (10.44 GB) — build output; rebuilt by the gate (`cargo build
+  --release` + `cargo test`). No prior soak data existed in it.
+- `scripts/generated/` (stale `engine-lang-*.iss`) — regenerated into
+  `tools/generated/` by `tools/build.ps1 Installer`.
+- `script.py`, `test_output.txt` — empty untracked AI scratch files.
+
+### Workspace root `D:\dynamic`
+
+- `.recon/` (1.79 MB) — design-recon board renders + splice script.
+- `docs/audit/repo-audit.md` (1.5 KB) — broken duplicate-heading draft; its A3
+  findings are verbatim in the repo's `docs/audit/repo-audit.md`, whose §1 also
+  carries the secret-scan pattern list. Two methodology caveats unique to the
+  draft, preserved here: *"Manual raw_search over all branches and tags,
+  supplemented by grep over rev-list. No gitleaks or trufflehog installed"* and
+  *"Scanned: all branches and tags. fsck --lost-found not checked."*
+- `tbi-dist/` (3.5 MB) — `TaskbarIsland-Setup-0.6.0.exe`, superseded installer.
+- `build_script.py`, `license_script.py`, `modscript.py`, `script.py`,
+  `tmp_audit.py` — broken scratch scripts (`license_script.py` is what gutted
+  `src/` on 2026-11-11; recovered from `origin/main`).
+- 15 logs (`build-*`, `clippy-*`, `final-test-*`, `test-*`, `rv8-*`,
+  `install.log`, ~130 KB) — v0.7.0/v0.8.0-era gate output; the passing results
+  are quoted in `docs/testing.md` before deletion.
+- `design-tokens.json` (8.2 KB) — stale duplicate of the tracked token file.
+- `repo-audit.md` (630 B) — stub superseded by `docs/audit/repo-audit.md`.
+- `inno-setup.exe` + `isdl.html` (23 KB) — both are HTML error pages, not
+  installers; `innosetup-6.7.4.exe` (10.6 MB) — unused download, `build.ps1`
+  needs an installed Inno Setup 6 and never references this file.
+- `cargo-winlibs.cmd` — moved to `tools/cargo-winlibs.cmd` (tracked).
+- Root `AGENTS.md` and `.gitignore` (both **0 bytes**, untracked in the
+  zero-commit workspace repo) — moved to `_to_delete/` rather than guessed at.
+
+### Quarantined in `_to_delete/` (owner decision required, §5)
+
+- `ti-backup.bundle` (139.7 MB)
+- `from-B.agent-a-worktree.md` (5 KB)
+- `AGENTS.workspace-root.md`, `gitignore.workspace-root.md` (0 bytes each)
