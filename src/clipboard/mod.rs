@@ -82,6 +82,9 @@ impl ClipboardRuntime {
     pub fn apply(&mut self, item: ClipItem, now: i64) -> Applied {
         let digest = item.digest.clone();
         let is_image = item.kind == ClipKind::Image;
+        let item_kind = item.kind;
+        let path_count = item.paths.len();
+        let text_len = item.text.len();
         let mut deletes: Vec<String> = self
             .store
             .expire(now)
@@ -105,6 +108,21 @@ impl ClipboardRuntime {
             deletes.push(digest);
         }
         self.writer.save(&self.store, deletes);
+        if outcome.accepted() {
+            // Diagnostic marker for the capture pipeline (v0.9 §2): which
+            // filter group the copy landed in and whether it came from files.
+            crate::log::log(&format!(
+                "clip.capture: kind={} paths={} text_len={}",
+                match item_kind {
+                    ClipKind::Text => "text",
+                    ClipKind::Link => "link",
+                    ClipKind::Image => "image",
+                    ClipKind::Files => "files",
+                },
+                path_count,
+                text_len
+            ));
+        }
         Applied {
             stored: outcome.accepted(),
             id: outcome.id(),

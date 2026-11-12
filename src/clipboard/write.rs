@@ -24,6 +24,17 @@ use super::store::{blob_path, ClipItem, ClipKind};
 /// `owner` is the window the clipboard is associated with for the duration of
 /// the write; it is only used by the file-list path.
 pub fn write(item: &ClipItem, owner: HWND) -> Result<(), String> {
+    // A row captured from a file restores the file itself, whatever its kind
+    // says: an image copied from disk is put back as that file, and a text
+    // file read into a Text row is put back as the file too (v0.9 §2). The
+    // paths are the payload; the kind only chose the row's filter.
+    if !item.paths.is_empty() {
+        let paths = live_paths(&item.paths);
+        if paths.is_empty() {
+            return Err("File moved or deleted".to_string());
+        }
+        return crate::convert::shell::copy_paths(owner, &paths);
+    }
     match item.kind {
         ClipKind::Text | ClipKind::Link => {
             set_format(CF_UNICODETEXT.0 as u32, &text_payload(&item.text))
@@ -31,11 +42,7 @@ pub fn write(item: &ClipItem, owner: HWND) -> Result<(), String> {
         ClipKind::Files => {
             // A row whose files are all gone is dimmed in the list; copying it
             // would hand the target app a dead drop (spec 4).
-            let paths = live_paths(&item.paths);
-            if paths.is_empty() {
-                return Err("File moved or deleted".to_string());
-            }
-            crate::convert::shell::copy_paths(owner, &paths)
+            Err("File moved or deleted".to_string())
         }
         ClipKind::Image => write_image(item),
     }

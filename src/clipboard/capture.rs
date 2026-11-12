@@ -6,6 +6,7 @@
 //! the island message loop never waits on it.
 
 use std::cell::{Cell, RefCell};
+use std::io::Read;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -385,8 +386,15 @@ fn display_name(stem: &str) -> String {
     }
 }
 
+#[derive(Debug)]
 enum Payload {
     Text(String),
+    /// A text file copied as a file (v0.9 §2): the content becomes the row's
+    /// text, the paths are kept so copy-back restores the file itself.
+    FileText {
+        text: String,
+        paths: Vec<String>,
+    },
     Files(Vec<String>),
     Image {
         png: Vec<u8>,
@@ -395,6 +403,23 @@ enum Payload {
         width: u32,
         height: u32,
     },
+    /// An image file copied as a file (v0.9 §2): no blob is written — the
+    /// thumbnail is decoded from the file itself, off the UI thread.
+    FileImage {
+        paths: Vec<String>,
+        width: u32,
+        height: u32,
+        bytes: u64,
+    },
+}
+
+/// What one copied file is, decided from its extension and its first bytes
+/// (v0.9 §2: "classify by content, not only by format").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileContent {
+    Image,
+    Text,
+    Other,
 }
 
 fn capture_item() -> Option<ClipItem> {
@@ -422,24 +447,58 @@ fn capture_item() -> Option<ClipItem> {
                 source_app,
             }
         }
-        Payload::Files(paths) => {
-            let mut hasher = Hasher::new("files");
-            for path in &paths {
-                hasher.write(path.as_bytes());
-                hasher.write(&[0]);
-            }
+        Payload::FileText { text, paths } => {
+            // The content decides the kind (v0.9 §2: `a.png.txt` stays text);
+            // the paths stay on the item so copy-back restores the file.
             ClipItem {
                 id: 0,
-                kind: ClipKind::Files,
-                digest: hasher.finish(),
+                kind: ClipKind::Text,
+                digest: file_digest("file-text", &paths, text.as_bytes()),
                 created_at: 0,
                 pinned: false,
-                text: String::new(),
+                text,
                 paths,
                 image: None,
                 source_app,
             }
         }
+        Payload::Files(paths) => ClipItem {
+            id: 0,
+            kind: ClipKind::Files,
+            digest: paths_digest("files", &paths),
+            created_at: 0,
+            pinned: false,
+            text: String::new(),
+            paths,
+            image: None,
+            source_app,
+        },
+        Payload::FileImage {
+            paths,
+            width,
+            height,
+            bytes,
+        } => ClipItem {
+            id: 0,
+            // `paths` non-empty is what marks the row as file-sourced: the
+            // title is the file name, the thumbnail decodes the file, and
+            // copy-back puts the file back (v0.9 §2).
+            kind: ClipKind::Image,
+            digest: paths_digest("image-file", &paths),
+            created_at: 0,
+            pinned: false,
+            text: String::new(),
+            paths,
+            image: Some(ImageMeta {
+                width,
+                height,
+                bytes,
+                // No capture-time blob thumbnail exists for file rows; the
+                // thumbnail worker decodes the file instead.
+                thumb: false,
+            }),
+            source_app,
+        },
         Payload::Image {
             png,
             thumb,
@@ -478,7 +537,7 @@ fn read_payload() -> Option<Payload> {
     }
     if let Some(paths) = read_files() {
         if !paths.is_empty() {
-            return Some(Payload::Files(paths));
+            return Some(payload_from_files(paths));
         }
     }
     if let Some(text) = read_text() {
@@ -487,6 +546,234 @@ fn read_payload() -> Option<Payload> {
         }
     }
     read_image()
+}
+
+/// One clipboard change stays one item (v0.9 §2). A copy whose files are all
+/// images becomes an `Image` row sourced from the file; all-text files become
+/// a `Text` row whose paths are kept for copy-back; anything mixed (or
+/// unreadable) stays the `Files` row it always was, so no copied file is ever
+/// dropped from history.
+fn payload_from_files(paths: Vec<String>) -> Payload {
+    if paths.is_empty() {
+        return Payload::Files(paths);
+    }
+    let probes: Vec<FileContent> = paths.iter().map(|path| probe_file(path)).collect();
+    if probes.iter().all(|kind| *kind == FileContent::Image) {
+        return file_image(paths);
+    }
+    if probes.iter().all(|kind| *kind == FileContent::Text) {
+        if let Some(text) = read_text_file(&paths[0]) {
+            if text_allowed(&text) {
+                return Payload::FileText { text, paths };
+            }
+        }
+    }
+    Payload::Files(paths)
+}
+
+/// Bytes read from a file to classify it: enough for every magic signature
+/// and for a text/binary judgement, far below any allocation concern.
+const SNIFF_BYTES: usize = 4096;
+
+fn probe_file(path: &str) -> FileContent {
+    // The extension is the strong signal: a corrupt `.png` still becomes an
+    // image row (its thumbnail simply falls back to the glyph) — v0.9 §2.
+    if crate::view::is_image(path) {
+        return FileContent::Image;
+    }
+    let Some(head) = read_head(path, SNIFF_BYTES) else {
+        return FileContent::Other;
+    };
+    if sniff_image(&head) {
+        return FileContent::Image;
+    }
+    // UTF-16 text carries NUL bytes, so its byte-order marks are checked
+    // before the NUL rule below rejects it as binary.
+    if head.starts_with(&[0xFF, 0xFE]) || head.starts_with(&[0xFE, 0xFF]) {
+        return FileContent::Text;
+    }
+    if looks_text(&head) {
+        return FileContent::Text;
+    }
+    FileContent::Other
+}
+
+/// Up to `cap` bytes from the start of a file, `None` when it cannot be read
+/// (missing, denied, a directory).
+fn read_head(path: &str, cap: usize) -> Option<Vec<u8>> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buffer = vec![0u8; cap];
+    let mut read = 0usize;
+    while read < cap {
+        match file.read(&mut buffer[read..]) {
+            Ok(0) => break,
+            Ok(n) => read += n,
+            Err(_) => return None,
+        }
+    }
+    buffer.truncate(read);
+    (!buffer.is_empty()).then_some(buffer)
+}
+
+/// Magic-byte sniff for an extensionless (or oddly named) image file.
+fn sniff_image(head: &[u8]) -> bool {
+    if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return true;
+    }
+    if head.len() >= 3 && head[..3] == [0xFF, 0xD8, 0xFF] {
+        return true; // JPEG
+    }
+    if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        return true;
+    }
+    if head.len() >= 6 && head.starts_with(b"BM") {
+        return true; // BMP
+    }
+    if head.starts_with(b"II*\0") || head.starts_with(b"MM\0*") {
+        return true; // TIFF
+    }
+    if head.starts_with(b"\0\0\x01\x00") {
+        return true; // ICO
+    }
+    if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" {
+        return true;
+    }
+    // HEIC/HEIF: an ISO base media `ftyp` box carrying an image brand.
+    head.len() >= 12
+        && &head[4..8] == b"ftyp"
+        && matches!(
+            &head[8..12],
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+        )
+}
+
+/// Text judgement for a sample: valid UTF-8 (a tail cut mid-character is
+/// forgiven), almost no control characters, and none of the container
+/// signatures whose first bytes are printable (`%PDF`, `PK…`).
+fn looks_text(head: &[u8]) -> bool {
+    const BINARY: &[&[u8]] = &[
+        b"%PDF",
+        b"PK\x03\x04",
+        b"Rar!",
+        b"7z\xBC\xAF\x27\x1C",
+        b"\x1F\x8B",
+        b"\xD0\xCF\x11\xE0",
+        b"MZ",
+        b"\x7FELF",
+        b"\xCA\xFE\xBA\xBE",
+    ];
+    if BINARY.iter().any(|signature| head.starts_with(signature)) {
+        return false;
+    }
+    if head.contains(&0) {
+        return false;
+    }
+    let valid = match std::str::from_utf8(head) {
+        Ok(text) => text.len(),
+        // The 4 KB window can end inside a multi-byte character.
+        Err(error) if error.valid_up_to().saturating_add(4) >= head.len() => error.valid_up_to(),
+        Err(_) => return false,
+    };
+    let Ok(text) = std::str::from_utf8(&head[..valid]) else {
+        return false;
+    };
+    let printable = text
+        .chars()
+        .filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r' | '\x0B' | '\x0C'))
+        .count();
+    printable * 10 >= text.chars().count()
+}
+
+/// The content of a text file, capped at the same limit as a copied string.
+/// UTF-8 (with or without BOM) and BOM-marked UTF-16 are understood; anything
+/// else returns `None` and the copy stays a `Files` row.
+fn read_text_file(path: &str) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    let mut reader = file.take(u64::try_from(CLIP_TEXT_MAX_BYTES).unwrap_or(u64::MAX));
+    reader.read_to_end(&mut bytes).ok()?;
+    decode_text_bytes(&bytes)
+}
+
+fn decode_text_bytes(bytes: &[u8]) -> Option<String> {
+    let units = |big_endian: bool| -> String {
+        let chunks = bytes[2..].as_chunks::<2>().0;
+        let units: Vec<u16> = chunks
+            .iter()
+            .map(|pair| {
+                if big_endian {
+                    u16::from_be_bytes(*pair)
+                } else {
+                    u16::from_le_bytes(*pair)
+                }
+            })
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    if bytes.starts_with(&[0xFF, 0xFE]) {
+        return Some(units(false));
+    }
+    if bytes.starts_with(&[0xFE, 0xFF]) {
+        return Some(units(true));
+    }
+    let body = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else {
+        bytes
+    };
+    match std::str::from_utf8(body) {
+        Ok(text) => Some(text.to_string()),
+        // A capped read can end inside a multi-byte character.
+        Err(error) if error.valid_up_to().saturating_add(4) >= body.len() => {
+            std::str::from_utf8(&body[..error.valid_up_to()])
+                .ok()
+                .map(str::to_owned)
+        }
+        Err(_) => None,
+    }
+}
+
+/// An image file copied as a file: dimensions come from the header only (a
+/// 24 MP photo is never decoded on the capture worker), `bytes` is the file
+/// size the meta line shows, and a header that cannot be read yields `0 × 0`
+/// so the row still exists with no size in its meta line.
+fn file_image(paths: Vec<String>) -> Payload {
+    let bytes = std::fs::metadata(&paths[0])
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let (width, height) = image_dimensions(&paths[0]).unwrap_or((0, 0));
+    Payload::FileImage {
+        paths,
+        width,
+        height,
+        bytes,
+    }
+}
+
+fn image_dimensions(path: &str) -> Option<(u32, u32)> {
+    let attempt = || -> Option<(u32, u32)> {
+        let reader = image::ImageReader::open(path).ok()?;
+        reader.with_guessed_format().ok()?.into_dimensions().ok()
+    };
+    catch_unwind(AssertUnwindSafe(attempt)).ok().flatten()
+}
+
+/// Digest of the copied paths, optionally salted with the payload. The tag
+/// keeps an image row and a file row for the same path distinct: `store::add`
+/// keys on kind + digest, so an item captured by an older build is not
+/// silently re-typed.
+fn paths_digest(tag: &str, paths: &[String]) -> String {
+    file_digest(tag, paths, &[])
+}
+
+fn file_digest(tag: &str, paths: &[String], extra: &[u8]) -> String {
+    let mut hasher = Hasher::new(tag);
+    for path in paths {
+        hasher.write(path.as_bytes());
+        hasher.write(&[0]);
+    }
+    hasher.write(extra);
+    hasher.finish()
 }
 
 struct ClipboardGuard;
@@ -957,5 +1244,134 @@ mod tests {
         let tiny = DynamicImage::new_rgba8(1, 1);
         let thumb = thumbnail(&tiny).expect("thumb");
         assert_eq!((thumb.width(), thumb.height()), (1, 1));
+    }
+
+    /// A scratch directory for the CF_HDROP classification tests; every test
+    /// removes its own copy on the way out.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("taskbar-island-clip-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        DynamicImage::new_rgba8(width, height)
+            .write_to(&mut std::io::Cursor::new(&mut bytes), ImageFormat::Png)
+            .expect("encode png");
+        bytes
+    }
+
+    /// v0.9 §2: a copied image *file* is an Image row sourced from the file —
+    /// the reported bug was that it only ever appeared under All.
+    #[test]
+    fn image_files_classify_as_image_rows() {
+        let dir = scratch("image-files");
+        let png = dir.join("Picture1.png");
+        std::fs::write(&png, png_bytes(1280, 720)).unwrap();
+        let jpg = dir.join("photo.jpg");
+        std::fs::write(&jpg, b"\xFF\xD8\xFF\xE0rest-of-the-jpeg").unwrap();
+
+        let payload = payload_from_files(vec![png.display().to_string()]);
+        let (paths, width, height, bytes) = match payload {
+            Payload::FileImage {
+                paths,
+                width,
+                height,
+                bytes,
+            } => (paths, width, height, bytes),
+            other => panic!("png file should be an image row: {other:?}"),
+        };
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].ends_with("Picture1.png"));
+        assert_eq!((width, height), (1280, 720));
+        assert_eq!(bytes, std::fs::metadata(&png).unwrap().len());
+
+        // The extension decides even when the bytes are not a decodable
+        // image: the row exists and its thumbnail falls back to the glyph.
+        assert!(matches!(
+            payload_from_files(vec![jpg.display().to_string()]),
+            Payload::FileImage { .. }
+        ));
+        let corrupt = dir.join("broken.png");
+        std::fs::write(&corrupt, b"definitely not a png").unwrap();
+        match payload_from_files(vec![corrupt.display().to_string()]) {
+            Payload::FileImage { width, height, .. } => {
+                assert_eq!((width, height), (0, 0), "header unreadable -> 0 x 0")
+            }
+            other => panic!("corrupt png should still be an image row: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The acceptance test from §2: a text file whose *name* contains `.png`
+    /// must stay text (the owner's call: classified from its content).
+    #[test]
+    fn a_png_txt_stays_text_from_its_content() {
+        let dir = scratch("png-txt");
+        let path = dir.join("a.png.txt");
+        std::fs::write(&path, "just some plain notes\nsecond line").unwrap();
+        match payload_from_files(vec![path.display().to_string()]) {
+            Payload::FileText { text, paths } => {
+                assert!(text.starts_with("just some plain notes"));
+                assert_eq!(paths.len(), 1, "paths are kept for copy-back");
+            }
+            other => panic!("a.png.txt must stay text: {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A PNG with no extension at all is recognised from its magic bytes, and
+    /// a copy that mixes image and non-image files stays the Files row it
+    /// always was — one clipboard change, one item, nothing dropped (§2).
+    #[test]
+    fn extensionless_images_and_mixed_copies() {
+        let dir = scratch("sniff");
+        let bare = dir.join("screenshot-copy");
+        std::fs::write(&bare, png_bytes(64, 48)).unwrap();
+        assert!(matches!(
+            payload_from_files(vec![bare.display().to_string()]),
+            Payload::FileImage { .. }
+        ));
+
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, "hello").unwrap();
+        assert!(matches!(
+            payload_from_files(vec![bare.display().to_string(), text.display().to_string()]),
+            Payload::Files(_)
+        ));
+
+        let pdf = dir.join("Invoice.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\n1 0 obj").unwrap();
+        assert!(matches!(
+            payload_from_files(vec![pdf.display().to_string()]),
+            Payload::Files(_)
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Bitmap clipboard formats keep producing the same blob-backed Image
+    /// payload: a screenshot is one item that lands in All *and* Images.
+    #[test]
+    fn screenshots_stay_blob_backed_image_payloads() {
+        let bytes = png_bytes(615, 322);
+        match decode_png(&bytes) {
+            Some(Payload::Image { width, height, .. }) => assert_eq!((width, height), (615, 322)),
+            other => panic!("png clipboard payload: {other:?}"),
+        }
+        // A 2 x 2 24 bpp DIB (the CF_DIB path) decodes the same way.
+        let row = 2 * 3;
+        let stride = row + (4 - row % 4) % 4;
+        let mut dib = vec![0u8; 40 + stride * 2];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&2i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&2i32.to_le_bytes());
+        dib[12..14].copy_from_slice(&1u16.to_le_bytes());
+        dib[14..16].copy_from_slice(&24u16.to_le_bytes());
+        match decode_dib(&dib) {
+            Some(Payload::Image { width, height, .. }) => assert_eq!((width, height), (2, 2)),
+            other => panic!("dib clipboard payload: {other:?}"),
+        }
     }
 }

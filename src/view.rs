@@ -501,11 +501,15 @@ pub enum ClipRowKind {
         hex: String,
         rgb: String,
     },
-    /// Bold dimensions with a muted `PNG · 48 KB` line under them.
+    /// Title over a muted meta line beside the thumbnail (spec 7, extended by
+    /// v0.9 §2): a screenshot reads `615 × 322` over `PNG · 47 KB ·
+    /// screenshot`; a file-sourced image reads its file name over `PNG ·
+    /// 1280 × 720 · 214 KB` and carries the FILE badge.
     Image {
-        w: u32,
-        h: u32,
-        bytes: u64,
+        title: String,
+        meta: String,
+        /// Draw the small FILE badge at the right of the row.
+        from_file: bool,
     },
     Files,
 }
@@ -1044,18 +1048,35 @@ pub fn clip_preview(item: &crate::clipboard::store::ClipItem) -> String {
 pub fn clip_tip(item: &crate::clipboard::store::ClipItem) -> String {
     use crate::clipboard::store::ClipKind;
     let full = match item.kind {
-        ClipKind::Image => item
-            .image
-            .as_ref()
-            .map(|meta| {
-                format!(
-                    "{} \u{00d7} {} \u{00b7} {}",
-                    meta.width,
-                    meta.height,
+        ClipKind::Image => {
+            let dims = item.image.as_ref().map_or_else(String::new, |meta| {
+                if meta.width > 0 && meta.height > 0 {
+                    format!(
+                        "{} \u{00d7} {} \u{00b7} {}",
+                        meta.width,
+                        meta.height,
+                        fmt_size(meta.bytes)
+                    )
+                } else {
                     fmt_size(meta.bytes)
-                )
-            })
-            .unwrap_or_default(),
+                }
+            });
+            // A file-sourced image leads with its file name (v0.9 §2).
+            match item.paths.first() {
+                Some(path) => {
+                    let name = Path::new(path)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.clone());
+                    if dims.is_empty() {
+                        name
+                    } else {
+                        format!("{name} \u{00b7} {dims}")
+                    }
+                }
+                None => dims,
+            }
+        }
         ClipKind::Files => item.paths.join(", "),
         _ => item.text.trim().to_string(),
     };
@@ -1068,12 +1089,16 @@ pub fn clip_tip(item: &crate::clipboard::store::ClipItem) -> String {
     }
 }
 
-/// The file the hover preview decodes at `thumb::PREVIEW_PX`: the stored blob
-/// of an image row (spec 7). File and text rows preview as copy and never
-/// touch the decoder.
+/// The file the hover preview decodes at `thumb::PREVIEW_PX`: the file a
+/// file-sourced image was copied from, otherwise the stored blob of a
+/// screenshot (spec 7). File and text rows preview as copy and never touch
+/// the decoder.
 pub fn clip_preview_path(item: &crate::clipboard::store::ClipItem) -> Option<String> {
     if item.kind != crate::clipboard::store::ClipKind::Image {
         return None;
+    }
+    if let Some(path) = item.paths.first() {
+        return Some(path.clone());
     }
     Some(
         crate::clipboard::store::blob_path(&item.digest)
@@ -1308,20 +1333,87 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
 pub fn clip_row_kind(item: &crate::clipboard::store::ClipItem) -> ClipRowKind {
     use crate::clipboard::store::ClipKind;
     match item.kind {
-        ClipKind::Image => item.image.as_ref().map_or(
-            ClipRowKind::Image {
-                w: 0,
-                h: 0,
-                bytes: 0,
-            },
-            |meta| ClipRowKind::Image {
-                w: meta.width,
-                h: meta.height,
-                bytes: meta.bytes,
-            },
-        ),
+        ClipKind::Image => {
+            let (w, h, bytes) = item
+                .image
+                .as_ref()
+                .map(|meta| (meta.width, meta.height, meta.bytes))
+                .unwrap_or((0, 0, 0));
+            image_row_text(item, w, h, bytes)
+        }
         ClipKind::Files => ClipRowKind::Files,
         ClipKind::Link | ClipKind::Text => text_kind(&item.text),
+    }
+}
+
+/// Title and meta line of an image row (v0.9 §2). `paths` non-empty means the
+/// image was copied as a file: it is titled with the file name, its meta line
+/// carries the dimensions between the format and the size, and `from_file`
+/// turns on the FILE badge. A screenshot (no paths) is titled with its own
+/// size and its meta line ends in `screenshot`.
+fn image_row_text(
+    item: &crate::clipboard::store::ClipItem,
+    w: u32,
+    h: u32,
+    bytes: u64,
+) -> ClipRowKind {
+    let Some(path) = item.paths.first() else {
+        let title = if w > 0 && h > 0 {
+            format!("{w} \u{00d7} {h}")
+        } else {
+            "Image".to_string()
+        };
+        let meta = if bytes > 0 {
+            format!("PNG \u{00b7} {} \u{00b7} screenshot", fmt_size(bytes))
+        } else {
+            "PNG \u{00b7} screenshot".to_string()
+        };
+        return ClipRowKind::Image {
+            title,
+            meta,
+            from_file: false,
+        };
+    };
+    let name = Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.clone());
+    let title = if item.paths.len() > 1 {
+        format!("{name} +{}", item.paths.len() - 1)
+    } else {
+        name
+    };
+    let label = image_label(path);
+    let meta = if w > 0 && h > 0 {
+        format!(
+            "{label} \u{00b7} {w} \u{00d7} {h} \u{00b7} {}",
+            fmt_size(bytes)
+        )
+    } else if bytes > 0 {
+        format!("{label} \u{00b7} {}", fmt_size(bytes))
+    } else {
+        label
+    };
+    ClipRowKind::Image {
+        title,
+        meta,
+        from_file: true,
+    }
+}
+
+/// The format word of an image row's meta line: the file's extension
+/// upper-cased, with `JPEG` shortened to `JPG`, `TIFF` to `TIF`, and `IMG`
+/// for a file whose extension says nothing (sniffed by magic bytes).
+fn image_label(path: &str) -> String {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("");
+    match ext.to_ascii_lowercase().as_str() {
+        "" => "IMG".to_string(),
+        "jpeg" => "JPG".to_string(),
+        "tiff" => "TIF".to_string(),
+        other => other.to_ascii_uppercase(),
     }
 }
 
@@ -1386,11 +1478,17 @@ pub fn clip_rows(
         let masked = matches!(item.kind, ClipKind::Text | ClipKind::Link)
             && crate::clipboard::secret::looks_secret(&item.text);
         let image = matches!(&kind, ClipRowKind::Image { .. });
-        // Image rows thumbnail their blob; a file row thumbnails a single
-        // image file through the shelf worker (spec 7 file rows).
+        // An image row thumbnails the file it was copied from; a screenshot
+        // thumbnails the blob generated at capture (v0.9 §2). A file row
+        // thumbnails a single image file through the same worker (spec 7).
         let thumb = match &kind {
             ClipRowKind::Image { .. } => {
-                thumb(&crate::clipboard::store::thumb_path(&item.digest).to_string_lossy())
+                let source = item.paths.first().cloned().unwrap_or_else(|| {
+                    crate::clipboard::store::thumb_path(&item.digest)
+                        .to_string_lossy()
+                        .into_owned()
+                });
+                thumb(&source)
             }
             ClipRowKind::Files
                 if item.paths.len() == 1 && item.paths.first().is_some_and(|p| is_image(p)) =>
@@ -1404,7 +1502,12 @@ pub fn clip_rows(
             index,
             id: item.id,
             icon,
-            preview: clip_preview(item),
+            preview: match &kind {
+                // Image rows draw their own title (file name or size), so the
+                // preview string mirrors it instead of the raw dimensions.
+                ClipRowKind::Image { title, .. } => title.clone(),
+                _ => clip_preview(item),
+            },
             kind: kind.clone(),
             y,
             mono: kind.mono(),
@@ -1437,7 +1540,10 @@ pub fn is_convertible(path: &str) -> bool {
     )
 }
 
-/// Files whose thumbnail the worker can produce.
+/// Files whose thumbnail the worker can produce — also the canonical image
+/// extension list for clipboard classification (v0.9 §2): a copied file with
+/// one of these extensions is an `Image` row even when its bytes are corrupt
+/// (the thumbnail then falls back to the glyph).
 pub fn is_image(path: &str) -> bool {
     matches!(
         Path::new(path)
@@ -1446,7 +1552,7 @@ pub fn is_image(path: &str) -> bool {
             .unwrap_or("")
             .to_ascii_lowercase()
             .as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff"
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tif" | "tiff" | "heic"
     )
 }
 
@@ -1736,9 +1842,17 @@ mod tests {
         assert_eq!(row(ClipKind::Link, ""), ClipRowKind::Text);
         // Files and images come from the store kind.
         assert_eq!(row(ClipKind::Files, ""), ClipRowKind::Files);
-        let mut image = row(ClipKind::Image, "");
-        assert!(matches!(image, ClipRowKind::Image { w: 0, h: 0, .. }));
-        image = {
+        // An image with no stored metadata (and no file) still gets a row:
+        // a placeholder title and the screenshot meta line.
+        assert_eq!(
+            row(ClipKind::Image, ""),
+            ClipRowKind::Image {
+                title: "Image".into(),
+                meta: "PNG \u{00b7} screenshot".into(),
+                from_file: false,
+            }
+        );
+        let image = {
             let mut item = clip_item(1, ClipKind::Image, 0);
             item.image = Some(ImageMeta {
                 width: 573,
@@ -1748,12 +1862,82 @@ mod tests {
             });
             clip_row_kind(&item)
         };
+        // A screenshot is titled with its size (v0.9 §2).
         assert_eq!(
             image,
             ClipRowKind::Image {
-                w: 573,
-                h: 353,
-                bytes: 49_152,
+                title: "573 \u{00d7} 353".into(),
+                meta: "PNG \u{00b7} 48 KB \u{00b7} screenshot".into(),
+                from_file: false,
+            }
+        );
+    }
+
+    /// File-sourced image rows (v0.9 §2): titled with the file name, meta line
+    /// `PNG · 1280 × 720 · 214 KB`, FILE badge on, and the file name wins over
+    /// the dimensions. The screenshot form above is the other half of the
+    /// acceptance checklist.
+    #[test]
+    fn file_images_are_titled_with_their_name_and_carry_the_file_badge() {
+        use crate::clipboard::store::{ClipItem, ClipKind, ImageMeta};
+        let item = ClipItem {
+            id: 7,
+            kind: ClipKind::Image,
+            digest: "d7".into(),
+            created_at: 0,
+            pinned: false,
+            text: String::new(),
+            paths: vec!["C:\\Users\\me\\Pictures\\Picture1.png".into()],
+            image: Some(ImageMeta {
+                width: 1280,
+                height: 720,
+                bytes: 219_136,
+                thumb: false,
+            }),
+            source_app: Some("File Explorer".into()),
+        };
+        let kind = clip_row_kind(&item);
+        assert_eq!(
+            kind,
+            ClipRowKind::Image {
+                title: "Picture1.png".into(),
+                meta: "PNG \u{00b7} 1280 \u{00d7} 720 \u{00b7} 214 KB".into(),
+                from_file: true,
+            }
+        );
+        // The row is a `ClipKind::Image`, so the Images filter and its count
+        // include it — the reported bug was that it did not.
+        assert!(ClipFilter::Images.matches(&item));
+        assert!(ClipFilter::All.matches(&item));
+        assert!(!ClipFilter::Text.matches(&item));
+        // A multi-file image copy keeps every path but titles the first.
+        let mut many = item.clone();
+        many.paths
+            .push("C:\\Users\\me\\Pictures\\second.jpg".into());
+        assert_eq!(
+            clip_row_kind(&many),
+            ClipRowKind::Image {
+                title: "Picture1.png +1".into(),
+                meta: "PNG \u{00b7} 1280 \u{00d7} 720 \u{00b7} 214 KB".into(),
+                from_file: true,
+            }
+        );
+        // A JPEG's meta line says JPG, and a header that could not be read
+        // drops the dimensions instead of showing `0 × 0`.
+        let mut jpg = item.clone();
+        jpg.paths = vec!["shot.jpg".into()];
+        jpg.image = Some(ImageMeta {
+            width: 0,
+            height: 0,
+            bytes: 40_960,
+            thumb: false,
+        });
+        assert_eq!(
+            clip_row_kind(&jpg),
+            ClipRowKind::Image {
+                title: "shot.jpg".into(),
+                meta: "JPG \u{00b7} 40 KB".into(),
+                from_file: true,
             }
         );
     }
@@ -1838,9 +2022,9 @@ mod tests {
         assert_eq!(
             image_row.kind,
             ClipRowKind::Image {
-                w: 573,
-                h: 353,
-                bytes: 49_152,
+                title: "573 \u{00d7} 353".into(),
+                meta: "PNG \u{00b7} 48 KB \u{00b7} screenshot".into(),
+                from_file: false,
             }
         );
     }

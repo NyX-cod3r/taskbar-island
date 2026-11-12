@@ -50,7 +50,8 @@ impl ClipKind {
 pub struct ImageMeta {
     pub width: u32,
     pub height: u32,
-    /// Size of the stored PNG, for the row tooltip.
+    /// Size of the stored PNG, for the row tooltip — for a file-sourced image
+    /// (v0.9 §2) the size of the file it was copied from.
     pub bytes: u64,
     pub thumb: bool,
 }

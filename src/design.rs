@@ -279,6 +279,14 @@ pub const CLIP_AGE_W: f32 = 30.0;
 /// Small pin marker left of the age on a pinned row.
 pub const CLIP_PIN_MARK: f32 = 12.0;
 pub const CLIP_PIN_MARK_GAP: f32 = 4.0;
+/// FILE badge on a file-sourced image row (v0.9 §2): a small chip at the
+/// right of the row, sized like the shelf's format badge.
+pub const CLIP_FILE_BADGE_TEXT: f32 = 9.5;
+pub const CLIP_FILE_BADGE_H: f32 = 14.0;
+pub const CLIP_FILE_BADGE_R: f32 = 3.0;
+pub const CLIP_FILE_BADGE_PAD: f32 = 5.0;
+/// Gap between the meta line's text box and the badge.
+pub const CLIP_FILE_BADGE_GAP: f32 = 6.0;
 pub const CLIP_LINK: Color = rgb(0x8F, 0xB8, 0xFF);
 /// Row-preview tooltips cap the quoted text at ~200 characters.
 pub const CLIP_TIP_CHARS: usize = 200;

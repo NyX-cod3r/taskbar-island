@@ -7,11 +7,21 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{GENERIC_READ, HWND, LPARAM, WPARAM};
+use windows::Win32::Graphics::Imaging::{
+    CLSID_WICImagingFactory2, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory,
+    WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant, WICBitmapPaletteTypeCustom,
+    WICDecodeMetadataCacheOnLoad,
+};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+};
 use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_APP};
 
 use crate::view::AlbumArt;
@@ -98,6 +108,12 @@ impl ThumbWorker {
         let spawned = std::thread::Builder::new()
             .name("island-thumbs".into())
             .spawn(move || {
+                // WIC decodes run on this thread and need COM initialised
+                // here (v0.9 §2). `com` only records a successful init so
+                // CoUninitialize stays balanced; a failure just means the
+                // pure-Rust decoder carries the workload.
+                // SAFETY: paired with CoUninitialize on this same thread.
+                let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
                 while let Ok(request) = rx.recv() {
                     let key = key_for(&request.path);
                     let art = decode(&request.path, key, request.max);
@@ -118,6 +134,10 @@ impl ThumbWorker {
                             LPARAM(0),
                         );
                     }
+                }
+                if com {
+                    // SAFETY: balances the successful CoInitializeEx above.
+                    unsafe { CoUninitialize() };
                 }
             });
         Self {
@@ -142,7 +162,99 @@ impl ThumbWorker {
     }
 }
 
+/// A row/tile thumbnail. The system decoder goes first (v0.9 §2: WIC, which
+/// also covers formats the pure-Rust decoder lacks, e.g. HEIC once its
+/// extension is installed); whatever it refuses falls back to the pure-Rust
+/// path, and a failure of both means "no thumbnail" — the row draws its
+/// glyph. Every attempt is panic-caught: files are hostile.
 fn decode(path: &str, key: u64, max: u32) -> Option<Arc<AlbumArt>> {
+    decode_wic(path, key, max)
+        .or_else(|| decode_rust(path, key, max))
+        .map(Arc::new)
+}
+
+/// WIC decode to a `max`-boxed 32 bpp BGRA bitmap (`IWICImagingFactory` →
+/// decoder → scaler → format converter), off the UI thread. `AlbumArt`'s byte
+/// order is exactly `GUID_WICPixelFormat32bppPBGRA`, so the pixels are copied
+/// straight through.
+fn decode_wic(path: &str, key: u64, max: u32) -> Option<AlbumArt> {
+    let attempt = || -> Option<AlbumArt> {
+        let wide: Vec<u16> = Path::new(path)
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: this runs on the thumb worker, which initialised COM with
+        // CoInitializeEx before the first request. Every buffer below is
+        // sized from the API's own `GetSize` values, the pixel-count cap is
+        // checked before the scaler allocates, and `CopyPixels` writes
+        // exactly `stride * height` bytes into a vector of that length.
+        unsafe {
+            let factory: IWICImagingFactory =
+                CoCreateInstance(&CLSID_WICImagingFactory2, None, CLSCTX_INPROC_SERVER).ok()?;
+            let decoder = factory
+                .CreateDecoderFromFilename(
+                    PCWSTR(wide.as_ptr()),
+                    None,
+                    GENERIC_READ,
+                    WICDecodeMetadataCacheOnLoad,
+                )
+                .ok()?;
+            let frame = decoder.GetFrame(0).ok()?;
+            // Header dimensions first: the pixel-count cap is checked before
+            // any scaler or converter allocates (same rule as the Rust path).
+            let mut source_w = 0u32;
+            let mut source_h = 0u32;
+            frame.GetSize(&mut source_w, &mut source_h).ok()?;
+            if source_w == 0
+                || source_h == 0
+                || u64::from(source_w) * u64::from(source_h) > MAX_PIXELS
+            {
+                return None;
+            }
+            let (target_w, target_h) = fit(source_w, source_h, max);
+            let scaler = factory.CreateBitmapScaler().ok()?;
+            scaler
+                .Initialize(&frame, target_w, target_h, WICBitmapInterpolationModeFant)
+                .ok()?;
+            let converter = factory.CreateFormatConverter().ok()?;
+            converter
+                .Initialize(
+                    &scaler,
+                    &GUID_WICPixelFormat32bppPBGRA,
+                    WICBitmapDitherTypeNone,
+                    None,
+                    0.0,
+                    WICBitmapPaletteTypeCustom,
+                )
+                .ok()?;
+            let mut width = 0u32;
+            let mut height = 0u32;
+            converter.GetSize(&mut width, &mut height).ok()?;
+            if width == 0 || height == 0 {
+                return None;
+            }
+            let stride = width * 4;
+            let mut bgra = vec![0u8; stride as usize * height as usize];
+            converter
+                .CopyPixels(std::ptr::null(), stride, &mut bgra)
+                .ok()?;
+            Some(AlbumArt {
+                id: art_id(key, max),
+                width,
+                height,
+                bgra: Arc::new(bgra),
+            })
+        }
+    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(attempt))
+        .ok()
+        .flatten()
+}
+
+/// Pure-Rust decode (`image` crate): dimensions from the header, then a
+/// capped, limit-checked decode, then a thumbnail in the requested box.
+fn decode_rust(path: &str, key: u64, max: u32) -> Option<AlbumArt> {
     let attempt = || -> Option<AlbumArt> {
         // Dimensions first: `into_dimensions` stops at the header, so a
         // decompression bomb is rejected before pixels are allocated.
@@ -181,7 +293,6 @@ fn decode(path: &str, key: u64, max: u32) -> Option<Arc<AlbumArt>> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(attempt))
         .ok()
         .flatten()
-        .map(Arc::new)
 }
 
 /// The path's file name, matching the tile tooltip.
@@ -254,6 +365,42 @@ mod tests {
         let path = dir.join("broken.png");
         std::fs::write(&path, b"not really a png").unwrap();
         assert!(decode(&path.display().to_string(), 1, MAX_THUMB).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The system decoder runs first (v0.9 §2), so it has to produce the same
+    /// box-filled BGRA thumbnail the pure-Rust path does — otherwise a WIC
+    /// regression would be masked by the fallback instead of noticed.
+    #[test]
+    fn wic_decodes_a_png_to_the_same_box_as_the_rust_path() {
+        let dir = std::env::temp_dir().join("taskbar-island-wic-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut image = image::RgbaImage::new(300, 200);
+        for (x, y, px) in image.enumerate_pixels_mut() {
+            *px = image::Rgba([x as u8, y as u8, 5, 255]);
+        }
+        let path = dir.join("wic.png");
+        image.save(&path).unwrap();
+        let text = path.display().to_string();
+        // WIC needs COM on the calling thread, exactly like the worker.
+        // SAFETY: only uninitialised when this call initialised it.
+        let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        let wic = decode_wic(&text, key_for(&text), MAX_THUMB);
+        if com {
+            // SAFETY: balances the successful CoInitializeEx above.
+            unsafe { CoUninitialize() };
+        }
+        let wic = wic.expect("WIC decodes a png");
+        assert_eq!((wic.width, wic.height), (128, 85));
+        assert_eq!(wic.bgra.len(), 128 * 85 * 4);
+        assert_eq!(wic.bgra[3], 255, "alpha survives WIC");
+        assert_eq!(wic.id, art_id(key_for(&text), MAX_THUMB));
+        let rust = decode_rust(&text, key_for(&text), MAX_THUMB).expect("rust path");
+        assert_eq!(
+            (wic.width, wic.height),
+            (rust.width, rust.height),
+            "both decoders agree on the box"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

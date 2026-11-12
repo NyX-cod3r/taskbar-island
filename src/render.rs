@@ -1861,16 +1861,33 @@ impl Painter {
                     .text_tertiary()
                     .with_alpha(if row.dimmed { alpha * 0.4 } else { alpha });
             match &row.kind {
-                // Image rows: bold dimensions over a muted `PNG · 48 KB`
-                // beside the thumbnail (spec 7).
-                crate::view::ClipRowKind::Image { w, h, bytes } if !masked_now => {
+                // Image rows: bold title over a muted meta line beside the
+                // thumbnail (spec 7, extended by v0.9 §2). A screenshot shows
+                // its size and ends in `screenshot`; a file-sourced image
+                // shows its file name, dimensions and size, and carries the
+                // FILE badge at the right of the row.
+                crate::view::ClipRowKind::Image {
+                    title,
+                    meta,
+                    from_file,
+                } if !masked_now => {
+                    let badge_w = if *from_file {
+                        self.measure(
+                            rt,
+                            "FILE",
+                            design::CLIP_FILE_BADGE_TEXT,
+                            600,
+                            design::CLIP_FILE_BADGE_TEXT + 4.0,
+                        ) + design::CLIP_FILE_BADGE_PAD * 2.0
+                    } else {
+                        0.0
+                    };
+                    let text_w = (preview_rect.w - badge_w - design::CLIP_FILE_BADGE_GAP).max(0.0);
                     let top = preview_rect.y + (preview_rect.h - design::LINE_HINT * 2.0) * 0.5;
-                    let dims = format!("{w} \u{00d7} {h}");
-                    let size_line = format!("PNG \u{00b7} {}", crate::view::fmt_size(*bytes));
                     self.text(
                         rt,
-                        &dims,
-                        RectD::new(preview_rect.x, top, preview_rect.w, design::LINE_HINT),
+                        title,
+                        RectD::new(preview_rect.x, top, text_w, design::LINE_HINT),
                         design::FONT_BUTTON,
                         600,
                         0,
@@ -1880,11 +1897,11 @@ impl Painter {
                     );
                     self.text(
                         rt,
-                        &size_line,
+                        meta,
                         RectD::new(
                             preview_rect.x,
                             top + design::LINE_HINT,
-                            preview_rect.w,
+                            text_w,
                             design::LINE_HINT,
                         ),
                         design::FONT_BUTTON,
@@ -1894,6 +1911,31 @@ impl Painter {
                         muted,
                         true,
                     );
+                    if *from_file {
+                        let chip = RectD::new(
+                            preview_rect.x + preview_rect.w - badge_w,
+                            row_rect.y + (row_rect.h - design::CLIP_FILE_BADGE_H) * 0.5,
+                            badge_w,
+                            design::CLIP_FILE_BADGE_H,
+                        );
+                        self.fill_round(
+                            rt,
+                            chip,
+                            design::CLIP_FILE_BADGE_R,
+                            design::white(0.10 * alpha),
+                        );
+                        self.text(
+                            rt,
+                            "FILE",
+                            chip,
+                            design::CLIP_FILE_BADGE_TEXT,
+                            600,
+                            1,
+                            design::CLIP_FILE_BADGE_TEXT + 4.0,
+                            design::white(0.72 * alpha),
+                            false,
+                        );
+                    }
                 }
                 // Color rows: `#RRGGBB` in mono, then the muted `rgb(…)` form.
                 crate::view::ClipRowKind::Color { hex, rgb, .. } if !masked_now => {

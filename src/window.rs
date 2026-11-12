@@ -3506,11 +3506,15 @@ impl Surface {
                 break;
             };
             match crate::view::clip_row_kind(item) {
-                crate::view::ClipRowKind::Image { .. } => visible.push(
-                    crate::clipboard::store::thumb_path(&item.digest)
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
+                // A file-sourced image decodes the file itself; a screenshot
+                // the blob generated at capture (v0.9 §2).
+                crate::view::ClipRowKind::Image { .. } => {
+                    visible.push(item.paths.first().cloned().unwrap_or_else(|| {
+                        crate::clipboard::store::thumb_path(&item.digest)
+                            .to_string_lossy()
+                            .into_owned()
+                    }))
+                }
                 crate::view::ClipRowKind::Files
                     if item.paths.len() == 1
                         && item.paths.first().is_some_and(|p| crate::view::is_image(p)) =>
