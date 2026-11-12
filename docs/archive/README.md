@@ -1,0 +1,14 @@
+# Archive
+
+Superseded material kept for reference only. Nothing here is current:
+
+- `TaskbarIsland-Clipboard-v0.7-Prompt.md` — the v0.7 clipboard prompt.
+- `TaskbarIsland-v0.8-AgentA-Codex-Prompt.md`, `TaskbarIsland-v0.8-AgentB-MiMo-Prompt.md`
+  — the two-agent v0.8 prompts (both agents are retired; the collaboration rules no longer apply).
+- `TaskbarIsland-v0.8-Design-System.md` — the older design system, superseded by the
+  v0.9 design material in `docs/design/` and the current prompt in `docs/prompts/`.
+- `TaskbarIsland-v0.9.0-Prompt.md` — an earlier v0.9.0 build plan, superseded by the
+  current v0.9 prompt in `docs/prompts/`.
+- `TaskbarIsland Card v0.5.pdf`, `TaskbarIsland Card v0.6.pdf` — superseded card artboards.
+- `coordination/` — the retired two-agent coordination records (moved here by the v0.9 cleanup).
+- `spikes/phone-link/` — the v0.8 Phone Link detection spike source (reference only).
