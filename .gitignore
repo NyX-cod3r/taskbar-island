@@ -1,3 +1,31 @@
+# Build output
 /target
 /dist
 /tools/generated
+
+# Engines are downloaded at install time, never committed
+/engines/
+*.exe
+*.msi
+
+# Bundles and backups
+*.bundle
+*.orig
+*.rej
+*.bak
+
+# Logs and scratch
+*.log
+*-err.txt
+*-out.txt
+__pycache__/
+*.pyc
+
+# Quarantine folder for ambiguous files (see docs/cleanup-plan.md §5)
+/_to_delete/
+
+# Editor/OS state
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
