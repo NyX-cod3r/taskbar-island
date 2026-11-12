@@ -77,7 +77,7 @@ function Get-IslandProcess {
 
 # ---- 1. stop the running island -------------------------------------------
 if (-not (Test-Path -LiteralPath $SetupPath)) {
-    Write-Host "setup not found: $SetupPath (build it first: .\scripts\build.ps1 -Mode Installer)"
+    Write-Host "setup not found: $SetupPath (build it first: .\tools\build.ps1 -Mode Installer)"
     exit 1
 }
 Get-IslandProcess | Stop-Process -Force -ErrorAction SilentlyContinue

@@ -44,7 +44,7 @@ fn find_windres() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    // scripts/build.ps1 prepends this WinLibs toolchain to PATH; cargo run
+    // tools/build.ps1 prepends this WinLibs toolchain to PATH; cargo run
     // directly from a shell does not, so look it up explicitly first.
     if let Some(local) = env::var_os("LOCALAPPDATA") {
         let packages = Path::new(&local).join("Microsoft/WinGet/Packages");

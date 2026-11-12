@@ -41,9 +41,9 @@ switch ($Mode) {
             $isccPath = $knownPaths | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
         }
         if (-not $isccPath) {
-            throw 'Inno Setup 6 was not found. Install it, then rerun: .\scripts\build.ps1 Installer'
+            throw 'Inno Setup 6 was not found. Install it, then rerun: .\tools\build.ps1 Installer'
         }
-        & $isccPath "/DEngineRoot=$engineRoot" (Join-Path $PSScriptRoot 'installer.iss')
+        & $isccPath "/DEngineRoot=$engineRoot" (Join-Path $PSScriptRoot '..\installer\installer.iss')
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
         # One installer per version, never cleaned up: drop the older ones so
         # dist\ only ever holds what was just built.

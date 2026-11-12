@@ -1,5 +1,5 @@
 ; Build-time knobs for the installer's self-update, shared by
-; scripts\installer.iss and scripts\tests\update-smoke.iss.
+; installer\installer.iss and tools\tests\update-smoke.iss.
 ;
 ; Override any of them on the ISCC command line, e.g.
 ;   ISCC.exe /DUpdateManifestUrl=https://staging.example/manifest.txt ...
@@ -9,7 +9,7 @@
 
 #ifndef UpdateManifestUrl
   ; Small text manifest published as an asset on the newest GitHub release by
-  ; scripts\release.ps1. The "latest/download" alias always resolves to that
+  ; tools\release.ps1. The "latest/download" alias always resolves to that
   ; release, so no version number is baked into the URL. A repository with no
   ; releases yet answers 404, which the installer treats as "no update".
   #define UpdateManifestUrl "https://github.com/NyX-cod3r/taskbar-island/releases/latest/download/manifest.txt"

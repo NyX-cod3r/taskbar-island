@@ -1,7 +1,7 @@
 """Local HTTP server for the installer self-update smoke test.
 
 Serves the directory given on the command line and forces every response to be
-uncached, so scripts/tests/update-smoke.ps1 can rewrite manifest.txt between
+uncached, so tools/tests/update-smoke.ps1 can rewrite manifest.txt between
 scenarios and have each run actually observe the new contents.
 
     python update-server.py <directory> <port>

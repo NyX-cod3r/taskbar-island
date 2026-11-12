@@ -21,13 +21,13 @@
 // update-config.iss before this file.
 
 #ifndef UpdateManifestUrl
-  #error Include scripts\update-config.iss before scripts\update.iss
+  #error Include installer\update-config.iss before installer\update.iss
 #endif
 #ifndef MyAppVersion
-  #error scripts\update.iss expects MyAppVersion to be defined by the host
+  #error installer\update.iss expects MyAppVersion to be defined by the host
 #endif
 #ifndef MyAppExeName
-  #error scripts\update.iss expects MyAppExeName to be defined by the host
+  #error installer\update.iss expects MyAppExeName to be defined by the host
 #endif
 
 const

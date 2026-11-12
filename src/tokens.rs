@@ -7,7 +7,7 @@
 
 use crate::json::{self, Json};
 
-pub const SOURCE: &str = include_str!("../design-tokens.json");
+pub const SOURCE: &str = include_str!("../docs/design/design-tokens.json");
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NumericToken {

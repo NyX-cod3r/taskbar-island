@@ -13,18 +13,18 @@
     url=https://github.com/<repo>/releases/download/v<ver>/taskbar-island-<ver>.exe
     sha256=<64 hex digits of the payload, lower case>
 
-  scripts\update.iss fetches releases/latest/download/manifest.txt, so the
+  installer\update.iss fetches releases/latest/download/manifest.txt, so the
   release must be published as the latest (never a draft or a prerelease).
 
   Examples
-    .\scripts\release.ps1 -DryRun                 # build + manifest, no upload
+    .\tools\release.ps1 -DryRun                 # build + manifest, no upload
     $env:GITHUB_TOKEN = <token>
-    .\scripts\release.ps1                         # build and publish
-    .\scripts\release.ps1 -SkipBuild -Version 0.7.0
+    .\tools\release.ps1                         # build and publish
+    .\tools\release.ps1 -SkipBuild -Version 0.7.0
 #>
 [CmdletBinding()]
 param(
-    # Defaults to MyAppVersion in scripts\installer.iss.
+    # Defaults to MyAppVersion in installer\installer.iss.
     [string]$Version = '',
     [string]$Repo = 'NyX-cod3r/taskbar-island',
     [string]$Token = $env:GITHUB_TOKEN,
@@ -40,7 +40,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$installerIss = Join-Path $PSScriptRoot 'installer.iss'
+$installerIss = Join-Path $PSScriptRoot '..\installer\installer.iss'
 $cargoToml = Join-Path $repoRoot 'Cargo.toml'
 $appRc = Join-Path $repoRoot 'assets\app.rc'
 $distDir = Join-Path $repoRoot 'dist'
@@ -54,7 +54,7 @@ function Read-InstallerVersion {
 
 if (-not $Version) { $Version = Read-InstallerVersion }
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-    throw "Version '$Version' is not x.y.z - scripts\update.iss compares versions numerically."
+    throw "Version '$Version' is not x.y.z - installer\update.iss compares versions numerically."
 }
 
 # The version baked into the shipped exe should match the installer's.
@@ -111,7 +111,7 @@ $manifestText = @(
 ) -join "`r`n"
 Set-Content -LiteralPath $manifestPath -Value $manifestText -Encoding ascii
 
-# Fail here rather than publish a manifest scripts\update.iss cannot read.
+# Fail here rather than publish a manifest installer\update.iss cannot read.
 $check = @{}
 foreach ($line in (Get-Content -LiteralPath $manifestPath)) {
     $i = $line.IndexOf('=')
@@ -169,7 +169,7 @@ if (-not $release) {
         prerelease = $false
     } | ConvertTo-Json)
 } elseif ($release.draft -or $release.prerelease) {
-    throw "Release $tag exists but is a draft/prerelease. scripts\update.iss only follows the latest stable release."
+    throw "Release $tag exists but is a draft/prerelease. installer\update.iss only follows the latest stable release."
 }
 
 # --- assets --------------------------------------------------------------

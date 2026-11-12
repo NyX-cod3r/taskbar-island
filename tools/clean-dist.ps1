@@ -1,6 +1,6 @@
 <#
   Keeps dist\ down to a single version: the installer and the update payload
-  that scripts\release.ps1 publishes.
+  that tools\release.ps1 publishes.
 
   The installer's name is fixed (TaskbarIsland-Setup.exe) so the download URL
   never changes; the version lives inside the installer (AppVersion,
@@ -10,16 +10,16 @@
   is not the current installer or the current update payload.
 
   Left alone: manifest.txt (rewritten by release.ps1 before each publish) and
-  update-smoke.exe (the self-update test harness, which scripts\tests\
+  update-smoke.exe (the self-update test harness, which tools\tests\
   update-smoke.ps1 expects to find already compiled).
 
   Examples
-    .\scripts\clean-dist.ps1                # use installer.iss's version
-    .\scripts\clean-dist.ps1 -Version 0.7.0
+    .\tools\clean-dist.ps1                # use installer.iss's version
+    .\tools\clean-dist.ps1 -Version 0.7.0
 #>
 [CmdletBinding()]
 param(
-    # Defaults to MyAppVersion in scripts\installer.iss.
+    # Defaults to MyAppVersion in installer\installer.iss.
     [string]$Version = ''
 )
 
@@ -29,7 +29,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $distDir = Join-Path $repoRoot 'dist'
 
 if (-not $Version) {
-    $installerIss = Join-Path $PSScriptRoot 'installer.iss'
+    $installerIss = Join-Path $PSScriptRoot '..\installer\installer.iss'
     $text = Get-Content -LiteralPath $installerIss -Raw
     if ($text -notmatch '#define\s+MyAppVersion\s+"([^"]+)"') {
         throw "Cannot find '#define MyAppVersion' in $installerIss"

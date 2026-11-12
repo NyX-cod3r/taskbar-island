@@ -28,7 +28,7 @@ Please describe the changes you made and why.
 - [ ] NOTICE file exists with correct copyright
 - [ ] SPDX-License-Identifier headers added to source files
 - [ ] Cargo.toml license field updated
-- [ ] THIRD_PARTY_NOTICES.md updated
+- [ ] THIRD_PARTY_LICENSES.md updated
 - [ ] TERMS.md and PRIVACY.md created
 
 ---  

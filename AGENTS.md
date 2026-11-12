@@ -11,7 +11,7 @@
 - **Verify on the real install, every time the code changes**: stop the running island
   (`Stop-Process -Name taskbar-island`), install the freshly built `dist\TaskbarIsland-Setup.exe`
   over the real per-user install, launch it and confirm it comes up. Run
-  `powershell -File scripts\tests\install-smoke.ps1` — it does the whole loop (stop → install →
+  `powershell -File tools\tests\install-smoke.ps1` — it does the whole loop (stop → install →
   byte-match against `target\release` → launch → pill/tray windows → single-instance) and exits
   non-zero on any failure. `cargo test` alone is not evidence that a change works: the pill, the
   tray, the clipboard listener and the installer only exist in the installed copy. This replaces
@@ -212,7 +212,7 @@
     `publish title="Taskbar Island Test Track" playing=true pos=29 dur=300`; pill 280 px, flyout
     `0:29` / `-4:31`, prev/next via `TrySkipPreviousAsync`/`TrySkipNextAsync`, click toggles.
   - **Autostart + installer**: `settings.rs` supports the HKCU Run key and the right-click
-    **Start with Windows** toggle; `scripts/build.ps1 Installer` invokes `scripts/installer.iss`
+    **Start with Windows** toggle; `tools/build.ps1 Installer` invokes `installer/installer.iss`
     (Inno Setup 6). See the 2026-11-06 entry at the end for the shipped installer.
   - **Fixed compact width**: `anchor::COMPACT_WIDTH_DIP = 224.0` (280 px at 125 % DPI). The pill
     never moves or resizes when activities change; the flyout still opens 12 px above the taskbar,
@@ -371,7 +371,7 @@
   - **Single instance**: a named mutex `TaskbarIsland.SingleInstance` (plus the existing window
     check) makes a second Start-menu click a no-op. The installer's `AppMutex` uses the same name,
     so Setup detects a running copy.
-  - **Installer** (`scripts/installer.iss`, Inno Setup 6.7, built by `scripts/build.ps1 Installer` →
+  - **Installer** (`installer/installer.iss`, Inno Setup 6.7, built by `tools/build.ps1 Installer` →
     `dist/TaskbarIsland-Setup-0.5.0.exe`): per-user with no UAC
     (`{localappdata}\Programs\TaskbarIsland`), Start menu shortcut (`IconLocation` = the exe),
     optional desktop shortcut, and a **Start when I sign in** task checked by default on a fresh

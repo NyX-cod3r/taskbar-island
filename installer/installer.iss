@@ -1,5 +1,5 @@
 ; TaskbarIsland 0.8.0 — per-user installer (Inno Setup 6.7+).
-; Build with: .\scripts\build.ps1 Installer [-EnginesDir <dir>]
+; Build with: .\tools\build.ps1 Installer [-EnginesDir <dir>]
 ;
 ; The engine payloads are shipped inside this setup and copied under
 ; {app}\engines only for the components the user selects. The app probes
@@ -77,7 +77,7 @@ Name: "custom"; Description: "Custom installation"; Flags: iscustom
 ; each engine except LibreOffice, the largest, which starts unticked.
 [Components]
 Name: "core"; Description: "{#MyAppName} (required)"; Types: full custom; Flags: fixed
-#include "..\installer\engines.iss"
+#include "engines.iss"
 
 [Files]
 ; The AfterInstall hook re-copies the freshly downloaded GitHub payload over
@@ -109,7 +109,7 @@ FinishedLabelNoIcons={#MyAppName} is ready. Look for the island beside your syst
 
 { Fresh-install defaults, the modify-mode restore and the setup-copy the
   tray's "Manage engines..." entry reruns all live in
-  ..\installer\engines.iss with the rest of the engine installer; this
+  engines.iss with the rest of the engine installer; this
   section owns only the app-level events. }
 
 procedure InitializeWizard;

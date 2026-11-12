@@ -1,11 +1,11 @@
 <#
-  Runtime test for the TaskbarIsland installer's self-update (scripts\update.iss).
+  Runtime test for the TaskbarIsland installer's self-update (installer\update.iss).
 
   It builds nothing: compile the harness first, then run this.
 
       ISCC.exe /DUpdateManifestUrl=http://127.0.0.1:18742/manifest.txt `
-               scripts\tests\update-smoke.iss
-      powershell -File scripts\tests\update-smoke.ps1
+               tools\tests\update-smoke.iss
+      powershell -File tools\tests\update-smoke.ps1
 
   The harness installs into throwaway folders under its own AppId, so the real
   TaskbarIsland install, its registry entries and a running app are untouched.

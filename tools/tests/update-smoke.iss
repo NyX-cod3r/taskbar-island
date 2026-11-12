@@ -1,8 +1,8 @@
-; Isolated harness for scripts\update.iss.
+; Isolated harness for installer\update.iss.
 ;
 ; It installs a dummy payload into a throwaway directory under its own AppId,
 ; so the real TaskbarIsland install, its registry entries and a running app
-; are never touched. Driven by scripts\tests\update-smoke.ps1, which stands up
+; are never touched. Driven by tools\tests\update-smoke.ps1, which stands up
 ; a local HTTP server for the manifest and the payload.
 ;
 ; Build (the manifest URL is supplied by the runner):
@@ -12,7 +12,7 @@
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "TaskbarIsland"
 #define MyAppExeName "app.txt"
-#include "..\update-config.iss"
+#include "..\..\installer\update-config.iss"
 
 [Setup]
 AppId={{4E7C6A5B-0E22-4A5C-9C4E-7A1B2D3E4F50}
@@ -48,4 +48,4 @@ Name: "core"; Description: "core"; Types: full custom; Flags: fixed
 Source: "embedded.txt"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion; Components: core; AfterInstall: ApplyUpdatePayload
 
 [Code]
-#include "..\update.iss"
+#include "..\..\installer\update.iss"

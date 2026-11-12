@@ -134,11 +134,11 @@ mod version_tests {
         panic!("version not found in Cargo.toml");
     }
 
-    /// `scripts/installer.iss` → `#define MyAppVersion`.
+    /// `installer/installer.iss` → `#define MyAppVersion`.
     fn installer_version() -> String {
         let content = read(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/scripts/installer.iss"
+            "/installer/installer.iss"
         ));
         for line in content.lines() {
             let line = line.trim();

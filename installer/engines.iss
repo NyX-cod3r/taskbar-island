@@ -1,6 +1,6 @@
 ; TaskbarIsland — engine installer include fragment (spec §6, agent B).
 ;
-; scripts\installer.iss pulls this file in once, from its [Components]
+; installer\installer.iss pulls this file in once, from its [Components]
 ; section. The [Files] and [Code] headers below switch sections on
 ; purpose: ISCC processes includes inline, so a section opened here is
 ; continued (and reopened later by the main script) without conflict —
@@ -11,8 +11,8 @@
 ; flow. The main script owns Core only.
 ;
 ; Which engines exist is decided at build time from the payload folders
-; under {#EngineRoot}: scripts\engine-includes.ps1 writes
-; scripts\generated\engine-sizes.iss (sizes for all seven engines plus a
+; under {#EngineRoot}: tools\engine-includes.ps1 writes
+; tools\generated\engine-sizes.iss (sizes for all seven engines plus a
 ; Have* define for each of the four new ones it finds, probing by
 ; executable name anywhere in the engine folder so a portable zip with
 ; an extra wrapper directory still counts). An engine whose payload is
@@ -23,9 +23,9 @@
 ; Owner decisions baked in (2026-11-10): LibreOffice is the largest
 ; engine and starts UNTICKED on every fresh install (opt-in checkbox,
 ; clearly sized); Ghostscript ships despite its AGPL-3.0 license —
-; see THIRD_PARTY_NOTICES.md.
+; see THIRD_PARTY_LICENSES.md.
 
-#include "..\scripts\generated\engine-sizes.iss"
+#include "..\tools\generated\engine-sizes.iss"
 
 ; ---------------------------------------------------------- [Components]
 ; The full type selects every engine except LibreOffice, which has no
@@ -48,18 +48,18 @@ Name: "libreoffice"; Description: "LibreOffice — Office and PDF document conve
 #endif
 ; OCR language data: English ticked, every other language opt-in
 ; (generated from tesseract\tessdata, not assumed).
-#include "..\scripts\generated\engine-langs.iss"
+#include "..\tools\generated\engine-langs.iss"
 
 [Files]
 ; The whole engine folder ships as-is, so the on-disk layout the resolver
 ; probed at build time is exactly what {app}\engines\<name> gets.
-; THIRD_PARTY_NOTICES.md always travels with the install: it names every
+; THIRD_PARTY_LICENSES.md always travels with the install: it names every
 ; engine, its license and where its source is (incl. Ghostscript's AGPL).
-Source: "..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD_PARTY_LICENSES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#EngineRoot}\ffmpeg\*"; DestDir: "{app}\engines\ffmpeg"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: ffmpeg
 Source: "{#EngineRoot}\pandoc\*"; DestDir: "{app}\engines\pandoc"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: pandoc
 Source: "{#EngineRoot}\tesseract\*"; DestDir: "{app}\engines\tesseract"; Excludes: "tessdata\*"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: tesseract
-#include "..\scripts\generated\engine-lang-files.iss"
+#include "..\tools\generated\engine-lang-files.iss"
 #ifdef HavePoppler
 Source: "{#EngineRoot}\poppler\*"; DestDir: "{app}\engines\poppler"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: poppler
 #endif
@@ -79,7 +79,7 @@ Source: "{#EngineRoot}\libreoffice\*"; DestDir: "{app}\engines\libreoffice"; Fla
 const
   ENGINES_KEY = 'Software\TaskbarIsland\Engines';
 
-#include "..\scripts\generated\engine-lang-code.iss"
+#include "..\tools\generated\engine-lang-code.iss"
 
 { A fresh install keeps the type defaults above (LibreOffice off). A
   modify run — the tray's "Manage engines..." entry reruns this setup
