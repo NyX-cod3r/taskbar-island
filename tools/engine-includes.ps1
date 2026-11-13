@@ -1,4 +1,4 @@
-# Generates the pieces of the engine installer (installer\installer.iss and
+# Generates the pieces of the engine installer (installer\converters.iss and
 # installer\engines.iss) that depend on the engine payload actually present
 # at build time: OCR languages are discovered from tesseract\tessdata, not
 # assumed, and per-engine presence plus disk sizes drive the wizard's

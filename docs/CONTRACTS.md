@@ -15,7 +15,7 @@ paths are target ownership boundaries, not existing filesystem paths.
 | Shelf | `src/activities/shelf.rs` | B |
 | Convert/clipboard/engines | Not present in this baseline; B creates them | B |
 | Clipboard platform code | Not present in this baseline; B creates it | B |
-| Installer/release | `installer/installer.iss`, `tools/build.ps1` | A |
+| Installer/release | `installer/installer.iss` (core), `installer/converters.iss` (engines pack), `tools/build.ps1`, `.github/workflows/release.yml` | A |
 
 ## Frozen shared APIs for Phase 0
 

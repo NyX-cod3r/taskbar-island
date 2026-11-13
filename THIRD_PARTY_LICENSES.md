@@ -1,5 +1,25 @@
 # Third-party notices
 
+## What ships where (license audit, 2026-11-13)
+
+- **The core installer (`TaskbarIsland-Setup.exe`) contains no third-party
+  code at all.** It packs `taskbar-island.exe`, `LICENSE` and `NOTICE` only.
+  Every crate linked into `taskbar-island.exe` is OSI-approved open source
+  (Apache-2.0 / MIT / BSD-2-Clause — windows-rs, image, zip, pdf-writer,
+  kamadak-exif, webp, zopfli, flate2, and their transitive dependencies); the
+  exact set and version for a build is `Cargo.lock`. Nothing in the core
+  installer needs a license file beyond `LICENSE` (GPL-3.0) and `NOTICE`.
+- **Everything below lives in the optional converters pack
+  (`TaskbarIsland-Converters-Setup.exe`)**, a separate download that is never
+  code-signed under the TaskbarIsland name (see `docs/signing.md`). All of the
+  engines are OSI-approved open source (GPL, MPL, Apache-2.0, AGPL).
+- **The one item whose terms are not fully verified** is the per-language
+  Tesseract language data (`tessdata\*.traineddata`): each file carries its own
+  dataset terms rather than a single OSI license. Because it cannot be
+  certified as OSI-approved from the file alone, it is pack-only and never
+  part of the signed core installer. Core functionality (the pill, clipboard
+  history, shelf, calls) runs without any engine.
+
 TaskbarIsland launches the programs below as **separate local processes** (argv
 arrays, no shell). They are not linked into `taskbar-island.exe`, not modified,
 and never make a network connection on the app's behalf. Each is distributed

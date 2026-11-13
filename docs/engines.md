@@ -11,6 +11,11 @@ engine must already be present on disk under `ENGINES_DIR`.
 | Installed (shipped) | `{app}\engines` next to `taskbar-island.exe` |
 | Dev / test | `$TBI_ENGINES_DIR` if set, else `%LOCALAPPDATA%\Filee\engines` |
 
+When installed, the engines arrive through the **optional converters pack**
+(`TaskbarIsland-Converters-Setup.exe`, built by `tools\build.ps1 -Mode
+Converters`) — the core installer ships no third-party code at all. The app
+works without them; see `THIRD_PARTY_LICENSES.md`.
+
 The resolver (`src/engines`) tolerates small layout differences by probing
 known sub-folders instead of assuming one exact path (see
 "Expected layout" below), so a portable zip extracted with or without an extra

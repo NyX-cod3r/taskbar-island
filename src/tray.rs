@@ -33,9 +33,13 @@ const ID_AUTOSTART: usize = 1;
 const ID_EXIT: usize = 2;
 const ID_MANAGE_ENGINES: usize = 3;
 const TIP: &str = "TaskbarIsland — right-click for options";
-/// The installer keeps a copy of itself here so modify mode is always one
-/// command away. Dev builds have no copy, so the menu entry stays hidden.
-pub(crate) const SETUP_COPY_NAME: &str = "TaskbarIsland-Setup.exe";
+/// The converters pack keeps a copy of itself beside the app so "Manage
+/// engines..." is always one command away (installer\converters.iss).
+pub(crate) const CONVERTERS_COPY_NAME: &str = "TaskbarIsland-Converters-Setup.exe";
+/// v0.8 and earlier shipped the engines inside the single setup, so an
+/// upgraded install may still carry that copy. Prefer the pack, fall back to
+/// it, and never delete it: an existing self-update would break otherwise.
+pub(crate) const LEGACY_SETUP_COPY_NAME: &str = "TaskbarIsland-Setup.exe";
 
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static ISLAND_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -238,11 +242,16 @@ fn toggle_startup(hwnd: HWND) {
     }
 }
 
-/// The installed setup copy lives beside the executable; dev builds simply do
+/// The installed pack copy lives beside the executable; dev builds simply do
 /// not have one.
 pub(crate) fn manage_engines_command(exe_dir: &Path) -> Option<PathBuf> {
-    let setup = exe_dir.join(SETUP_COPY_NAME);
-    setup.is_file().then_some(setup)
+    for name in [CONVERTERS_COPY_NAME, LEGACY_SETUP_COPY_NAME] {
+        let setup = exe_dir.join(name);
+        if setup.is_file() {
+            return Some(setup);
+        }
+    }
+    None
 }
 
 fn manage_engines_setup() -> Option<PathBuf> {
@@ -328,9 +337,15 @@ mod tests {
 
         assert_eq!(manage_engines_command(&dir), None);
 
-        let setup = dir.join(SETUP_COPY_NAME);
-        std::fs::write(&setup, b"stub").unwrap();
-        assert_eq!(manage_engines_command(&dir), Some(setup));
+        // A pre-0.9 install only has the legacy single setup copy.
+        let legacy = dir.join(LEGACY_SETUP_COPY_NAME);
+        std::fs::write(&legacy, b"stub").unwrap();
+        assert_eq!(manage_engines_command(&dir), Some(legacy));
+
+        // With the converters pack present it wins over the legacy copy.
+        let pack = dir.join(CONVERTERS_COPY_NAME);
+        std::fs::write(&pack, b"stub").unwrap();
+        assert_eq!(manage_engines_command(&dir), Some(pack));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

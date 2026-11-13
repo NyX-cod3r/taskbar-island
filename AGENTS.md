@@ -16,6 +16,11 @@
   non-zero on any failure. `cargo test` alone is not evidence that a change works: the pill, the
   tray, the clipboard listener and the installer only exist in the installed copy. This replaces
   the running app, so do it as the last step before reporting, not in the middle of a session.
+- **Two installers, one identity.** `tools\build.ps1 -Mode Installer` builds the *core* installer
+  (`dist\TaskbarIsland-Setup.exe`: our exe + LICENSE + NOTICE only — no third-party code), and
+  `-Mode Converters` builds the optional engines pack (`dist\TaskbarIsland-Converters-Setup.exe`,
+  unsigned under our name). Releasing is `docs/release-process.md`; code signing is
+  `docs/signing.md` (all steps still `[AFTER APPROVAL]`).
 
 ## Status (updated 2026-11-03)
 - **Phase 1 COMPLETE** (commit a8f4744): empty anchored pill, `WS_CHILD` inside `Shell_TrayWnd`
@@ -419,7 +424,7 @@
 
 ## Version naming (x.y.z)
 
-Current version: `0.8.0` → `x = 0`, `y = 8`, `z = 0`.
+Current version: `0.9.0` → `x = 0`, `y = 9`, `z = 0`.
 
 | Part | Meaning | When to bump |
 |------|---------|--------------|
@@ -428,6 +433,6 @@ Current version: `0.8.0` → `x = 0`, `y = 8`, `z = 0`.
 | `z` (patch) | **Minor bug fixes** and tiny changes. | Bump `z` for small bug fixes, minor tweaks, and small changes that do not overhaul a card. |
 
 Rules:
-- Never hardcode the version in multiple places. It lives in `Cargo.toml` (`version = "x.y.z"`), the installer `AppVersion`, the Windows resource/version info, and About/tray text. One `version_consistency` test asserts they all match.
+- Never hardcode the version or the product name in multiple places. Both live in `Cargo.toml` (`version = "x.y.z"`, `[package.metadata] product-name = "..."`) and nowhere else: `build.rs` renders them into the Windows VERSIONINFO, `tools\build.ps1` passes them to Inno Setup (`/DMyAppVersion`, `/DMyAppName`), and CI refuses a tag that disagrees. `version_tests` in `src/main.rs` fails the suite if a literal copy reappears in `assets\app.rc`, `installer\*.iss` or `tools\build.ps1`.
 - Before `1.0.0` we stay at `x = 0`. `1.0.0` is the first public release, gated on all cards being perfect and owner approval.
-- Example flow from here: small bug fix → `0.8.1`; a card overhaul → `0.9.0`; owner-approved public launch → `1.0.0`.
+- Example flow from here: small bug fix → `0.9.1`; a card overhaul → `0.10.0`; owner-approved public launch → `1.0.0`.

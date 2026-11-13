@@ -1,0 +1,174 @@
+# Release build: one GitHub Release draft per version tag.
+#
+# Push `v<x.y.z>` and CI builds the CORE installer from source, runs the test
+# suite, checks that the tag agrees with Cargo.toml (the single source of the
+# product name and version) and uploads the installer, its SHA-256, the update
+# payload and manifest.txt as a DRAFT release. Nothing is published here:
+# publishing - and later the SignPath signing step - is the owner's manual
+# approval (docs/release-process.md, docs/signing.md).
+#
+# No secrets are stored in this repository: the workflow only uses the
+# per-run GITHUB_TOKEN with the narrowest permission it needs.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  # The gnu target keeps the build reproducible on a clean runner (MinGW from
+  # Chocolatey, no MSVC licence questions) and matches what tools\build.ps1
+  # produces locally. build.ps1 also looks at this to find the executable.
+  CARGO_BUILD_TARGET: x86_64-pc-windows-gnu
+  CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: gcc
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+
+      - name: Install the MinGW toolchain and Inno Setup
+        shell: pwsh
+        run: |
+          # The real gate is finding the tools below, not choco's exit code
+          # (a re-run finds them already installed).
+          choco install mingw innosetup --yes --no-progress
+          Write-Host "choco exit code: $LASTEXITCODE"
+
+          # Put the folder that holds windres/dlltool/gcc first on PATH for
+          # every later step (build.rs needs windres, windows-rs needs
+          # dlltool, the linker is gcc).
+          $bin = $null
+          $cmd = Get-Command windres.exe -ErrorAction SilentlyContinue
+          if ($cmd) { $bin = Split-Path -Parent $cmd.Source }
+          if (-not $bin) {
+            foreach ($root in @(
+                'C:\ProgramData\chocolatey\lib\mingw',
+                'C:\Program Files\mingw-w64',
+                'C:\mingw64', 'C:\msys64\mingw64')) {
+              if (-not (Test-Path -LiteralPath $root)) { continue }
+              $found = Get-ChildItem -LiteralPath $root -Recurse -Filter windres.exe -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if ($found) { $bin = Split-Path -Parent $found.FullName; break }
+            }
+          }
+          if (-not $bin) { throw 'windres.exe not found after installing MinGW.' }
+          foreach ($tool in 'gcc.exe', 'windres.exe', 'dlltool.exe') {
+            if (-not (Test-Path -LiteralPath (Join-Path $bin $tool))) {
+              throw "$tool missing from $bin"
+            }
+          }
+          Write-Host "MinGW toolchain: $bin"
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          $iscc = @(
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $iscc) { throw 'ISCC.exe not found after installing Inno Setup.' }
+          Write-Host "Inno Setup: $iscc"
+          (Split-Path -Parent $iscc) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install the Rust gnu target
+        shell: pwsh
+        run: rustup target add x86_64-pc-windows-gnu
+
+      # The version shown in the exe's resources and in the installer metadata
+      # comes from Cargo.toml; a tag that disagrees with it would ship a
+      # release whose files claim a different version.
+      - name: The tag must match Cargo.toml
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -notmatch '^v(\d+\.\d+\.\d+)$') {
+            throw "Tag '$tag' is not vX.Y.Z."
+          }
+          $tagged = $Matches[1]
+          $toml = Get-Content -LiteralPath Cargo.toml -Raw
+          if ($toml -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+            throw 'No version = "..." in Cargo.toml.'
+          }
+          $cargo = $Matches[1]
+          if ($tagged -ne $cargo) {
+            throw "Tag v$tagged does not match Cargo.toml version $cargo - bump Cargo.toml, then retag."
+          }
+          if ($toml -notmatch '(?m)^product-name\s*=\s*"([^"]+)"') {
+            throw 'No product-name = "..." in Cargo.toml [package.metadata].'
+          }
+          Write-Host "Tag v$tagged == Cargo.toml $cargo, product '$Matches[1]'."
+
+      - name: Test
+        shell: pwsh
+        run: ./tools/build.ps1 -Mode Test
+
+      - name: Build the core installer
+        shell: pwsh
+        run: ./tools/build.ps1 -Mode Installer
+
+      - name: Hash the installer
+        shell: pwsh
+        run: |
+          $setup = 'dist\TaskbarIsland-Setup.exe'
+          if (-not (Test-Path -LiteralPath $setup)) { throw "missing $setup" }
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath "$setup.sha256" -Value "$hash  TaskbarIsland-Setup.exe" -Encoding ascii
+          Write-Host "SHA-256 $hash"
+          Get-ChildItem -LiteralPath dist | Format-Table Name, Length
+
+      # Everything below writes to a DRAFT. Publishing is a manual, audited
+      # action by the owner (docs/release-process.md); signing is added on top
+      # of this same artifact only after SignPath approval (docs/signing.md).
+      - name: Create the draft release with its assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $version = $tag.TrimStart('v')
+          $repo = $env:GITHUB_REPOSITORY
+          $payload = "dist\taskbar-island-$version.exe"
+          $setup = 'dist\TaskbarIsland-Setup.exe'
+
+          # The update payload is the very same executable the installer packs.
+          Copy-Item -LiteralPath 'target\x86_64-pc-windows-gnu\release\taskbar-island.exe' `
+            -Destination $payload -Force
+          $payloadSha = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifest = @(
+            "version=$version"
+            "url=https://github.com/$repo/releases/download/$tag/taskbar-island-$version.exe"
+            "sha256=$payloadSha"
+          ) -join "`r`n"
+          Set-Content -LiteralPath 'dist\manifest.txt' -Value $manifest -Encoding ascii
+          Get-Content -LiteralPath 'dist\manifest.txt'
+
+          $existing = gh release view $tag --repo $repo --json assets,isDraft --jq '.' 2>$null
+          if ($LASTEXITCODE -ne 0 -or -not $existing) {
+            gh release create $tag --repo $repo --draft `
+              --title "TaskbarIsland $version" `
+              --notes "Built by CI from tag $tag. Verify the SHA-256 of TaskbarIsland-Setup.exe before publishing." `
+              $setup "$setup.sha256" $payload 'dist\manifest.txt'
+            if ($LASTEXITCODE -ne 0) { throw "gh release create failed with $LASTEXITCODE" }
+            Write-Host "Draft release $tag created."
+          } else {
+            # Re-run: never replace an asset that is already there (it may be
+            # the signed one); only fill in what is missing.
+            $names = $existing | ConvertFrom-Json | ForEach-Object { $_.assets.name }
+            foreach ($file in @($setup, "$setup.sha256", $payload, 'dist\manifest.txt')) {
+              $name = Split-Path -Leaf $file
+              if ($names -contains $name) {
+                Write-Host "keeping existing asset $name"
+              } else {
+                gh release upload $tag --repo $repo $file
+                if ($LASTEXITCODE -ne 0) { throw "gh release upload $name failed" }
+              }
+            }
+            Write-Host "Draft release $tag updated."
+          }
+          Write-Host 'The release is a DRAFT. Publishing is the owner step - docs/release-process.md.'

@@ -1,10 +1,12 @@
 ; TaskbarIsland — engine installer include fragment (spec §6, agent B).
 ;
-; installer\installer.iss pulls this file in once, from its [Components]
+; installer\converters.iss pulls this file in once, from its [Components]
 ; section. The [Files] and [Code] headers below switch sections on
 ; purpose: ISCC processes includes inline, so a section opened here is
 ; continued (and reopened later by the main script) without conflict —
-; verified against Inno Setup 6.7.3.
+; verified against Inno Setup 6.7.3. The core installer
+; (installer\installer.iss) does NOT include this file: it ships only
+; TaskbarIsland's own binaries, the engines live in this pack alone.
 ;
 ; Everything engine-related lives here: components, payload file lists,
 ; per-engine disk sizes and the "add or remove engines later" modify

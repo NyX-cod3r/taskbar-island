@@ -196,6 +196,10 @@ mod version_tests {
         fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"))
     }
 
+    fn root() -> &'static str {
+        env!("CARGO_MANIFEST_DIR")
+    }
+
     /// `Cargo.toml` is the single source of truth for the package version.
     fn cargo_version() -> String {
         let content = read(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
@@ -208,40 +212,124 @@ mod version_tests {
         panic!("version not found in Cargo.toml");
     }
 
-    /// `installer/installer.iss` → `#define MyAppVersion`.
-    fn installer_version() -> String {
-        let content = read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/installer/installer.iss"
-        ));
+    /// `[package.metadata] product-name = "..."` - the shipping product name.
+    fn cargo_product_name() -> String {
+        let content = read(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
+        let mut in_metadata = false;
         for line in content.lines() {
             let line = line.trim();
-            if let Some(rest) = line.strip_prefix("#define MyAppVersion ") {
-                return rest.trim().trim_matches('"').to_string();
+            if line.starts_with('[') {
+                in_metadata = line == "[package.metadata]";
+                continue;
+            }
+            if in_metadata {
+                if let Some(rest) = line.strip_prefix("product-name") {
+                    let value = rest
+                        .trim_start()
+                        .strip_prefix('=')
+                        .map(str::trim_start)
+                        .and_then(|r| r.strip_prefix('"'))
+                        .and_then(|r| r.strip_suffix('"'));
+                    if let Some(name) = value {
+                        if !name.is_empty() {
+                            return name.to_string();
+                        }
+                    }
+                }
             }
         }
-        panic!("MyAppVersion not found in installer.iss");
-    }
-
-    /// `assets/app.rc` → `VALUE "FileVersion", "..."`.
-    fn resource_version() -> String {
-        let content = read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/app.rc"));
-        for line in content.lines() {
-            let line = line.trim();
-            if let Some(rest) = line.strip_prefix(r#"VALUE "FileVersion", "#) {
-                return rest.trim().trim_matches('"').to_string();
-            }
-        }
-        panic!("FileVersion not found in app.rc");
+        panic!("product-name not found in Cargo.toml [package.metadata]");
     }
 
     #[test]
     fn version_consistency() {
-        let expected = "0.8.0";
-        assert_eq!(cargo_version(), expected, "Cargo.toml version");
-        assert_eq!(installer_version(), expected, "installer AppVersion");
-        assert_eq!(resource_version(), expected, "resource FileVersion");
-        assert_eq!(cargo_version(), installer_version());
-        assert_eq!(cargo_version(), resource_version());
+        let version = cargo_version();
+        assert!(
+            version.starts_with("0."),
+            "before 1.0.0 the major version stays 0 (got {version})"
+        );
+        assert!(
+            version.split('.').count() == 3,
+            "version must be x.y.z for Inno Setup's IsNewerVersion (got {version})"
+        );
+        // build.rs substitutes these into the VERSIONINFO resource.
+        let rc = read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/app.rc"));
+        assert!(
+            rc.contains("@VERSION@"),
+            "app.rc must be a @VERSION@ template"
+        );
+        assert!(
+            rc.contains("@VERSION_CSV@"),
+            "app.rc must template FILEVERSION/PRODUCTVERSION"
+        );
+        assert!(
+            rc.contains("@PRODUCT_NAME@"),
+            "app.rc must template the product name"
+        );
+        assert!(
+            !rc.contains(&version),
+            "app.rc carries a literal version; it must be generated from Cargo.toml"
+        );
+        assert!(
+            !rc.contains(&cargo_product_name()),
+            "app.rc carries a literal product name; it must be generated from Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn installers_take_identity_from_the_build_script() {
+        for iss in ["installer/installer.iss", "installer/converters.iss"] {
+            let content = read(&format!("{}/{iss}", root()));
+            assert!(
+                content.contains("#ifndef MyAppVersion"),
+                "{iss} must require /DMyAppVersion"
+            );
+            assert!(
+                content.contains("#ifndef MyAppName"),
+                "{iss} must require /DMyAppName"
+            );
+            assert!(
+                !content.contains("#define MyAppVersion"),
+                "{iss} must not hardcode a version"
+            );
+            assert!(
+                !content.contains("#define MyAppName"),
+                "{iss} must not hardcode the product name"
+            );
+        }
+        // build.ps1 is what reads Cargo.toml and passes both defines.
+        let ps1 = read(concat!(env!("CARGO_MANIFEST_DIR"), "/tools/build.ps1"));
+        assert!(
+            ps1.contains("/DMyAppVersion=$MyAppVersion"),
+            "build.ps1 must pass the version it read from Cargo.toml"
+        );
+        assert!(
+            ps1.contains("/DMyAppName=$MyAppName"),
+            "build.ps1 must pass the product name it read from Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn release_workflow_checks_the_tag_against_cargo_toml() {
+        let yml = read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.github/workflows/release.yml"
+        ));
+        assert!(
+            yml.contains("GITHUB_REF_NAME"),
+            "release.yml must read the tag it was triggered by"
+        );
+        assert!(
+            yml.contains("Cargo.toml"),
+            "release.yml must compare the tag with Cargo.toml"
+        );
+        assert!(
+            yml.contains("tools/build.ps1"),
+            "release.yml must build through tools/build.ps1"
+        );
+        assert!(
+            yml.contains("secrets.GITHUB_TOKEN"),
+            "release.yml must use the built-in token, never a stored secret"
+        );
     }
 }

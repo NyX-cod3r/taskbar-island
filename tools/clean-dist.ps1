@@ -14,12 +14,12 @@
   update-smoke.ps1 expects to find already compiled).
 
   Examples
-    .\tools\clean-dist.ps1                # use installer.iss's version
+    .\tools\clean-dist.ps1                # use Cargo.toml's version
     .\tools\clean-dist.ps1 -Version 0.7.0
 #>
 [CmdletBinding()]
 param(
-    # Defaults to MyAppVersion in installer\installer.iss.
+    # Defaults to `version =` in Cargo.toml (the single source of truth).
     [string]$Version = ''
 )
 
@@ -29,10 +29,10 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $distDir = Join-Path $repoRoot 'dist'
 
 if (-not $Version) {
-    $installerIss = Join-Path $PSScriptRoot '..\installer\installer.iss'
-    $text = Get-Content -LiteralPath $installerIss -Raw
-    if ($text -notmatch '#define\s+MyAppVersion\s+"([^"]+)"') {
-        throw "Cannot find '#define MyAppVersion' in $installerIss"
+    $cargoToml = Join-Path $repoRoot 'Cargo.toml'
+    $text = Get-Content -LiteralPath $cargoToml -Raw
+    if ($text -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+        throw "Cannot find 'version =' in $cargoToml"
     }
     $Version = $Matches[1]
 }
@@ -44,9 +44,10 @@ if (-not (Test-Path -LiteralPath $distDir -PathType Container)) {
     return
 }
 
-# Only these two are build outputs; everything else in dist\ is a manifest or
+# Only these are build outputs; everything else in dist\ is a manifest or
 # a test artifact and must survive. The payload keeps its version because
-# manifest.txt points at it by exact name.
+# manifest.txt points at it by exact name. `TaskbarIsland-Converters-Setup.exe`
+# (the optional engines pack) matches none of these patterns and is kept too.
 $setupName = 'TaskbarIsland-Setup.exe'
 $payloadName = "taskbar-island-$Version.exe"
 $removed = 0
