@@ -89,12 +89,15 @@ mod tests {
                 .map(|v| v.value),
             Some(design::FLY_BOTTOM_GAP as f64)
         );
-        assert_eq!(
-            actual
-                .iter()
-                .find(|v| v.path == "layout.railW")
-                .map(|v| v.value),
-            Some(design::RAIL_W as f64)
+        // 38.4 DIP is not exact in f32, so the drift check compares with a
+        // tolerance instead of bit equality.
+        let rail_w = actual
+            .iter()
+            .find(|v| v.path == "layout.railW")
+            .map(|v| v.value);
+        assert!(
+            rail_w.is_some_and(|value| (value - design::RAIL_W as f64).abs() <= 0.001),
+            "layout.railW must drift-match design::RAIL_W, got {rail_w:?}"
         );
         assert_eq!(
             actual

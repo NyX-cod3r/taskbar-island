@@ -11,16 +11,19 @@ use crate::engines::Action;
 pub enum IconId {
     Music,
     Phone,
+    /// Handset rotated into the hang-up position (design Decline / End call):
+    /// the Phone glyph rotated 135°, see `icons::rotation`.
+    PhoneEnd,
+    /// Over-ear headphones (the Output chip and the sheet's first row).
+    Headphones,
+    /// Bare chevron pointing up (the Output chip affordance).
+    ChevronUp,
+    /// Phone/tablet outline (the sheet's "Phone" transfer row).
+    PhoneDevice,
     Folder,
     Clock,
     Speaker,
     SpeakerMuted,
-    /// Over-ear headphones (the output chips and a hands-free sheet row).
-    Headphones,
-    /// Bare chevron pointing up: the output chip's affordance.
-    ChevronUp,
-    /// Phone/tablet outline (the call sheet's Phone transfer row).
-    PhoneDevice,
     /// Screen on a stand (the music sheet's "Cast to a device…" row).
     Cast,
     #[allow(dead_code)] // Dropdown chrome lands with the Convert card (B2).
@@ -112,13 +115,18 @@ pub enum Element {
     /// The music card's output chip: opens the "Play on" sheet (v0.9 §4).
     MusicOutput,
     CallMic,
-    /// Mute the speaker endpoint of the call (both card phases).
+    /// Mute the speaker endpoint (idle card only; live calls route audio
+    /// through the Output sheet instead).
     CallSpeaker,
-    /// The call card's output chip: opens the "Call audio" sheet (v0.9 §4).
+    /// The Output button inside the connected box: opens the v0.9 §4 audio
+    /// sheet.
     CallOutput,
-    /// Close button of an output sheet.
+    /// Hold / Resume, wired to Phone Link's own button through UIA. It is
+    /// only hit-testable while [`CallBody::hold_available`].
+    CallHold,
+    /// Close button of the audio output sheet.
     CallSheetClose,
-    /// One device row of an output sheet.
+    /// One device row of the audio output sheet.
     CallSheetRow(usize),
     CallOpen,
     /// Accept an incoming call (UIA Invoke on the toast's Answer button).
@@ -337,9 +345,14 @@ pub struct MusicBody {
 
 #[derive(Debug, Clone)]
 pub struct CallBody {
-    /// Route line (spec §7: the endpoint the call is on).
+    /// Connected box line 1: the endpoint Windows routes call audio to.
     pub device: String,
-    /// App the card acts on; the Open button reads `Open {app_name}`.
+    /// Connected box line 2: what the endpoint really is while the call is
+    /// up (`Bluetooth hands-free · Connected`), or `Connecting…` while it is
+    /// still dialing.
+    pub device_line2: String,
+    /// App the card acts on; the Open button reads `Open {app_name}` and the
+    /// header sub-line signs off with it.
     pub app_name: String,
     /// Caller name or number as the source read it; empty when unknown.
     pub caller: String,
@@ -351,6 +364,13 @@ pub struct CallBody {
     /// The "Call audio" sheet (v0.9 §4): rows only exist for a live call,
     /// so an idle card can never offer routes for a call that is not up.
     pub sheet: SheetView,
+    /// Phone Link really exposes a Hold button for this call. While false
+    /// the Hold button is drawn disabled - availability is probed through
+    /// UIA, never assumed.
+    pub hold_available: bool,
+    /// Phone Link confirmed the call is paused (its own button reads
+    /// "Resume"), so the card may honestly say "On hold".
+    pub held: bool,
     /// Phone Link presence. Only read while `live` is false, where it picks
     /// between real status and the muted empty state (A prompt §5).
     pub link: crate::activities::call::PhoneLinkState,
@@ -364,7 +384,8 @@ pub struct CallBody {
 impl CallBody {
     /// The one status line of the card body (spec §7 call-tab states). An
     /// action's inline note stands in while it is fresh: it says what to do
-    /// next instead of pretending anything succeeded.
+    /// next instead of pretending anything succeeded. The live card draws
+    /// [`CallBody::header_sub`] instead, so this is the idle/ended line.
     pub fn status_text(&self) -> String {
         use crate::activities::call_state::CallPhase;
         if let Some(note) = &self.note {
@@ -394,6 +415,70 @@ impl CallBody {
             }
             CallPhase::Ended => "Call ended".into(),
             CallPhase::None => "No active call".into(),
+        }
+    }
+
+    /// Header line 1: the caller's name, or wording that states there is no
+    /// call without inventing an identity.
+    pub fn header_title(&self) -> String {
+        let caller = self.caller.trim();
+        if caller.is_empty() {
+            "Call".to_string()
+        } else {
+            caller.to_string()
+        }
+    }
+
+    /// Header line 2 (design: `Phone Link · 02:14`, `On hold · 02:14`,
+    /// `Incoming call · Phone Link`, `Calling… · Phone Link`). A fresh action
+    /// note stands in on a live card, where the idle card's big line is
+    /// already carrying it.
+    pub fn header_sub(&self) -> String {
+        use crate::activities::call_state::CallPhase;
+        if self.live {
+            if let Some(note) = &self.note {
+                return note.clone();
+            }
+        }
+        let app = self.app_name.trim();
+        let app = if app.is_empty() { "Phone Link" } else { app };
+        match self.phase {
+            CallPhase::Incoming => format!("Incoming call \u{b7} {app}"),
+            CallPhase::Dialing => format!("Calling\u{2026} \u{b7} {app}"),
+            CallPhase::Active => {
+                let clock = self.elapsed.trim();
+                if clock.is_empty() {
+                    app.to_string()
+                } else if self.held {
+                    format!("On hold \u{b7} {clock}")
+                } else {
+                    format!("{app} \u{b7} {clock}")
+                }
+            }
+            CallPhase::Ended | CallPhase::None => app.to_string(),
+        }
+    }
+
+    /// Right-aligned header status. The design only words the states that
+    /// need it: `Ringing` while an incoming call waits and `No call` on the
+    /// idle card; a live call keeps its clock in the sub-line instead.
+    pub fn header_status(&self) -> Option<&'static str> {
+        use crate::activities::call_state::CallPhase;
+        match self.phase {
+            CallPhase::Incoming => Some("Ringing"),
+            CallPhase::Ended => Some("Ended"),
+            CallPhase::None => Some("No call"),
+            CallPhase::Dialing | CallPhase::Active => None,
+        }
+    }
+
+    /// Label of the Hold button: it reads what the next press does, but only
+    /// after Phone Link has confirmed the current state.
+    pub fn hold_label(&self) -> &'static str {
+        if self.held {
+            "Resume"
+        } else {
+            "Hold"
         }
     }
 }
@@ -1806,6 +1891,11 @@ mod tests {
 
         let body = |phase: CallPhase, caller: &str, device: &str, elapsed: &str, note| CallBody {
             device: device.into(),
+            device_line2: match phase {
+                CallPhase::Dialing => "Connecting\u{2026}".into(),
+                CallPhase::Active => "Bluetooth hands-free \u{b7} Connected".into(),
+                _ => String::new(),
+            },
             app_name: "Phone Link".into(),
             caller: caller.into(),
             elapsed: elapsed.into(),
@@ -1816,6 +1906,8 @@ mod tests {
             mic_muted: false,
             output_muted: false,
             sheet: SheetView::default(),
+            hold_available: false,
+            held: false,
             link: PhoneLinkState::Available,
             phase,
             note,
@@ -2313,7 +2405,9 @@ mod tests {
         // toolbar gap and the list and never a toolbar control (spec 7).
         let x = (design::CLIP_INNER_W - design::CLIP_PREVIEW_W) * 0.5;
         let y = design::CLIP_INNER_H - design::CLIP_PREVIEW_H;
-        assert_eq!(x, 61.5);
+        // 70.3 DIP after v0.10 widened the content column to 346.6 (was 61.5
+        // at 329); f32 keeps the derived value within 0.01 of it.
+        assert!((x - 70.3).abs() <= 0.01, "centered preview x, got {x}");
         assert_eq!(y, design::CLIP_TOOLBAR_H);
         assert_eq!(
             design::CLIP_PREVIEW_H,

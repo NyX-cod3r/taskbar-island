@@ -34,6 +34,27 @@ pub fn spec(icon: IconId) -> IconSpec {
             filled: false,
             stroke: 2.0,
         },
+        // Hang-up: the same handset rotated 135° (`rotation` below).
+        IconId::PhoneEnd => IconSpec {
+            path: "M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z",
+            filled: false,
+            stroke: 2.0,
+        },
+        IconId::Headphones => IconSpec {
+            path: "M4 14v-2a8 8 0 0 1 16 0v2M4 14h2.5A1.5 1.5 0 0 1 8 15.5v3A1.5 1.5 0 0 1 6.5 20h-1A1.5 1.5 0 0 1 4 18.5zM20 14h-2.5a1.5 1.5 0 0 0-1.5 1.5v3a1.5 1.5 0 0 0 1.5 1.5h1a1.5 1.5 0 0 0 1.5-1.5z",
+            filled: false,
+            stroke: 2.0,
+        },
+        IconId::ChevronUp => IconSpec {
+            path: "M6 15l6-6 6 6",
+            filled: false,
+            stroke: 2.0,
+        },
+        IconId::PhoneDevice => IconSpec {
+            path: "M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM11 19h2",
+            filled: false,
+            stroke: 1.8,
+        },
         IconId::Folder => IconSpec {
             path: "M3.5 7a2 2 0 0 1 2-2H10l2 2.5h6.5a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z",
             filled: false,
@@ -53,21 +74,6 @@ pub fn spec(icon: IconId) -> IconSpec {
             path: "M4 9.5v5h3.5l4.5 4v-13l-4.5 4zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11M3 3l18 18",
             filled: false,
             stroke: 2.0,
-        },
-        IconId::Headphones => IconSpec {
-            path: "M4 14v-2a8 8 0 0 1 16 0v2M4 14h3v6H6a2 2 0 0 1-2-2v-4zm16 0h-3v6h1a2 2 0 0 0 2-2v-4z",
-            filled: false,
-            stroke: 2.0,
-        },
-        IconId::ChevronUp => IconSpec {
-            path: "M6 15l6-6 6 6",
-            filled: false,
-            stroke: 2.0,
-        },
-        IconId::PhoneDevice => IconSpec {
-            path: "M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM11 19h2",
-            filled: false,
-            stroke: 1.8,
         },
         IconId::Cast => IconSpec {
             path: "M3 5h18v11H3zM8 20h8M12 16v4",
@@ -334,6 +340,16 @@ pub fn spec(icon: IconId) -> IconSpec {
             filled: false,
             stroke: 1.8,
         },
+    }
+}
+
+/// Extra rotation, in degrees, the painter applies when drawing `icon`
+/// (around the 24 x 24 viewBox centre). Used by the hang-up handset, which is
+/// the Phone glyph rotated into the "call ended" position (v0.10 design).
+pub fn rotation(icon: IconId) -> f32 {
+    match icon {
+        IconId::PhoneEnd => 135.0,
+        _ => 0.0,
     }
 }
 

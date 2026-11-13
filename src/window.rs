@@ -128,6 +128,10 @@ const CLIP_PREVIEW_TIMER_ID: usize = 16;
 const CALL_CLEAR_TIMER_ID: usize = 17;
 /// §6 hold-to-repeat cadence on the timer stepper (420 ms, then 110 ms).
 const TIMER_HOLD_ID: usize = 18;
+/// One-shot delay after a Hold/Resume press before the UIA probe re-reads
+/// Phone Link's own button (v0.10 §2 honesty: state only after confirmation).
+const HOLD_PROBE_TIMER_ID: usize = 19;
+const HOLD_PROBE_DELAY_MS: u32 = 400;
 /// How long an action's inline message stays on the card before the status
 /// line takes over again (no timer: the 1 Hz call tick re-renders it).
 const ACTION_NOTE_TTL: Duration = Duration::from_secs(6);
@@ -1247,7 +1251,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let x = (lparam.0 as i16) as f32 / surface.scale;
                 let y = ((lparam.0 >> 16) as i16) as f32 / surface.scale;
                 let hit = surface.hit_at(x, y);
-                surface.pressed = hit;
+                // A disabled control (Hold before the probe proved it) takes
+                // no press: the tooltip still explains it, nothing else.
+                surface.pressed = match hit {
+                    Some(element) if !surface.element_enabled(element) => None,
+                    other => other,
+                };
                 surface.shelf_press = match hit {
                     Some(element @ Element::ShelfTile(_)) => Some((element, x, y)),
                     _ => None,
@@ -1387,6 +1396,8 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                     let _ = surface.audio_tx.send(AudioCommand::ToggleMic);
                                     None
                                 }
+                                // The idle card's speaker square mutes the
+                                // endpoint Windows routes call audio through.
                                 Element::CallSpeaker => {
                                     let _ = surface.audio_tx.send(AudioCommand::ToggleOutput);
                                     None
@@ -1397,12 +1408,22 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                     surface.open_output_sheet(Instant::now());
                                     None
                                 }
-                                Element::CallSheetClose => {
-                                    surface.close_output_sheet(Instant::now());
-                                    None
-                                }
-                                Element::CallSheetRow(index) => {
-                                    surface.choose_output_row(index);
+                                // Only actionable while the probe proved
+                                // Phone Link's own button exists; the label
+                                // follows the state Phone Link confirmed.
+                                Element::CallHold => {
+                                    let (available, held) = surface
+                                        .call_runtime
+                                        .lock()
+                                        .map(|runtime| (runtime.hold_available, runtime.held))
+                                        .unwrap_or((false, false));
+                                    if available {
+                                        surface.start_call_action(if held {
+                                            CallAction::Resume
+                                        } else {
+                                            CallAction::Hold
+                                        });
+                                    }
                                     None
                                 }
                                 // Spec §3: real UIA presses on the provider's
@@ -1422,6 +1443,19 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                 // Real launches only: Phone Link itself.
                                 Element::CallOpen | Element::CallIdle => {
                                     surface.open_call_app();
+                                    None
+                                }
+                                // The output sheet's close slides it back
+                                // out over the same card.
+                                Element::CallSheetClose => {
+                                    surface.close_output_sheet(Instant::now());
+                                    None
+                                }
+                                // Route the call to this row's endpoint (the
+                                // worker reports a failed route honestly), or
+                                // hand the call back to the phone.
+                                Element::CallSheetRow(index) => {
+                                    surface.choose_output_row(index);
                                     None
                                 }
                                 Element::TimerToggle => {
@@ -1605,13 +1639,16 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 if wparam.0 == call::CALL_WAKE_ACTION {
                     surface.note_action(call::ActionOutcome::from_code(lparam.0));
                 }
-                // v0.9 §4: `lparam = 1` means Windows refused the default
-                // switch and the worker opened its own sound page. Say that
-                // before the card rebuilds from the unchanged defaults.
+                if wparam.0 == call::CALL_WAKE_HOLD {
+                    surface.note_hold(lparam.0);
+                }
+                surface.apply_call();
+                // `lparam = 1`: Windows refused the switch, so the worker
+                // opened the sound settings page — say so and leave the sheet
+                // instead of showing a check mark that never moved.
                 if wparam.0 == call::CALL_WAKE_AUDIO && lparam.0 == 1 {
                     surface.note_output_fallback();
                 }
-                surface.apply_call();
                 unsafe {
                     let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
                 }
@@ -1868,6 +1905,18 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             });
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == HOLD_PROBE_TIMER_ID => {
+            with_surface(|surface| {
+                // SAFETY: one-shot timer owned by this window.
+                unsafe {
+                    let _ = KillTimer(Some(hwnd), HOLD_PROBE_TIMER_ID);
+                }
+                if surface.call_machine.state.live() {
+                    callsrc::action::probe_hold_async(surface.hwnd.0 as isize);
+                }
+            });
+            LRESULT(0)
+        }
         WM_TIMER if wparam.0 == TOOLTIP_TIMER_ID => {
             with_surface(|surface| {
                 surface.tip_due(Instant::now());
@@ -2093,6 +2142,7 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let _ = KillTimer(Some(hwnd), CLIP_POP_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_CONFIRM_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_PREVIEW_TIMER_ID);
+                let _ = KillTimer(Some(hwnd), HOLD_PROBE_TIMER_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_FALLBACK_HOTKEY_ID);
             }
@@ -4244,13 +4294,6 @@ impl Surface {
         let label = call_label(&state);
         let elapsed = state.elapsed(now);
         let live = state.live();
-        let header_status = match state.phase {
-            CallPhase::Incoming => "Ringing".to_string(),
-            CallPhase::Dialing => "Dialing".to_string(),
-            CallPhase::Active => "On a call".to_string(),
-            CallPhase::Ended => "Ended".to_string(),
-            CallPhase::None => unreachable!("handled above"),
-        };
         // The inline action message stands in for the status line while it is
         // fresh: it says what to do instead of pretending anything worked.
         // A refused device switch (v0.9 §4) speaks through the same line.
@@ -4333,40 +4376,59 @@ impl Surface {
             kind: PillKind::Normal,
             art: None,
         };
-        let flyout = FlyoutView {
-            kind: ActivityKind::Call,
-            leading: Leading::Glyph {
-                icon: IconId::Phone,
-                bg: accent,
-                fg: design::DARK_GLYPH,
-            },
-            title: "Call".into(),
-            subtitle: Subtitle::default(),
-            status: note.clone().unwrap_or(header_status),
-            status_accent: true,
-            trailing: Trailing::None,
-            body: Body::Call(crate::view::CallBody {
-                device: runtime.device.clone(),
-                // The Open button reads `Open {app_name}`.
-                app_name: crate::activities::call::phone_link_display_name(),
-                // Raw caller text: the card composes its status line from it
-                // (`CallBody::status_text`), the pill uses `call_label`.
-                caller: state.caller().unwrap_or_default().to_string(),
-                elapsed: if live {
-                    crate::view::fmt_clock(elapsed)
-                } else {
-                    String::new()
+        let flyout = {
+            // The connected box's second line only promises what the audio
+            // layer proved: hands-free comes from the endpoint's own name,
+            // and a failed query claims no "Connected" at all.
+            let device_line2 = match state.phase {
+                CallPhase::Dialing => "Connecting\u{2026}".into(),
+                CallPhase::Active if runtime.device.trim().is_empty() => String::new(),
+                CallPhase::Active if runtime.handsfree => {
+                    "Bluetooth hands-free \u{b7} Connected".into()
+                }
+                CallPhase::Active => "Connected".into(),
+                _ => String::new(),
+            };
+            FlyoutView {
+                kind: ActivityKind::Call,
+                leading: Leading::Glyph {
+                    icon: IconId::Phone,
+                    bg: accent,
+                    fg: design::DARK_GLYPH,
                 },
-                live,
-                mic_muted: runtime.mic_muted,
-                output_muted: runtime.output_muted,
-                sheet,
-                // Only read while `live` is false; a live card never draws
-                // the idle empty state, and show_call runs at 1 Hz.
-                link: crate::activities::call::PhoneLinkState::Available,
-                phase: state.phase,
-                note,
-            }),
+                title: "Call".into(),
+                subtitle: Subtitle::default(),
+                // The card owns its own right-aligned state word (Ringing /
+                // No call) in row 1, so the shared header draws nothing here.
+                status: String::new(),
+                status_accent: false,
+                trailing: Trailing::None,
+                body: Body::Call(crate::view::CallBody {
+                    device: runtime.device.clone(),
+                    device_line2,
+                    // The Open button reads `Open {app_name}`.
+                    app_name: crate::activities::call::phone_link_display_name(),
+                    // Raw caller text: the card composes its status line from
+                    // it (`CallBody::status_text`), the pill uses `call_label`.
+                    caller: state.caller().unwrap_or_default().to_string(),
+                    elapsed: if live {
+                        crate::view::fmt_clock(elapsed)
+                    } else {
+                        String::new()
+                    },
+                    live,
+                    mic_muted: runtime.mic_muted,
+                    output_muted: runtime.output_muted,
+                    hold_available: runtime.hold_available,
+                    held: runtime.held,
+                    sheet,
+                    // Only read while `live` is false; a live card never draws
+                    // the idle empty state, and show_call runs at 1 Hz.
+                    link: crate::activities::call::PhoneLinkState::Available,
+                    phase: state.phase,
+                    note,
+                }),
+            }
         };
         drop(runtime);
         self.view.main = Some(ActivityView {
@@ -4517,6 +4579,7 @@ impl Surface {
                         trailing: Trailing::None,
                         body: Body::Call(crate::view::CallBody {
                             device: "No active call".into(),
+                            device_line2: String::new(),
                             // The idle card's action opens the real app.
                             app_name: crate::activities::call::phone_link_display_name(),
                             caller: String::new(),
@@ -4525,6 +4588,8 @@ impl Surface {
                             mic_muted: false,
                             output_muted: false,
                             // No call is up, so there is no route to offer.
+                            hold_available: false,
+                            held: false,
                             sheet: crate::view::SheetView::default(),
                             link,
                             phase: crate::activities::call_state::CallPhase::None,
@@ -4712,6 +4777,21 @@ impl Surface {
                 // Content is mid-swap; its hit rects belong to the frame that
                 // is fading out. Only the rail stays interactive.
                 return hit.filter(|element| matches!(element, Element::Rail(_)));
+            }
+            // While the output sheet covers the card, only its own controls
+            // answer inside the covered band: a click must never fall
+            // through to the card underneath. Left of its sliding edge the
+            // card is still visible and stays clickable.
+            if self.sheet_t > 0.0 {
+                let sheet_left = self.flyout.x + (1.0 - self.sheet_t) * self.flyout.w;
+                if x >= sheet_left {
+                    return hit.filter(|element| {
+                        matches!(element, Element::CallSheetClose | Element::CallSheetRow(_))
+                    });
+                }
+                return hit.filter(|element| {
+                    !matches!(element, Element::CallSheetClose | Element::CallSheetRow(_))
+                });
             }
             return hit;
         }
@@ -4975,6 +5055,8 @@ impl Surface {
             }
             changed = true;
         }
+        // The output sheet rides the same frame clock (one timer, 16 ms only
+        // while something is actually moving).
         if let Some(tween) = self.sheet_tween {
             self.sheet_t = tween.value(now);
             if tween.done(now) {
@@ -5080,6 +5162,7 @@ impl Surface {
                 | Element::CallMic
                 | Element::CallSpeaker
                 | Element::CallOutput
+                | Element::CallHold
                 | Element::CallSheetClose
                 | Element::CallSheetRow(_)
                 | Element::CallAnswer
@@ -5314,10 +5397,35 @@ impl Surface {
             } else {
                 "Mute speaker"
             }),
+            // The chip opens the output sheet; its detail names the route the
+            // sheet will start on.
             Element::CallOutput => Some((
-                "Call audio".to_string(),
-                Some("Choose where the call plays".to_string()),
+                "Output".to_string(),
+                Some(
+                    self.call_runtime
+                        .lock()
+                        .map(|runtime| {
+                            if runtime.device.trim().is_empty() {
+                                "Choose where call audio plays".to_string()
+                            } else {
+                                runtime.device.clone()
+                            }
+                        })
+                        .unwrap_or_else(|_| "Choose where call audio plays".to_string()),
+                ),
             )),
+            // Honesty first: while the probe has not found Phone Link's own
+            // button, the tooltip says exactly why the control is inert.
+            Element::CallHold => {
+                let runtime = self.call_runtime.lock();
+                match runtime {
+                    Ok(runtime) if !runtime.hold_available => {
+                        text("Hold isn't available for this call")
+                    }
+                    Ok(runtime) => text(if runtime.held { "Resume" } else { "Hold" }),
+                    Err(_) => text("Hold"),
+                }
+            }
             Element::CallAnswer => text("Answer"),
             Element::CallDecline => text("Decline"),
             Element::CallEnd => text("End call"),
@@ -5609,6 +5717,12 @@ impl Surface {
                 .shelf_convert_paths()
                 .iter()
                 .any(|path| crate::view::is_convertible(path)),
+            // Hold exists only when the probe found Phone Link's button.
+            Element::CallHold => self
+                .call_runtime
+                .lock()
+                .map(|runtime| runtime.hold_available)
+                .unwrap_or(false),
             _ => true,
         }
     }
@@ -5916,12 +6030,17 @@ impl Surface {
 
     /// Windows refused the default switch (its own sound page opened
     /// instead): put an honest line on whatever card is open rather than
-    /// letting a check mark pretend the route moved.
+    /// letting a check mark pretend the route moved, and slide the sheet
+    /// away — a check mark that did not move must not stay on screen
+    /// claiming it did.
     fn note_output_fallback(&mut self) {
         self.output_note = Some((
             "Couldn't switch device \u{b7} opened Windows sound settings".to_string(),
             Instant::now(),
         ));
+        self.close_output_sheet(Instant::now());
+        self.refresh(Instant::now());
+        self.sync_tick_timer();
     }
 
     /// An inline note younger than [`ACTION_NOTE_TTL`], or `None`.
@@ -5997,6 +6116,17 @@ impl Surface {
         self.install_keyboard_hook();
         self.sync_flyout_timer();
         self.sync_tick_timer();
+        // Re-opened on a live call: re-read Phone Link's Hold button, since
+        // availability is only ever what the provider shows right now.
+        if self
+            .view
+            .main
+            .as_ref()
+            .is_some_and(|view| view.kind == ActivityKind::Call)
+            && self.call_machine.state.phase == CallPhase::Active
+        {
+            callsrc::action::probe_hold_async(self.hwnd.0 as isize);
+        }
     }
 
     fn begin_close_flyout(&mut self, now: Instant) {
@@ -6434,6 +6564,22 @@ impl Surface {
                 self.call_machine.state.phase,
                 self.call_machine.state.caller()
             ));
+            if self.call_machine.state.phase == CallPhase::Active {
+                // The card may only offer Hold once Phone Link's own button
+                // has been seen for *this* call.
+                callsrc::action::probe_hold_async(self.hwnd.0 as isize);
+            }
+            // Hold state describes one live call; a call that is gone drops
+            // it, so a stale "Resume" can never survive into the next call.
+            if !self.call_machine.state.live() {
+                if let Ok(mut runtime) = self.call_runtime.lock() {
+                    runtime.hold_available = false;
+                    runtime.held = false;
+                }
+                // The sheet offers routes for a call that is up; without a
+                // call there is nothing to route.
+                self.close_output_sheet(now);
+            }
         }
         self.sync_call_clear(now);
         self.refresh(now);
@@ -6526,8 +6672,40 @@ impl Surface {
                 ));
             }
         }
+        // Hold/Resume only changed Phone Link's own state: give it a moment,
+        // then probe what its button really says before the card believes it.
+        if matches!(action, Some(CallAction::Hold | CallAction::Resume)) {
+            // SAFETY: this window owns the one-shot id; re-arming with the
+            // same id replaces the previous expiry.
+            unsafe {
+                SetTimer(
+                    Some(self.hwnd),
+                    HOLD_PROBE_TIMER_ID,
+                    HOLD_PROBE_DELAY_MS,
+                    None,
+                );
+            }
+        }
         self.refresh(Instant::now());
         self.sync_tick_timer();
+    }
+
+    /// The Hold probe reported what Phone Link really shows: bit 0 = its
+    /// Hold button exists for this call, bit 1 = it reads "Resume" right
+    /// now. Nothing is inferred — a stale result for an ended call is
+    /// dropped instead of resurrecting the control.
+    fn note_hold(&mut self, code: isize) {
+        let available = code & 1 != 0;
+        let held = code & 2 != 0;
+        if let Ok(mut runtime) = self.call_runtime.lock() {
+            if self.call_machine.state.live() {
+                runtime.hold_available = available;
+                runtime.held = available && held;
+            }
+        }
+        // The 1 Hz call tick re-renders too, but a probe result should show
+        // up immediately (the card may be open and settled).
+        self.refresh(Instant::now());
     }
 
     /// Start one UIA action on a worker thread; the outcome returns as

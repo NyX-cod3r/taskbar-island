@@ -47,16 +47,17 @@ pub const PILL_GLYPH: f32 = 14.0;
 pub const LEAD_GLYPH: f32 = 26.0;
 
 // ------------------------------------------------ expanded card (v0.4)
-/// Left activity rail. The divider is the rail's right edge, so the content
-/// column starts at 57 DIP.
-pub const RAIL_W: f32 = 56.0;
+/// Left activity rail. v0.10 slims it to 48 design px (38.4 DIP at the
+/// 400/500 = 0.8 design-to-repo scale), so the content column grows from
+/// 329 to 346.6 DIP. The divider is the rail's right edge.
+pub const RAIL_W: f32 = 38.4;
 pub const RAIL_DIVIDER: f32 = 1.0;
 pub const CARD_CONTENT_X: f32 = RAIL_W + RAIL_DIVIDER;
 /// Uniform inner padding for every card: 7 DIP (design tokens; was 12).
 pub const CARD_PAD: f32 = 7.0;
 /// Gap between stacked content sections inside a card: 8 DIP (design tokens; was 12).
 pub const CARD_GAP: f32 = 8.0;
-/// Inner content rectangle of an expanded card: the 400×192 card minus the 56 DIP rail
+/// Inner content rectangle of an expanded card: the 400×192 card minus the 38.4 DIP rail
 /// and 1 px divider, minus CARD_PAD on all four sides. Every card computes its content
 /// area with this single function — no card keeps its own padding constant.
 pub fn card_content_rect(fly: RectD) -> RectD {
@@ -67,17 +68,23 @@ pub fn card_content_rect(fly: RectD) -> RectD {
         FLY_H - CARD_PAD * 2.0,
     )
 }
-/// v0.7 rail: five 32 DIP tiles with 5 DIP gaps (180 DIP) centred in the card.
-pub const RAIL_BTN: f32 = 32.0;
-pub const RAIL_GAP: f32 = 5.0;
-pub const RAIL_INSET: f32 = (FLY_H - (RAIL_BTN * 5.0 + RAIL_GAP * 4.0)) * 0.5;
-pub const RAIL_GLYPH: f32 = 18.0;
+/// v0.10 rail: five 36 × 36 design-px buttons (28.8 DIP at 125 %, the design's
+/// own scale, so every hit target is at least 36 × 36 physical px) with 8 design
+/// px gaps (6.4 DIP), a 10 design px top padding (8 DIP) and 18 design px
+/// glyphs (14.4 DIP).
+pub const RAIL_BTN: f32 = 28.8;
+pub const RAIL_GAP: f32 = 6.4;
+/// Top padding of the button stack (design: 10 px), no longer centred: the
+/// design's stack leaves a wider gap at the bottom than at the top.
+pub const RAIL_INSET: f32 = 8.0;
+pub const RAIL_GLYPH: f32 = 14.4;
 pub const RAIL_STROKE: f32 = 1.8;
-pub const RAIL_IND_W: f32 = 3.0;
-pub const RAIL_IND_H: f32 = 16.0;
+/// Accent bar at the rail's left edge (design: 3 × 18).
+pub const RAIL_IND_W: f32 = 2.4;
+pub const RAIL_IND_H: f32 = 14.4;
 pub const RAIL_IND_R: f32 = 2.0;
-/// The indicator is centred on the tile: (32 - 16) / 2 = 8 DIP from its top.
-pub const RAIL_IND_DY: f32 = 8.0;
+/// The indicator is centred on the button: (28.8 - 14.4) / 2 = 7.2 DIP.
+pub const RAIL_IND_DY: f32 = 7.2;
 pub const HEADER_H: f32 = 28.0;
 pub const HEADER_TILE: f32 = 28.0;
 pub const HEADER_GAP: f32 = 10.0;
@@ -156,19 +163,36 @@ pub fn clamp_minutes(minutes: i64) -> u32 {
 /// (ring tile + wave + buttons), the set view is centred inside it.
 pub const TIMER_BODY_H: f32 = TIMER_TILE + CARD_GAP + TIMER_PROGRESS_H + CARD_GAP + TIMER_PAUSE_H;
 
-// Call card
-pub const CALL_STATUS_H: f32 = 52.0;
-/// The controls row keeps one height in every spec §7 call state, so the
-/// card shell never changes size when the phase does.
-pub const CALL_ROW_H: f32 = 52.0;
-/// Mute mic / mute speakers buttons (§7: 44).
-pub const CALL_BTN_W: f32 = 44.0;
-pub const CALL_BTN_H: f32 = 44.0;
+// Call card (v0.10). The design's "three rows, 20 gap" layout — header 56,
+// connected box 56, then Hold / End call / Mute as three equal 56 px buttons
+// — is scaled by 0.8 (design px -> DIP, 500/400 = 1.25 the other way) and the
+// rows stretch to fill the card's real 178 DIP content column, so the card
+// never leaves a dead band the way a fixed 44.8 DIP stack would.
+/// 20 design px between the rows.
+pub const CALL_ROW_GAP: f32 = 16.0;
+/// `card_content_rect(...).h`: the 192 DIP card minus CARD_PAD top/bottom.
+pub const CALL_CONTENT_H: f32 = FLY_H - CARD_PAD * 2.0;
+/// (178 - 2 x 16) / 3 = 48.67 DIP — header, connected box, action row.
+pub const CALL_ROW_H: f32 = (CALL_CONTENT_H - CALL_ROW_GAP * 2.0) / 3.0;
+/// Header avatar tile (design 56 x 56), centred in the header row.
+pub const CALL_LEAD: f32 = 44.8;
+/// Output button inside the connected box (design 132 x 44).
+pub const CALL_OUTPUT_W: f32 = 105.6;
+pub const CALL_OUTPUT_H: f32 = 35.2;
+/// Incoming Decline / Answer (design 52 high), centred in the action row.
+pub const CALL_INCOMING_H: f32 = 41.6;
+/// Idle card squares: mute mic + mute speaker (design 44 x 44).
+pub const CALL_BTN_W: f32 = 35.2;
+pub const CALL_BTN_H: f32 = 35.2;
+/// Gap between action buttons (design 10 px).
 pub const CALL_BTN_GAP: f32 = 8.0;
-/// Incoming: Decline + Answer each fill half the row, gap 10 (§7).
-pub const CALL_ANSWER_GAP: f32 = 10.0;
-pub const SIGNAL_W: f32 = 18.0;
-pub const SIGNAL_H: f32 = 16.0;
+/// Incoming: Decline + Answer each fill half the row, gap 8 (design 10).
+pub const CALL_ANSWER_GAP: f32 = 8.0;
+/// Phone Link confirmed the call is on hold (design §5: amber Resume).
+pub const CALL_HOLD: Color = rgb(0xFF, 0xB5, 0x47);
+/// Signal glyph in the connected box (design 18 x 16).
+pub const SIGNAL_W: f32 = 14.4;
+pub const SIGNAL_H: f32 = 12.8;
 /// Spec §8 empty state: one large muted icon, no sentences.
 pub const EMPTY_ICON_DIP: f32 = 36.0;
 
@@ -201,14 +225,11 @@ pub const SHEET_VISIBLE: usize = 3;
 // Output chips (v0.9 §4). Ink of both chips' device name.
 pub const FONT_CHIP: f32 = 12.0;
 /// Music chip, at the right end of the controls row. The design's 148 DIP
-/// assumes its 404 DIP content column; this shell has 329, so the chip
-/// takes exactly what the transport row leaves and nothing is dropped.
-pub const MUSIC_CHIP_W: f32 = 105.0;
+/// assumes its 404 DIP content column; the v0.10 slim rail leaves 346.6,
+/// so the chip takes exactly what the transport row leaves (346.6 - 216 - 8)
+/// and nothing is dropped.
+pub const MUSIC_CHIP_W: f32 = 122.6;
 pub const MUSIC_CHIP_H: f32 = 36.0;
-/// Call chip (dialing / active), between the mute buttons and End. The full
-/// design size fits here: mic + speaker + chip still leave End a flex button.
-pub const CALL_CHIP_W: f32 = 150.0;
-pub const CALL_CHIP_H: f32 = 44.0;
 
 // Shelf card. The shelf owns the whole content column from
 // `card_content_rect()` (CARD_PAD on all four sides), a 28 DIP toolbar, then a
@@ -344,7 +365,7 @@ pub const CLIP_CHECKER: f32 = 4.0;
 pub const CLIP_CHECKER_A: Color = rgb(0x50, 0x50, 0x50);
 pub const CLIP_CHECKER_B: Color = rgb(0x40, 0x40, 0x40);
 /// Hover preview overlay (spec 7): appears after 450 ms of steady hover and
-/// stays inside the card (206 × 150 of the 329 × 178 content rect).
+/// stays inside the card (206 × 150 of the 346.6 × 178 content rect).
 pub const CLIP_PREVIEW_MS: u32 = 450;
 pub const CLIP_PREVIEW_W: f32 = 206.0;
 pub const CLIP_PREVIEW_H: f32 = 150.0;
@@ -680,9 +701,11 @@ pub const LIGHT_CONVERT_TAB_ACTIVE: Color = Color {
 // Expanded card surfaces (v0.4 Â§3.1). The card shell keeps its existing
 // material; only the rail and divider are new.
 pub const CARD_RAIL: Color = rgb(0x21, 0x21, 0x21);
-pub const CARD_DIVIDER: Color = rgb(0x34, 0x34, 0x34);
+/// v0.10: the rail's right border is white 8 % (black 8 % in light mode),
+/// the same hairline the design uses on every surface.
+pub const CARD_DIVIDER: Color = white(0.08);
 pub const LIGHT_CARD_RAIL: Color = rgb(0xEA, 0xEA, 0xEA);
-pub const LIGHT_CARD_DIVIDER: Color = rgb(0xDC, 0xDC, 0xDC);
+pub const LIGHT_CARD_DIVIDER: Color = black(0.08);
 
 // Typography (section 4.3)
 pub const FONT_FAMILY: &str = "Segoe UI Variable Text";
@@ -718,6 +741,12 @@ pub const LINE_TIMER_NAME: f32 = 20.0;
 pub const FONT_CALL_TITLE: f32 = 18.0;
 pub const LINE_CALL_TITLE: f32 = 24.0;
 pub const FONT_OPEN_CALL: f32 = 13.0;
+/// Call card (v0.10): the connected box's device name (design 16 px) and its
+/// meta line (design 14 px), both scaled by 0.8.
+pub const FONT_CALL_DEVICE: f32 = 13.0;
+pub const LINE_CALL_DEVICE: f32 = 17.0;
+pub const FONT_CALL_META: f32 = 11.0;
+pub const LINE_CALL_META: f32 = 14.0;
 
 // ------------------------------------------------------------ activity ids
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -862,6 +891,15 @@ const _: () = assert!(CLIP_ROW_IMG_STRIDE - CLIP_ROW_GAP == CLIP_ROW_IMG_H);
 mod tests {
     use super::*;
 
+    /// Derived geometry is not exact in f32 once the rail leaves whole
+    /// numbers (38.4 DIP), so value guards compare with a 0.01 DIP tolerance.
+    fn close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= 0.01,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     /// Rule 6 of the v0.4 spec: the pill and the expanded card's outer
     /// footprint are frozen. Changing any of these must fail the build.
     #[test]
@@ -873,20 +911,25 @@ mod tests {
     }
 
     /// The v0.4 interior is derived, so guard the numbers the artboards use.
-    /// v0.8: card padding is 7 DIP, so the content rect is the card (400×192)
-    /// minus the 56 DIP rail + 1 px divider minus CARD_PAD on all sides.
+    /// v0.10: the rail slims to 38.4 DIP, so the content rect is the card
+    /// (400×192) minus the 38.4 DIP rail + 1 px divider minus CARD_PAD on all
+    /// sides — 346.6 × 178 DIP of content (was 329 wide).
     #[test]
     fn card_interior_matches_v08() {
-        assert_eq!(CARD_CONTENT_X, 57.0);
+        close(CARD_CONTENT_X, 39.4);
         assert_eq!(CARD_PAD, 7.0);
         assert_eq!(CARD_GAP, 8.0);
         let content = card_content_rect(RectD::new(0.0, 0.0, 400.0, 192.0));
-        assert_eq!(content.x, 64.0);
+        close(content.x, 46.4);
         assert_eq!(content.y, 7.0);
-        assert_eq!(content.w, 329.0);
+        close(content.w, 346.6);
         assert_eq!(content.h, 178.0);
-        assert_eq!(RAIL_INSET, 6.0);
-        assert_eq!(RAIL_BTN * 5.0 + RAIL_GAP * 4.0 + RAIL_INSET * 2.0, FLY_H);
+        assert_eq!(RAIL_INSET, 8.0);
+        // The stack is top-aligned at the 8 DIP padding (design: 10 px) and
+        // still leaves at least a button-gap of breathing room at the bottom.
+        let stack = RAIL_BTN * 5.0 + RAIL_GAP * 4.0;
+        close(stack, 169.6);
+        assert!(FLY_H - RAIL_INSET - stack >= 8.0, "stack must fit the card");
     }
 
     /// v0.9 §4: the output sheet covers the fixed flyout instead of resizing
@@ -912,11 +955,11 @@ mod tests {
         assert_eq!(SHEET_VISIBLE, 3);
     }
 
-    /// v0.9 §4 chips: the music chip exactly fills what the transport row
-    /// leaves in the 329 DIP content column, and the call row (mic +
-    /// speaker + chip) still leaves End a usable flex button.
+    /// v0.9 §4: the music chip exactly fills what the transport row leaves
+    /// in the 329 DIP content column. The call card's own in-box chip and
+    /// button row are asserted by `call_card_fills_three_rows_of_the_content_column`.
     #[test]
-    fn output_chips_fit_the_rows_they_live_in() {
+    fn music_chip_fills_the_transport_row() {
         let content = FLY_W - CARD_CONTENT_X - CARD_PAD * 2.0;
         let transport = (MUSIC_BTN + MUSIC_BTN_GAP) * 4.0 + MUSIC_PLAY_W;
         let music_row = transport + MUSIC_BTN_GAP + MUSIC_CHIP_W;
@@ -925,14 +968,6 @@ mod tests {
             "music chip must fill the rest of the controls row: {music_row} vs {content}"
         );
         assert_eq!(MUSIC_CHIP_H, 36.0);
-        let used = CALL_BTN_W * 2.0 + CALL_BTN_GAP * 3.0 + CALL_CHIP_W;
-        assert_eq!(CALL_CHIP_W, 150.0);
-        assert_eq!(CALL_CHIP_H, CALL_BTN_H);
-        assert!(
-            content - used >= 60.0,
-            "End button too narrow after the call chip: {}",
-            content - used
-        );
     }
 
     /// v0.9 §7: the wave (wavelength 20, amplitude 3, stroke 3, round cap,
@@ -1019,20 +1054,27 @@ mod tests {
         }
     }
 
-    /// v0.7 rail: five 32 x 32 tiles with 5 DIP gaps, 18 DIP glyphs and a
-    /// 3 x 16 indicator 8 DIP below the tile top.
+    /// v0.10 rail: five 28.8 × 28.8 DIP buttons (36 × 36 physical px at the
+    /// design's 125 % scale) with 6.4 DIP gaps, 14.4 DIP glyphs and a
+    /// 2.4 × 14.4 accent bar centred on the button.
     #[test]
     fn rail_fits_five_tiles_matches_v07() {
-        assert_eq!(RAIL_W, 56.0);
-        assert_eq!(RAIL_BTN, 32.0);
-        assert_eq!(RAIL_GAP, 5.0);
-        assert_eq!(RAIL_GLYPH, 18.0);
-        assert_eq!(RAIL_IND_W, 3.0);
-        assert_eq!(RAIL_IND_H, 16.0);
-        assert_eq!(RAIL_IND_DY, 8.0);
+        close(RAIL_W, 38.4);
+        close(RAIL_BTN, 28.8);
+        close(RAIL_GAP, 6.4);
+        close(RAIL_GLYPH, 14.4);
+        close(RAIL_IND_W, 2.4);
+        close(RAIL_IND_H, 14.4);
+        close(RAIL_IND_DY, 7.2);
+        // Hit targets: 36 × 36 physical px at 125 % (the design scale) and
+        // never smaller than the 36 design px the spec asks for.
+        close(RAIL_BTN * 1.25, 36.0);
         let stack = RAIL_BTN * 5.0 + RAIL_GAP * 4.0;
-        assert_eq!(stack, 180.0);
-        assert!(FLY_H - stack >= 4.0, "five tiles need at least 4 DIP spare");
+        close(stack, 169.6);
+        assert!(
+            FLY_H - RAIL_INSET - stack >= 4.0,
+            "five buttons need at least 4 DIP spare"
+        );
         assert_eq!(RAIL_ORDER.len(), 5);
         assert_eq!(
             RAIL_ORDER,
@@ -1046,12 +1088,56 @@ mod tests {
         );
         assert_eq!(rail_accent(ActivityKind::Clipboard), RAIL_CLIP);
         assert_eq!(RAIL_CLIP, rgba(0x5F, 0xD0, 0xC5, 1.0));
+        // The divider is the design's white 8 % hairline (black 8 % in light).
+        assert_eq!(CARD_DIVIDER, white(0.08));
+        assert_eq!(LIGHT_CARD_DIVIDER, black(0.08));
+    }
+
+    /// v0.10 call card: three equal rows fill the 178 DIP content column with
+    /// 16 DIP (20 design px) gaps — header, connected box, action row — and
+    /// every control is the design's size x 0.8.
+    #[test]
+    fn call_card_fills_three_rows_of_the_content_column() {
+        close(CALL_ROW_GAP, 16.0);
+        close(CALL_CONTENT_H, 178.0);
+        close(CALL_ROW_H, 48.67);
+        // The three rows and two gaps fill the column exactly: no dead band.
+        close(CALL_ROW_H * 3.0 + CALL_ROW_GAP * 2.0, CALL_CONTENT_H);
+        close(CALL_LEAD, 44.8);
+        close(CALL_OUTPUT_W, 105.6);
+        close(CALL_OUTPUT_H, 35.2);
+        close(CALL_INCOMING_H, 41.6);
+        close(CALL_BTN_W, 35.2);
+        close(CALL_BTN_H, 35.2);
+        close(CALL_BTN_GAP, 8.0);
+        close(CALL_ANSWER_GAP, 8.0);
+        close(SIGNAL_W, 14.4);
+        close(SIGNAL_H, 12.8);
+        // Nothing may overflow the row it lives in — compile-time facts.
+        const {
+            assert!(CALL_LEAD <= CALL_ROW_H, "avatar must fit the header row");
+            assert!(CALL_OUTPUT_H <= CALL_ROW_H, "Output must fit the box");
+            assert!(CALL_INCOMING_H <= CALL_ROW_H, "Decline/Answer must fit");
+        }
+        // Three action buttons with their gaps still fit the content width.
+        let content = card_content_rect(RectD::new(0.0, 0.0, FLY_W, FLY_H));
+        let each = (content.w - CALL_BTN_GAP * 2.0) / 3.0;
+        assert!(each >= 60.0, "action button too narrow: {each}");
+        let halves = (content.w - CALL_ANSWER_GAP) * 0.5;
+        assert!(halves >= 60.0, "Decline/Answer too narrow: {halves}");
+        // Design §5: hold is amber, and the sheet rides the card without
+        // growing the flyout (its fill is asserted by
+        // `output_sheet_fills_the_fixed_flyout`).
+        assert_eq!(CALL_HOLD, rgb(0xFF, 0xB5, 0x47));
+        assert_eq!(SHEET_BG, rgb(38, 38, 38));
+        assert_eq!(SHEET_MS, 240);
+        const { assert!(SHEET_ROW_H <= CALL_ROW_H) };
     }
 
     /// Clipboard card uses the same content column as the shelf.
     #[test]
     fn clipboard_card_matches_v07() {
-        assert_eq!(CLIP_INNER_W, 329.0);
+        close(CLIP_INNER_W, 346.6);
         assert_eq!(CLIP_INNER_H, 178.0);
         assert_eq!(CLIP_EMPTY_GLYPH, 40.0);
         assert_eq!(CLIP_POP_MS, 2000);
@@ -1103,7 +1189,7 @@ mod tests {
     }
 
     /// Hover preview overlay (spec 7): 450 ms delay, 206 × 150 popup with a
-    /// 192 × 118 image area, always inside the 329 × 178 content rect.
+    /// 192 × 118 image area, always inside the 346.6 × 178 content rect.
     #[test]
     fn clipboard_preview_overlay_matches_spec() {
         assert_eq!(CLIP_PREVIEW_MS, 450);
@@ -1118,7 +1204,7 @@ mod tests {
         // covers the toolbar gap and the list and nothing else.
         let x = (CLIP_INNER_W - CLIP_PREVIEW_W) * 0.5;
         let y = CLIP_INNER_H - CLIP_PREVIEW_H;
-        assert_eq!(x, 61.5);
+        close(x, 70.3);
         assert_eq!(y, CLIP_TOOLBAR_H);
         assert_eq!(CLIP_PREVIEW_H, CLIP_TOOLBAR_GAP + CLIP_LIST_H);
         assert!(x + CLIP_PREVIEW_W <= CLIP_INNER_W);
@@ -1135,11 +1221,11 @@ mod tests {
     }
 
     /// Shelf geometry on the shared content rect (design tokens): a 28 DIP
-    /// toolbar, 8 DIP gap and a 4-column scrolling grid of 74.25 x 66 tiles
+    /// toolbar, 8 DIP gap and a 4-column scrolling grid of 78.65 x 66 tiles
     /// with 6 DIP gaps, the viewport filling the rest (142 DIP = two rows).
     #[test]
     fn shelf_grid_matches_v06() {
-        assert_eq!(SHELF_INNER_W, 329.0);
+        close(SHELF_INNER_W, 346.6);
         assert_eq!(SHELF_INNER_H, 178.0);
         assert_eq!(SHELF_TOOLBAR_H, 28.0);
         assert_eq!(SHELF_TOOLBAR_GAP, 8.0);
@@ -1147,7 +1233,7 @@ mod tests {
         assert_eq!(SHELF_COLS, 4);
         assert_eq!(SHELF_TILE_H, 66.0);
         assert_eq!(SHELF_TILE_GAP, 6.0);
-        assert_eq!(SHELF_TILE_W, 74.25);
+        close(SHELF_TILE_W, 78.65);
         assert_eq!(SHELF_ROW_H, 72.0);
         assert_eq!(SHELF_SCROLL_W, 4.0);
         assert_eq!(SHELF_CONVERT_W, 36.0);
@@ -1167,11 +1253,11 @@ mod tests {
     }
 
     /// Convert stack on the shared content rect: 28 header + 8 + 28 tabs +
-    /// 8 + a 106 DIP grid that fills the column (178 exactly), five 59.4 DIP
+    /// 8 + a 106 DIP grid that fills the column (178 exactly), five 62.92 DIP
     /// tiles per row, 8 DIP gaps.
     #[test]
     fn convert_stack_matches_v06() {
-        assert_eq!(CONVERT_INNER_W, 329.0);
+        close(CONVERT_INNER_W, 346.6);
         assert_eq!(CONVERT_INNER_H, 178.0);
         assert_eq!(CONVERT_HEADER_H, 28.0);
         assert_eq!(CONVERT_TABS_H, 28.0);
@@ -1180,7 +1266,7 @@ mod tests {
         assert_eq!(CONVERT_STACK_H, 178.0);
         assert_eq!(CONVERT_OPTION_COLS, 5);
         assert_eq!(CONVERT_OPTION_GAP, 8.0);
-        assert_eq!(CONVERT_OPTION_W, 59.4);
+        close(CONVERT_OPTION_W, 62.92);
         // One row takes the whole grid; two rows split it (49 DIP each) —
         // both checked at compile time with the layout invariants above.
         assert_eq!(CONVERT_OPTIONS_H, 106.0);

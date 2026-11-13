@@ -36,6 +36,9 @@ pub const CALL_WAKE_AUDIO: usize = 1;
 /// `WM_APP_CALL` wparam: a UIA action finished; `lparam` is an
 /// [`ActionOutcome`] code.
 pub const CALL_WAKE_ACTION: usize = 2;
+/// `WM_APP_CALL` wparam: the Hold/Resume probe reported a new availability or
+/// held state into [`CallRuntime`] (v0.10 §2).
+pub const CALL_WAKE_HOLD: usize = 3;
 
 /// Result of one UIA action attempt, carried in `lparam` (spec §3 Actions).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +78,11 @@ pub struct CallRuntime {
     /// endpoint (proved from its own name), so the sheet can say what the
     /// route really is instead of only its brand name.
     pub handsfree: bool,
+    /// Phone Link really exposes a Hold/Resume button for the current call.
+    /// Probed through UIA — while false the card draws Hold disabled.
+    pub hold_available: bool,
+    /// Phone Link confirmed the call is paused (its button reads "Resume").
+    pub held: bool,
     /// Endpoint id Windows routes call audio through (the default
     /// communications render device). Empty while the query failed.
     pub comms_id: String,

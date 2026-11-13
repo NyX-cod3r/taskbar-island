@@ -189,6 +189,25 @@ struct CallButton<'a> {
     text: Color,
 }
 
+/// One icon-over-label action of the v0.10 call row (Hold / End call /
+/// Mute): glyph on top, label under it, `disabled` dims a control the
+/// provider never proved exists.
+struct CallStack<'a> {
+    element: Element,
+    rect: RectD,
+    icon: IconId,
+    label: &'a str,
+    fill: Color,
+    hover: Color,
+    text: Color,
+    disabled: bool,
+}
+
+/// Glyph size of an icon-over-label call button (design 20 px).
+const CALL_STACK_ICON: f32 = 16.0;
+/// Top padding above that glyph inside the button.
+const CALL_STACK_TOP: f32 = 6.0;
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct FormatKey {
     size_x100: i32,
@@ -707,12 +726,22 @@ impl Painter {
             return;
         };
         let s = size / 24.0;
+        // Optional glyph rotation (hang-up handset): scale, then rotate around
+        // the 24 x 24 viewBox centre, then place at (x, y). Row-vector maths:
+        // p' = ((p - c) * R + c) * (s * scale) + (x, y) * scale.
+        let k = s * scale;
+        let (sin, cos) = {
+            let r = icons::rotation(icon).to_radians();
+            (r.sin(), r.cos())
+        };
+        let (cx, cy) = (12.0 * k, 12.0 * k);
         let matrix = Matrix3x2 {
-            M11: s * scale,
-            M22: s * scale,
-            M31: x * scale,
-            M32: y * scale,
-            ..Matrix3x2::identity()
+            M11: k * cos,
+            M12: k * sin,
+            M21: -k * sin,
+            M22: k * cos,
+            M31: x * scale + cx - (cx * cos - cy * sin),
+            M32: y * scale + cy - (cx * sin + cy * cos),
         };
         // SAFETY: geometry, brush and matrix are valid for the call.
         unsafe {
@@ -1592,7 +1621,7 @@ impl Painter {
             } else {
                 Color::TRANSPARENT
             };
-            self.fill_round(rt, rect, design::R_SURFACE, fill.with_alpha(alpha));
+            self.fill_round(rt, rect, design::R_CONTROL, fill.with_alpha(alpha));
             self.icon_center(
                 rt,
                 rail_icon(kind),
@@ -1602,7 +1631,7 @@ impl Painter {
                 scale,
                 stroke_units,
             );
-            hits.add(element, rect, design::R_SURFACE);
+            hits.add(element, rect, design::R_CONTROL);
         }
 
         // Indicator slides between button centres in 160 ms. It is drawn last
@@ -1682,17 +1711,29 @@ impl Painter {
             }
             return;
         }
+        // v0.10 call: no standard header. The card owns the whole content
+        // column and lays out its own three rows (header, connected box,
+        // action row), so one shell covers every §7 phase.
+        if let Body::Call(call) = &view.body {
+            let alpha = top_alpha.min(body_alpha);
+            if alpha > 0.002 {
+                let mut area = content;
+                area.y += input.top_dy;
+                self.draw_call_card(rt, input, view, call, area, alpha, hits);
+            }
+            return;
+        }
         let (gap, body_h) = match &view.body {
             // §6: one shell height for the set view and the running view, so
             // starting the countdown never resizes the card.
             Body::Timer(_) => (design::CARD_GAP, design::TIMER_BODY_H),
-            Body::Call(_) => (
-                design::CARD_GAP,
-                // One height for every §7 call state: the shell never
-                // resizes when the phase changes.
-                design::CALL_STATUS_H + design::CARD_GAP + design::CALL_ROW_H,
-            ),
-            Body::Shelf(_) | Body::Music(_) | Body::Clipboard(_) | Body::Convert(_) => {
+            // `draw_card` returns into `draw_call_card` above, so the call
+            // shell never reaches this match; one arm keeps it exhaustive.
+            Body::Call(_)
+            | Body::Shelf(_)
+            | Body::Music(_)
+            | Body::Clipboard(_)
+            | Body::Convert(_) => {
                 unreachable!()
             }
         };
@@ -1713,8 +1754,11 @@ impl Painter {
         );
         match &view.body {
             Body::Timer(t) => self.draw_timer_card(rt, input, t, body, body_alpha, hits),
-            Body::Call(c) => self.draw_call_card(rt, input, c, body, body_alpha, hits),
-            Body::Shelf(_) | Body::Music(_) | Body::Clipboard(_) | Body::Convert(_) => {
+            Body::Shelf(_)
+            | Body::Music(_)
+            | Body::Clipboard(_)
+            | Body::Convert(_)
+            | Body::Call(_) => {
                 unreachable!()
             }
         }
@@ -3254,12 +3298,14 @@ impl Painter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_call_card(
         &mut self,
         rt: &ID2D1RenderTarget,
         input: &RenderInput<'_>,
+        view: &FlyoutView,
         c: &crate::view::CallBody,
-        body: RectD,
+        content: RectD,
         alpha: f32,
         hits: &mut HitMap,
     ) {
@@ -3272,8 +3318,8 @@ impl Painter {
         // condition is missing.
         if !c.live && !c.link.is_available() {
             let icon = RectD::new(
-                body.x + (body.w - design::EMPTY_ICON_DIP) * 0.5,
-                body.y + (body.h - design::EMPTY_ICON_DIP) * 0.5,
+                content.x + (content.w - design::EMPTY_ICON_DIP) * 0.5,
+                content.y + (content.h - design::EMPTY_ICON_DIP) * 0.5,
                 design::EMPTY_ICON_DIP,
                 design::EMPTY_ICON_DIP,
             );
@@ -3292,66 +3338,61 @@ impl Painter {
             return;
         }
 
-        // Status row: signal bars (a live call only — an idle card has no
-        // signal to report) then one line of status.
-        let status = RectD::new(body.x, body.y, body.w, design::CALL_STATUS_H);
-        let mut text_x = status.x;
-        if c.live {
-            let bars_y = status.center_y() - design::SIGNAL_H * 0.5;
-            for (i, h) in [6.0, 9.5, 13.0, 16.0].iter().enumerate() {
-                let a = if i == 3 { 0.35 } else { 1.0 };
-                self.fill_round(
-                    rt,
-                    RectD::new(
-                        status.x + i as f32 * 5.0,
-                        bars_y + design::SIGNAL_H - h,
-                        3.0,
-                        *h,
-                    ),
-                    1.0,
-                    accent.with_alpha(a * alpha),
-                );
-            }
-            text_x = status.x + design::SIGNAL_W + 10.0;
-        }
-        // One line per §7 call state; an honest action note stands in while
-        // it is fresh.
-        let text = c.status_text();
-        self.text(
-            rt,
-            &text,
-            RectD::new(
-                text_x,
-                status.y,
-                (status.right() - text_x).max(0.0),
-                status.h,
-            ),
-            design::FONT_CALL_TITLE,
-            600,
-            0,
-            design::LINE_CALL_TITLE,
-            theme.call_status_text().with_alpha(alpha),
-            true,
-        );
-
-        // Controls row (spec §7). One constant height for every phase, so
-        // the card shell never changes size when the call state does.
-        let row = RectD::new(
-            body.x,
-            body.y + design::CALL_STATUS_H + design::CARD_GAP,
-            body.w,
+        // v0.10 §2: three equal rows fill the content column — header,
+        // connected box, action row — with 20 design px (16 DIP) between
+        // them, so every §7 phase keeps one fixed shell.
+        let stride = design::CALL_ROW_H + design::CALL_ROW_GAP;
+        let row1 = RectD::new(content.x, content.y, content.w, design::CALL_ROW_H);
+        let row2 = RectD::new(content.x, content.y + stride, content.w, design::CALL_ROW_H);
+        let row3 = RectD::new(
+            content.x,
+            content.y + stride * 2.0,
+            content.w,
             design::CALL_ROW_H,
         );
+
+        self.draw_call_header(rt, input, view, c, row1, alpha);
+
         match c.phase {
-            // Incoming: Decline (red) and Answer (green), each half the row.
+            // Dialing and Active share the connected box; the Output button
+            // lives inside it (design §5).
+            CallPhase::Dialing | CallPhase::Active => {
+                self.draw_call_box(rt, input, c, row2, accent, alpha, hits);
+            }
+            // The idle/ended card words its state as one line ("No active
+            // call"); a fresh action note stands in while it is honest to
+            // show one.
+            CallPhase::None | CallPhase::Ended => {
+                let text = c.status_text();
+                self.text(
+                    rt,
+                    &text,
+                    row2,
+                    design::FONT_CALL_TITLE,
+                    600,
+                    0,
+                    design::LINE_CALL_TITLE,
+                    theme.call_status_text().with_alpha(alpha),
+                    true,
+                );
+            }
+            // Incoming: the design leaves this band empty between the header
+            // and the Decline / Answer pair.
+            CallPhase::Incoming => {}
+        }
+
+        match c.phase {
+            // Incoming: Decline (red) and Answer (green), each half the row
+            // at the design's 52 px height, centred in the action row.
             CallPhase::Incoming => {
-                let w = (row.w - design::CALL_ANSWER_GAP) * 0.5;
+                let w = (row3.w - design::CALL_ANSWER_GAP) * 0.5;
+                let y = row3.y + (row3.h - design::CALL_INCOMING_H) * 0.5;
                 self.call_text_button(
                     rt,
                     input,
                     CallButton {
                         element: Element::CallDecline,
-                        rect: RectD::new(row.x, row.y, w, row.h),
+                        rect: RectD::new(row3.x, y, w, design::CALL_INCOMING_H),
                         label: "Decline",
                         fill: design::CALL_RED,
                         hover: darken(design::CALL_RED, 0.92),
@@ -3365,7 +3406,12 @@ impl Painter {
                     input,
                     CallButton {
                         element: Element::CallAnswer,
-                        rect: RectD::new(row.x + w + design::CALL_ANSWER_GAP, row.y, w, row.h),
+                        rect: RectD::new(
+                            row3.x + w + design::CALL_ANSWER_GAP,
+                            y,
+                            w,
+                            design::CALL_INCOMING_H,
+                        ),
                         label: "Answer",
                         fill: design::CALL_GREEN,
                         hover: darken(design::CALL_GREEN, 0.92),
@@ -3375,58 +3421,147 @@ impl Painter {
                     hits,
                 );
             }
-            // Dialing / Active: mute mic, mute speaker, the output chip, then
-            // End (red, flex). The status line above already says "Calling…".
+            // Dialing / Active: Hold | End call | Mute — three equal
+            // icon-over-label buttons filling the row (design §5). Hold
+            // turns amber only after Phone Link confirmed the hold, and its
+            // label always reads what the next press does.
             CallPhase::Dialing | CallPhase::Active => {
-                let x = self.call_mutes(rt, input, c, row, alpha, hits);
-                // v0.9 §4: the chip sits between the mutes and End and names
-                // the endpoint the call is on (empty when the query failed,
-                // so it never claims a device it could not read).
-                let chip = RectD::new(
-                    x,
-                    row.y + (row.h - design::CALL_CHIP_H) * 0.5,
-                    design::CALL_CHIP_W,
-                    design::CALL_CHIP_H,
-                );
-                let chip_label = if c.device.trim().is_empty() {
-                    String::new()
-                } else {
-                    crate::view::split_endpoint(&c.device, false).0
-                };
-                self.output_chip(
+                let each = (row3.w - design::CALL_BTN_GAP * 2.0) / 3.0;
+                let step = each + design::CALL_BTN_GAP;
+                let held = c.held;
+                self.call_stack_button(
                     rt,
                     input,
-                    Element::CallOutput,
-                    chip,
-                    IconId::Headphones,
-                    &chip_label,
+                    CallStack {
+                        element: Element::CallHold,
+                        rect: RectD::new(row3.x, row3.y, each, row3.h),
+                        icon: if held { IconId::Play } else { IconId::Pause },
+                        label: c.hold_label(),
+                        fill: if held {
+                            design::CALL_HOLD
+                        } else {
+                            theme.card_button()
+                        },
+                        hover: if held {
+                            darken(design::CALL_HOLD, 0.92)
+                        } else {
+                            theme.card_button_hover()
+                        },
+                        text: if held {
+                            design::DARK_GLYPH
+                        } else {
+                            theme.card_button_text()
+                        },
+                        // Never claim Hold works: only a probe that found
+                        // Phone Link's own button enables it.
+                        disabled: !c.hold_available,
+                    },
                     alpha,
                     hits,
                 );
-                let x = chip.right() + design::CALL_BTN_GAP;
-                self.call_text_button(
+                self.call_stack_button(
                     rt,
                     input,
-                    CallButton {
+                    CallStack {
                         element: Element::CallEnd,
-                        rect: RectD::new(
-                            x,
-                            row.y + (row.h - design::CALL_BTN_H) * 0.5,
-                            (row.right() - x).max(0.0),
-                            design::CALL_BTN_H,
-                        ),
-                        label: "End",
+                        rect: RectD::new(row3.x + step, row3.y, each, row3.h),
+                        icon: IconId::PhoneEnd,
+                        label: "End call",
                         fill: design::CALL_RED,
                         hover: darken(design::CALL_RED, 0.92),
                         text: design::white(1.0),
+                        disabled: false,
+                    },
+                    alpha,
+                    hits,
+                );
+                let muted = c.mic_muted;
+                self.call_stack_button(
+                    rt,
+                    input,
+                    CallStack {
+                        element: Element::CallMic,
+                        rect: RectD::new(row3.x + step * 2.0, row3.y, each, row3.h),
+                        icon: if muted { IconId::MicMuted } else { IconId::Mic },
+                        label: if muted { "Unmute" } else { "Mute" },
+                        fill: if muted {
+                            theme.text_primary()
+                        } else {
+                            theme.card_button()
+                        },
+                        hover: if muted {
+                            theme.text_primary()
+                        } else {
+                            theme.card_button_hover()
+                        },
+                        text: if muted {
+                            design::DARK_GLYPH
+                        } else {
+                            theme.card_button_text()
+                        },
+                        disabled: false,
                     },
                     alpha,
                     hits,
                 );
             }
-            // None / Ended: the same mutes plus the real launch button.
+            // None / Ended: mute mic, mute speaker, then the real launch
+            // button at the design's 44 px height (35.2 DIP).
             CallPhase::None | CallPhase::Ended => {
-                let x = self.call_mutes(rt, input, c, row, alpha, hits);
+                let y = row3.y + (row3.h - design::CALL_BTN_H) * 0.5;
+                let mut x = row3.x;
+                for (element, icon, active) in [
+                    (
+                        Element::CallMic,
+                        if c.mic_muted {
+                            IconId::MicMuted
+                        } else {
+                            IconId::Mic
+                        },
+                        c.mic_muted,
+                    ),
+                    (
+                        Element::CallSpeaker,
+                        if c.output_muted {
+                            IconId::SpeakerMuted
+                        } else {
+                            IconId::Speaker
+                        },
+                        c.output_muted,
+                    ),
+                ] {
+                    let r = RectD::new(x, y, design::CALL_BTN_W, design::CALL_BTN_H);
+                    let pressed = input.pressed_amount(element);
+                    let draw = pressed_rect(r, pressed);
+                    let fill = if active {
+                        theme.text_primary()
+                    } else if pressed.is_some() {
+                        theme.card_button_press()
+                    } else if input.hovered(element) {
+                        theme.card_button_hover()
+                    } else {
+                        theme.card_button()
+                    };
+                    self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
+                    let glyph = if active {
+                        design::DARK_GLYPH
+                    } else {
+                        theme.card_button_text()
+                    };
+                    self.icon_center(
+                        rt,
+                        icon,
+                        draw,
+                        18.0,
+                        glyph.with_alpha(alpha),
+                        input.scale,
+                        0.0,
+                    );
+                    if alpha > 0.15 {
+                        hits.add(element, r, design::R_CONTROL);
+                    }
+                    x += design::CALL_BTN_W + design::CALL_BTN_GAP;
+                }
                 // §7: green 16 % fill with green text, hover lifts the tint.
                 // High contrast keeps the opaque theme fill so the button
                 // still reads as a button against any background.
@@ -3446,12 +3581,7 @@ impl Painter {
                     input,
                     CallButton {
                         element: Element::CallOpen,
-                        rect: RectD::new(
-                            x,
-                            row.y + (row.h - design::CALL_BTN_H) * 0.5,
-                            (row.right() - x).max(0.0),
-                            design::CALL_BTN_H,
-                        ),
+                        rect: RectD::new(x, y, (row3.right() - x).max(0.0), design::CALL_BTN_H),
                         label: &label,
                         fill,
                         hover,
@@ -3464,74 +3594,315 @@ impl Painter {
         }
     }
 
-    /// Mute mic + mute speaker of the call controls row, vertically centred
-    /// in the constant-height row; returns the x after them, where the flex
-    /// button (End / Open) starts.
-    fn call_mutes(
+    /// Row 1 of the card: the activity tile, the caller's name over its sub
+    /// line, and the state word the design right-aligns (`Ringing`,
+    /// `No call`). An action note rides the sub-line on a live card.
+    fn draw_call_header(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        view: &FlyoutView,
+        c: &crate::view::CallBody,
+        row: RectD,
+        alpha: f32,
+    ) {
+        let theme = input.theme;
+        let tile = RectD::new(
+            row.x,
+            row.y + (row.h - design::CALL_LEAD) * 0.5,
+            design::CALL_LEAD,
+            design::CALL_LEAD,
+        );
+        self.draw_leading(rt, input, &view.leading, tile, alpha);
+
+        let mut right = row.right();
+        let text_x = tile.right() + design::HEADER_GAP;
+        if let Some(status) = c.header_status() {
+            let width = self
+                .measure(
+                    rt,
+                    status,
+                    design::FONT_FLY_SUBTITLE,
+                    500,
+                    design::LINE_CARD_STATUS,
+                )
+                .min((right - text_x - 8.0).max(0.0));
+            self.text(
+                rt,
+                status,
+                RectD::new(right - width, row.y, width, row.h),
+                design::FONT_FLY_SUBTITLE,
+                500,
+                2,
+                design::LINE_CARD_STATUS,
+                theme
+                    .card_status(design::rail_accent(view.kind), true)
+                    .with_alpha(alpha),
+                true,
+            );
+            right -= width + 8.0;
+        }
+        // Title over sub-line, the pair centred in the row (design:
+        // `Priya` / `Phone Link · 02:14`).
+        let title_line = design::LINE_FLY_TITLE;
+        let sub_line = design::LINE_CARD_STATUS;
+        let top = row.y + (row.h - (title_line + sub_line)) * 0.5;
+        let width = (right - text_x).max(0.0);
+        self.text(
+            rt,
+            &c.header_title(),
+            RectD::new(text_x, top, width, title_line),
+            design::FONT_FLY_TITLE,
+            600,
+            0,
+            title_line,
+            theme.text_primary().with_alpha(alpha),
+            true,
+        );
+        self.text(
+            rt,
+            &c.header_sub(),
+            RectD::new(text_x, top + title_line, width, sub_line),
+            design::FONT_FLY_SUBTITLE,
+            400,
+            0,
+            sub_line,
+            theme.text_secondary().with_alpha(alpha),
+            true,
+        );
+    }
+
+    /// Row 2 of a live card: the connected box — signal glyph, the endpoint
+    /// Windows routes call audio to, what that endpoint really is, and the
+    /// Output button inside it (design §5).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_call_box(
         &mut self,
         rt: &ID2D1RenderTarget,
         input: &RenderInput<'_>,
         c: &crate::view::CallBody,
         row: RectD,
+        accent: Color,
         alpha: f32,
         hits: &mut HitMap,
-    ) -> f32 {
+    ) {
         let theme = input.theme;
-        let y = row.y + (row.h - design::CALL_BTN_H) * 0.5;
-        let mut x = row.x;
-        for (element, icon, active) in [
-            (
-                Element::CallMic,
-                if c.mic_muted {
-                    IconId::MicMuted
-                } else {
-                    IconId::Mic
-                },
-                c.mic_muted,
-            ),
-            (
-                Element::CallSpeaker,
-                if c.output_muted {
-                    IconId::SpeakerMuted
-                } else {
-                    IconId::Speaker
-                },
-                c.output_muted,
-            ),
-        ] {
-            let r = RectD::new(x, y, design::CALL_BTN_W, design::CALL_BTN_H);
-            let pressed = input.pressed_amount(element);
-            let draw = pressed_rect(r, pressed);
-            let fill = if active {
-                theme.text_primary()
-            } else if pressed.is_some() {
-                theme.card_button_press()
-            } else if input.hovered(element) {
-                theme.card_button_hover()
-            } else {
-                theme.card_button()
-            };
-            self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
-            let glyph = if active {
-                design::DARK_GLYPH
-            } else {
-                theme.card_button_text()
-            };
-            self.icon_center(
+        self.fill_round(
+            rt,
+            row,
+            design::R_CONTROL,
+            theme.card_button().with_alpha(alpha),
+        );
+
+        // Signal glyph (design 18 x 16 -> 14.4 x 12.8): four bars, the last
+        // one still ahead of us while dialing.
+        let bars_x = row.x + 10.0;
+        let bars_bottom = row.center_y() + design::SIGNAL_H * 0.5;
+        for (i, h) in [4.8_f32, 7.6, 10.4, 12.8].iter().enumerate() {
+            let a = if i == 3 { 0.35 } else { 1.0 };
+            self.fill_round(
                 rt,
-                icon,
-                draw,
-                18.0,
-                glyph.with_alpha(alpha),
-                input.scale,
-                0.0,
+                RectD::new(bars_x + i as f32 * 4.0, bars_bottom - h, 2.4, *h),
+                1.0,
+                accent.with_alpha(a * alpha),
             );
-            if alpha > 0.15 {
-                hits.add(element, r, design::R_SURFACE);
-            }
-            x += design::CALL_BTN_W + design::CALL_BTN_GAP;
         }
-        x
+
+        // Output chip: opens the audio sheet over the same flyout (the card
+        // never resizes). The device name on its left is box line 1, so the
+        // chip never repeats it.
+        let chip = RectD::new(
+            row.right() - 10.0 - design::CALL_OUTPUT_W,
+            row.y + (row.h - design::CALL_OUTPUT_H) * 0.5,
+            design::CALL_OUTPUT_W,
+            design::CALL_OUTPUT_H,
+        );
+        self.draw_call_output(rt, input, chip, alpha, hits);
+
+        let text_x = bars_x + design::SIGNAL_W + 10.0;
+        let width = (chip.x - 8.0 - text_x).max(0.0);
+        let device = c.device.trim();
+        // An endpoint query can fail without proving there is none; name the
+        // route instead of inventing a device.
+        let line1 = if device.is_empty() {
+            "Call audio"
+        } else {
+            device
+        };
+        let top = row.y + (row.h - (design::LINE_CALL_DEVICE + design::LINE_CALL_META)) * 0.5;
+        self.text(
+            rt,
+            line1,
+            RectD::new(text_x, top, width, design::LINE_CALL_DEVICE),
+            design::FONT_CALL_DEVICE,
+            600,
+            0,
+            design::LINE_CALL_DEVICE,
+            theme.text_primary().with_alpha(alpha),
+            true,
+        );
+        self.text(
+            rt,
+            &c.device_line2,
+            RectD::new(
+                text_x,
+                top + design::LINE_CALL_DEVICE,
+                width,
+                design::LINE_CALL_META,
+            ),
+            design::FONT_CALL_META,
+            400,
+            0,
+            design::LINE_CALL_META,
+            theme.text_secondary().with_alpha(alpha),
+            true,
+        );
+    }
+
+    /// The Output chip inside the connected box: headphone glyph, `Output`,
+    /// chevron — green-tinted fill with green ink, as the design draws it.
+    fn draw_call_output(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        rect: RectD,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
+        let theme = input.theme;
+        let accent = design::CALL_GREEN;
+        let element = Element::CallOutput;
+        let pressed = input.pressed_amount(element);
+        let draw = pressed_rect(rect, pressed);
+        let tint = if pressed.is_some() {
+            0.30
+        } else if input.hovered(element) {
+            0.24
+        } else {
+            0.16
+        };
+        let fill = if theme.high_contrast {
+            theme.open_call_fill()
+        } else {
+            accent.with_alpha(tint)
+        };
+        self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
+        let ink = theme.open_call_text(accent);
+        let glyph = 14.4;
+        let icon_r = RectD::new(draw.x + 8.0, draw.center_y() - glyph * 0.5, glyph, glyph);
+        self.icon_center(
+            rt,
+            IconId::Headphones,
+            icon_r,
+            glyph,
+            ink.with_alpha(alpha),
+            input.scale,
+            0.0,
+        );
+        let chev = 10.0;
+        let chev_r = RectD::new(
+            draw.right() - 8.0 - chev,
+            draw.center_y() - chev * 0.5,
+            chev,
+            chev,
+        );
+        self.icon_center(
+            rt,
+            IconId::ChevronUp,
+            chev_r,
+            chev,
+            ink.with_alpha(alpha),
+            input.scale,
+            0.0,
+        );
+        let text_x = icon_r.right() + 6.0;
+        self.text(
+            rt,
+            "Output",
+            RectD::new(text_x, draw.y, (chev_r.x - 6.0 - text_x).max(0.0), draw.h),
+            design::FONT_OPEN_CALL,
+            600,
+            0,
+            design::LINE_CALL_TITLE,
+            ink.with_alpha(alpha),
+            true,
+        );
+        if alpha > 0.15 {
+            hits.add(element, rect, design::R_CONTROL);
+        }
+    }
+
+    /// One icon-over-label action of the live call row (design §5: glyph
+    /// above the label, 56 px tall). A control Phone Link never proved stays
+    /// dimmed and inert; its hit still exists so the tooltip can say why.
+    fn call_stack_button(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        button: CallStack<'_>,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
+        let CallStack {
+            element,
+            rect,
+            icon,
+            label,
+            fill,
+            hover,
+            text,
+            disabled,
+        } = button;
+        let pressed = if disabled {
+            None
+        } else {
+            input.pressed_amount(element)
+        };
+        let draw = pressed_rect(rect, pressed);
+        let base = if pressed.is_some() {
+            darken(fill, 0.88)
+        } else if !disabled && input.hovered(element) {
+            hover
+        } else {
+            fill
+        };
+        let ink_alpha = if disabled { alpha * 0.4 } else { alpha };
+        self.fill_round(rt, draw, design::R_CONTROL, base.with_alpha(ink_alpha));
+        let glyph = RectD::new(
+            draw.x + (draw.w - CALL_STACK_ICON) * 0.5,
+            draw.y + CALL_STACK_TOP,
+            CALL_STACK_ICON,
+            CALL_STACK_ICON,
+        );
+        self.icon_center(
+            rt,
+            icon,
+            glyph,
+            CALL_STACK_ICON,
+            text.with_alpha(ink_alpha),
+            input.scale,
+            0.0,
+        );
+        let label_r = RectD::new(
+            draw.x + 2.0,
+            glyph.bottom() + 1.0,
+            (draw.w - 4.0).max(0.0),
+            (draw.bottom() - glyph.bottom() - 4.0).max(0.0),
+        );
+        self.text(
+            rt,
+            label,
+            label_r,
+            design::FONT_OPEN_CALL,
+            600,
+            1,
+            design::LINE_CALL_TITLE,
+            text.with_alpha(ink_alpha),
+            true,
+        );
+        if alpha > 0.15 {
+            hits.add(element, rect, design::R_CONTROL);
+        }
     }
 
     /// A filled text button of the call controls row (Decline / Answer /
@@ -5448,7 +5819,8 @@ fn snap_rect(r: RectD, scale: f32) -> RectD {
     )
 }
 
-/// Rail buttons are a fixed 40 x 40 stack, centred vertically in the card.
+/// Rail buttons are a fixed 28.8 x 28.8 stack (36 x 36 design px at 125 %),
+/// starting 8 DIP below the card's top edge.
 fn rail_button_rect(fly: RectD, index: usize) -> RectD {
     RectD::new(
         fly.x + (design::RAIL_W - design::RAIL_BTN) * 0.5,

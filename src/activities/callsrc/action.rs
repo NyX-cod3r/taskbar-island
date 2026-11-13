@@ -16,7 +16,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use super::phonelink::{self, PHONE_PROCESSES};
 use super::toast::looks_like_toast;
 use super::uiakit::{self, InvokeError};
-use crate::activities::call::{ActionOutcome, CALL_WAKE_ACTION, WM_APP_CALL};
+use crate::activities::call::{ActionOutcome, CALL_WAKE_ACTION, CALL_WAKE_HOLD, WM_APP_CALL};
 
 /// One button press the user asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +24,10 @@ pub enum CallAction {
     Answer,
     Decline,
     End,
+    /// Phone Link's Hold button (live call only).
+    Hold,
+    /// Phone Link's Resume button - what Hold reads while the call is held.
+    Resume,
     /// Hand the call back to the phone (Phone Link's own transfer control,
     /// v0.9 §4's "Phone" row in the call audio sheet).
     Transfer,
@@ -36,6 +40,8 @@ impl CallAction {
             Self::Answer => &["Answer", "Accept"],
             Self::Decline => &["Decline", "Ignore", "Reject"],
             Self::End => phonelink::END_BUTTONS,
+            Self::Hold => &["Hold"],
+            Self::Resume => &["Resume"],
             // Phone Link words this control differently between builds, so
             // every label seen in the wild is tried before giving up.
             Self::Transfer => &["Phone", "Transfer to phone", "Transfer call"],
@@ -47,6 +53,8 @@ impl CallAction {
             Self::Answer => "answer",
             Self::Decline => "decline",
             Self::End => "end",
+            Self::Hold => "hold",
+            Self::Resume => "resume",
             Self::Transfer => "transfer",
         }
     }
@@ -174,9 +182,11 @@ fn accepts(hwnd: isize, action: CallAction) -> bool {
             };
             looks_like_toast(&class, rect.0, rect.1)
         }
-        // End and Transfer both live in the Phone Link window (a minimized
-        // one still counts).
-        CallAction::End | CallAction::Transfer => is_phone_window(hwnd),
+        // End/Hold/Resume/Transfer all live in the Phone Link window (a
+        // minimized one still counts).
+        CallAction::End | CallAction::Hold | CallAction::Resume | CallAction::Transfer => {
+            is_phone_window(hwnd)
+        }
     }
 }
 
@@ -196,4 +206,69 @@ fn is_phone_window(hwnd: isize) -> bool {
             .iter()
             .any(|known| name.eq_ignore_ascii_case(known))
     })
+}
+
+/// Probe Phone Link's own Hold/Resume button and report it with
+/// `WM_APP_CALL` / [`CALL_WAKE_HOLD`]: `lparam` bit 0 = Hold exists for this
+/// call, bit 1 = it currently reads "Resume" (the call is on hold). The card
+/// only ever claims what the walk actually found; the matched button name is
+/// logged so a `--dump-uia` capture can cross-check it. Never the UI thread.
+pub fn probe_hold_async(island: isize) {
+    let spawned = std::thread::Builder::new()
+        .name("taskbar-island-call-hold-probe".into())
+        .spawn(move || {
+            let (available, held, matched) = probe_hold();
+            crate::log::log(&format!(
+                "call.hold probe: {}",
+                matched.as_deref().unwrap_or("no Hold/Resume button")
+            ));
+            // SAFETY: posting to our own island window.
+            unsafe {
+                let _ = PostMessageW(
+                    Some(HWND(island as *mut _)),
+                    WM_APP_CALL,
+                    WPARAM(CALL_WAKE_HOLD),
+                    LPARAM(i32::from(available) as isize | (i32::from(held) as isize) << 1),
+                );
+            }
+        });
+    if let Err(error) = spawned {
+        crate::log::log(&format!("call.hold probe spawn failed: {error}"));
+    }
+}
+
+/// One bounded walk over the Phone Link windows: a button named `Resume`
+/// proves both availability and the held state, one named `Hold` proves
+/// availability only, and neither proves nothing (the card keeps Hold
+/// disabled). `(available, held, matched-name)`.
+fn probe_hold() -> (bool, bool, Option<String>) {
+    let windows = candidate_windows(CallAction::Hold);
+    if windows.is_empty() {
+        return (false, false, None);
+    }
+    uiakit::with_timeout(
+        "call.hold-probe",
+        move || {
+            uiakit::init_mta();
+            let Ok(automation) = uiakit::automation() else {
+                return (false, false, None);
+            };
+            for hwnd in windows {
+                let Some(root) = uiakit::root_from_hwnd(hwnd) else {
+                    continue;
+                };
+                let names = uiakit::typed_names(&automation, &root);
+                // Resume first: a window that shows both means the call is
+                // held right now, and "Resume" is the stronger fact.
+                if names.iter().any(|(_, name)| name == "Resume") {
+                    return (true, true, Some("Resume".to_string()));
+                }
+                if names.iter().any(|(_, name)| name == "Hold") {
+                    return (true, false, Some("Hold".to_string()));
+                }
+            }
+            (false, false, None)
+        },
+        (false, false, None),
+    )
 }

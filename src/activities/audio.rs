@@ -7,7 +7,7 @@
 
 use std::sync::Mutex;
 
-use windows::core::{Error, GUID, PWSTR};
+use windows::core::{Error, GUID};
 use windows::Win32::Foundation::{PROPERTYKEY, RPC_E_CHANGED_MODE};
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
 use windows::Win32::Media::Audio::{
@@ -242,6 +242,3 @@ pub fn init_mta() -> windows::core::Result<()> {
         Err(Error::from_hresult(hr))
     }
 }
-
-#[allow(dead_code)]
-fn _pwstr_marker(_: PWSTR) {}

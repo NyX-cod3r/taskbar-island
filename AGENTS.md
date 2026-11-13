@@ -1,4 +1,9 @@
 # TaskbarIsland: agent rules
+- **Files stay inside `D:\dynamic`.** Never create, write or copy files anywhere else — no
+  scratch dirs in `%TEMP%`, no user-profile folders, no drives outside `D:\dynamic`. Temporary
+  scripts, logs and captures belong under the repo (`D:\dynamic\taskbar-island`, e.g. `target\`
+  or `tools\`); the only exception is Windows itself writing its own runtime data (registry,
+  `%APPDATA%\TaskbarIsland\settings.json` created by the app at runtime).
 - Rust + windows-rs, Win32 + DirectComposition + Direct2D. No webview/Electron/WinUI.
 - Event-driven only. No busy loops or polling under 1s except while animating.
 - Idle target: ~0% CPU, <15 MB RAM. Report measurements in every PR.
