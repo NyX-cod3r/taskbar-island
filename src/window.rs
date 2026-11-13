@@ -55,6 +55,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::activities::call::{self, AudioCommand, CallRuntime};
+use crate::activities::call_state::CallPhase;
+use crate::activities::callsrc::{self, action::CallAction, CallMachine, Signal};
 use crate::activities::media::{self, MediaCommand, MediaSnapshot, WM_APP_MEDIA};
 use crate::activities::shelf::{
     self, DragOutcome, ShelfStore, SHELF_DRAG_AT, SHELF_DROP, SHELF_DROP_CTRL, SHELF_HOVER_CONVERT,
@@ -122,6 +124,11 @@ const CLIP_POP_TIMER_ID: usize = 14;
 const CLIP_CONFIRM_TIMER_ID: usize = 15;
 /// One-shot 450 ms delay before a history row shows its hover preview (spec 7).
 const CLIP_PREVIEW_TIMER_ID: usize = 16;
+/// One-shot `Ended + 3 s` clear of the call card (spec §3 state machine).
+const CALL_CLEAR_TIMER_ID: usize = 17;
+/// How long an action's inline message stays on the card before the status
+/// line takes over again (no timer: the 1 Hz call tick re-renders it).
+const ACTION_NOTE_TTL: Duration = Duration::from_secs(6);
 /// `WM_MOUSELEAVE` ships under `UI::Controls` in windows-rs 0.62; the value is
 /// stable Win32.
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -456,6 +463,24 @@ struct Surface {
     media_command_at: Option<Instant>,
     call_runtime: Arc<Mutex<CallRuntime>>,
     audio_tx: Sender<AudioCommand>,
+    /// Signals posted by the call sources (spec §3); drained on the UI thread
+    /// by [`Surface::apply_call`].
+    call_rx: Receiver<Signal>,
+    /// The single state machine every source feeds.
+    call_machine: CallMachine,
+    /// `ended_at` the one-shot clear timer is armed for; `None` when no timer
+    /// is running.
+    call_clear_armed: Option<Instant>,
+    /// Honest inline message from the last action attempt ("Open Phone Link
+    /// to do this") with the moment it arrived; cleared as soon as the call
+    /// state changes.
+    call_note: Option<(String, Instant)>,
+    /// Signals injected by `--simulate-call`, drained with `call_rx`.
+    call_injected: Vec<Signal>,
+    /// Action the UIA worker is currently attempting, so its outcome can be
+    /// interpreted (an Answer that landed connects the call, a Decline does
+    /// not).
+    call_action_pending: Option<CallAction>,
     shelf_store: ShelfStore,
     shelf_slot: Arc<Mutex<Vec<String>>>,
     _shelf_target: IDropTarget,
@@ -637,15 +662,17 @@ pub fn create(
     let (media_snapshot_tx, media_rx) = mpsc::channel();
     media::subscribe(media_snapshot_tx, media_command_rx, media_tx.clone(), hwnd)?;
     let call_runtime = call::runtime();
-    call::subscribe(
-        hwnd,
-        settings.call_app_allowlist.clone(),
-        call_runtime.clone(),
-    )?;
+    // Spec §3: the consent-store watcher is gone; four sources feed one state
+    // machine. They own their own threads and post signals back here.
+    let (call_signal_tx, call_rx) = mpsc::channel();
+    callsrc::spawn_sources(
+        hwnd.0 as isize,
+        callsrc::DUMP_UIA.load(Ordering::Relaxed),
+        None,
+        settings.call_use_wpn_db,
+        call_signal_tx,
+    );
     let audio_tx = call::subscribe_audio(hwnd, call_runtime.clone())?;
-    // Debug builds only: opt-in call events for the QA soak and screenshots.
-    #[cfg(debug_assertions)]
-    call::subscribe_simulated(hwnd, call_runtime.clone());
     // SAFETY: the UI thread owns the island window and remains initialized
     // until the window is destroyed.
     if unsafe { OleInitialize(None).is_err() } {
@@ -676,6 +703,7 @@ pub fn create(
             media_tx,
             call_runtime,
             audio_tx,
+            call_rx,
             shelf_slot,
             shelf_target,
             convert_accepts,
@@ -686,6 +714,16 @@ pub fn create(
     with_surface(|surface| {
         if !surface.shelf_store.is_empty() {
             surface.apply_shelf();
+        }
+        // `--simulate-call` landed before this island existed (spec §3):
+        // fold it in now that there is a machine to receive it.
+        let pending = callsrc::PENDING_SIMULATE.swap(callsrc::NO_SIMULATION, Ordering::Relaxed);
+        if pending != callsrc::NO_SIMULATION {
+            if let Some(kind) = callsrc::SimKind::from_code(pending) {
+                crate::log::log(&format!("call.simulate (pending): {kind:?}"));
+                surface.call_injected.push(kind.signal());
+                surface.apply_call();
+            }
         }
         surface.draw()
     })
@@ -1280,8 +1318,21 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                     let _ = surface.audio_tx.send(AudioCommand::ToggleOutput);
                                     None
                                 }
-                                // Real launches only: the detected call app
-                                // while one is live, Phone Link otherwise.
+                                // Spec §3: real UIA presses on the provider's
+                                // own buttons, or the honest fallback message.
+                                Element::CallAnswer => {
+                                    surface.start_call_action(CallAction::Answer);
+                                    None
+                                }
+                                Element::CallDecline => {
+                                    surface.start_call_action(CallAction::Decline);
+                                    None
+                                }
+                                Element::CallEnd => {
+                                    surface.start_call_action(CallAction::End);
+                                    None
+                                }
+                                // Real launches only: Phone Link itself.
                                 Element::CallOpen | Element::CallIdle => {
                                     surface.open_call_app();
                                     None
@@ -1459,11 +1510,27 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             });
             LRESULT(0)
         }
-        call::WM_APP_CALL | call::WM_APP_CALL_AUDIO => {
+        call::WM_APP_CALL => {
             with_surface(|surface| {
+                if wparam.0 == call::CALL_WAKE_ACTION {
+                    surface.note_action(call::ActionOutcome::from_code(lparam.0));
+                }
                 surface.apply_call();
                 unsafe {
                     let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
+                }
+            });
+            LRESULT(0)
+        }
+        callsrc::WM_APP_SIMULATE => {
+            with_surface(|surface| {
+                if let Some(kind) = callsrc::SimKind::from_code(wparam.0) {
+                    crate::log::log(&format!("call.simulate: {:?}", kind));
+                    surface.call_injected.push(kind.signal());
+                    surface.apply_call();
+                    unsafe {
+                        let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
+                    }
                 }
             });
             LRESULT(0)
@@ -1826,6 +1893,15 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             });
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == CALL_CLEAR_TIMER_ID => {
+            with_surface(|surface| {
+                surface.clear_ended_call();
+                unsafe {
+                    let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
+                }
+            });
+            LRESULT(0)
+        }
         WM_TIMER => {
             with_surface(|surface| {
                 let mut changed = false;
@@ -1938,6 +2014,7 @@ impl Surface {
         media_tx: Sender<MediaCommand>,
         call_runtime: Arc<Mutex<CallRuntime>>,
         audio_tx: Sender<AudioCommand>,
+        call_rx: Receiver<Signal>,
         shelf_slot: Arc<Mutex<Vec<String>>>,
         shelf_target: IDropTarget,
         convert_accepts: Arc<AtomicBool>,
@@ -2024,6 +2101,12 @@ impl Surface {
             media_command_at: None,
             call_runtime,
             audio_tx,
+            call_rx,
+            call_machine: CallMachine::new(),
+            call_clear_armed: None,
+            call_note: None,
+            call_injected: Vec::new(),
+            call_action_pending: None,
             shelf_store: ShelfStore::load(),
             shelf_slot,
             _shelf_target: shelf_target,
@@ -3012,10 +3095,7 @@ impl Surface {
     }
 
     fn call_live(&self) -> bool {
-        self.call_runtime
-            .lock()
-            .map(|runtime| runtime.detect.is_some())
-            .unwrap_or(false)
+        self.call_machine.state.live()
     }
 
     /// Priority winner while the wheel switcher sits on Auto. A fresh clipboard
@@ -3168,21 +3248,24 @@ impl Surface {
         }
     }
 
-    /// The active-call pill (spec CallPillActive minus the End button, which
-    /// stays NO-GO without a real call-control provider): green phone glyph,
-    /// the app holding the microphone, mm:ss.
+    /// The call pill (spec §7): caller text + mm:ss while a call is live.
+    /// `Ended` is not live, so the pill is already gone by then (§8: hide
+    /// the pill when nothing is live).
     fn call_pill(&self) -> Option<PillView> {
-        let runtime = self.call_runtime.lock().ok()?;
-        let detect = runtime.detect.as_ref()?;
+        let state = &self.call_machine.state;
+        if !state.live() {
+            return None;
+        }
         let now = Instant::now();
-        let duration = detect.duration_at_fetch
-            + now.saturating_duration_since(detect.started).as_secs_f64()
-            - detect.duration_at_fetch;
         Some(PillView {
             icon: IconId::Phone,
             tile: TileView::colored(design::CALL_GREEN),
-            label: detect.app_name.clone(),
-            value: crate::view::fmt_clock(duration),
+            label: call_label(state),
+            value: if state.phase == CallPhase::Active {
+                crate::view::fmt_clock(state.elapsed(now))
+            } else {
+                String::new()
+            },
             progress: None,
             kind: PillKind::Normal,
             art: None,
@@ -3962,27 +4045,45 @@ impl Surface {
         });
     }
 
+    /// Build the Call card from the state machine (spec §7 call-tab states).
+    /// Phase `None` falls back to the established empty-state placeholder.
     fn show_call(&mut self) {
+        let state = self.call_machine.state.clone();
+        if state.phase == CallPhase::None {
+            self.view.main = Some(self.placeholder(ActivityKind::Call));
+            return;
+        }
         let Ok(runtime) = self.call_runtime.lock() else {
             crate::log::log("window.call: runtime mutex poisoned");
             self.view.main = Some(self.placeholder(ActivityKind::Call));
             return;
         };
-        let Some(detect) = runtime.detect.as_ref() else {
-            drop(runtime);
-            self.view.main = Some(self.placeholder(ActivityKind::Call));
-            return;
-        };
-        let accent = design::CALL_GREEN;
         let now = Instant::now();
-        let duration = detect.duration_at_fetch
-            + now.saturating_duration_since(detect.started).as_secs_f64()
-            - detect.duration_at_fetch;
+        let accent = design::CALL_GREEN;
+        let label = call_label(&state);
+        let elapsed = state.elapsed(now);
+        let live = state.live();
+        let header_status = match state.phase {
+            CallPhase::Incoming => "Ringing".to_string(),
+            CallPhase::Dialing => "Dialing".to_string(),
+            CallPhase::Active => "On a call".to_string(),
+            CallPhase::Ended => "Ended".to_string(),
+            CallPhase::None => unreachable!("handled above"),
+        };
+        // The inline action message stands in for the status line while it is
+        // fresh: it says what to do instead of pretending anything worked.
+        let note = self.call_note.as_ref().and_then(|(text, at)| {
+            (now.saturating_duration_since(*at) < ACTION_NOTE_TTL).then(|| text.clone())
+        });
         let pill = PillView {
             icon: IconId::Phone,
             tile: TileView::colored(accent),
-            label: detect.app_name.clone(),
-            value: crate::view::fmt_clock(duration),
+            label,
+            value: if live {
+                crate::view::fmt_clock(elapsed)
+            } else {
+                String::new()
+            },
             progress: None,
             kind: PillKind::Normal,
             art: None,
@@ -3996,21 +4097,32 @@ impl Surface {
             },
             title: "Call".into(),
             subtitle: Subtitle::default(),
-            status: "Active call".into(),
+            status: note.clone().unwrap_or(header_status),
             status_accent: true,
             trailing: Trailing::None,
             body: Body::Call(crate::view::CallBody {
                 device: runtime.device.clone(),
-                app_name: detect.app_name.clone(),
-                elapsed: crate::view::fmt_clock(duration),
-                live: true,
+                // The Open button reads `Open {app_name}`.
+                app_name: crate::activities::call::phone_link_display_name(),
+                // Raw caller text: the card composes its status line from it
+                // (`CallBody::status_text`), the pill uses `call_label`.
+                caller: state.caller().unwrap_or_default().to_string(),
+                elapsed: if live {
+                    crate::view::fmt_clock(elapsed)
+                } else {
+                    String::new()
+                },
+                live,
                 mic_muted: runtime.mic_muted,
                 output_muted: runtime.output_muted,
-                // Only read while `live` is false; the active-call card never
-                // draws the idle empty state, and show_call runs at 1 Hz.
+                // Only read while `live` is false; a live card never draws
+                // the idle empty state, and show_call runs at 1 Hz.
                 link: crate::activities::call::PhoneLinkState::Available,
+                phase: state.phase,
+                note,
             }),
         };
+        drop(runtime);
         self.view.main = Some(ActivityView {
             kind: ActivityKind::Call,
             accent,
@@ -4150,12 +4262,15 @@ impl Surface {
                         body: Body::Call(crate::view::CallBody {
                             device: "No active call".into(),
                             // The idle card's action opens the real app.
-                            app_name: "Phone Link".into(),
+                            app_name: crate::activities::call::phone_link_display_name(),
+                            caller: String::new(),
                             elapsed: String::new(),
                             live: false,
                             mic_muted: false,
                             output_muted: false,
                             link,
+                            phase: crate::activities::call_state::CallPhase::None,
+                            note: None,
                         }),
                     },
                 }
@@ -4636,6 +4751,9 @@ impl Surface {
                 | Element::MusicRepeat
                 | Element::CallMic
                 | Element::CallOutput
+                | Element::CallAnswer
+                | Element::CallDecline
+                | Element::CallEnd
                 | Element::CallIdle
                 | Element::TimerToggle
                 | Element::TimerStop
@@ -4844,6 +4962,9 @@ impl Surface {
             } else {
                 "Mute speaker"
             }),
+            Element::CallAnswer => text("Answer"),
+            Element::CallDecline => text("Decline"),
+            Element::CallEnd => text("End call"),
             // Design §6: every icon control carries a tooltip whose text is
             // also its UIA name. The timer toggle follows the countdown state
             // (spec §9 has no fixed Timer copy, so the verbs follow the
@@ -4876,22 +4997,11 @@ impl Surface {
             .unwrap_or(false)
     }
 
-    /// Best-effort launch of what the Call card points at: the detected call
-    /// app while a call is live, the real Phone Link app otherwise. A failed
-    /// launch is logged as such and does nothing — never a fake control.
+    /// Best-effort launch of Phone Link (spec §3: after the launch the
+    /// detector keeps watching, no restart needed). A failed launch is
+    /// logged as such and does nothing — never a fake control.
     fn open_call_app(&mut self) {
-        let launch = self
-            .call_runtime
-            .lock()
-            .ok()
-            .and_then(|runtime| {
-                runtime
-                    .detect
-                    .as_ref()
-                    .map(|detect| detect.launch.clone())
-                    .filter(|launch| !launch.is_empty())
-            })
-            .unwrap_or_else(crate::activities::call::phone_link_launch);
+        let launch = crate::activities::call::phone_link_launch();
         if !crate::activities::call::open_app(&launch) {
             crate::log::log("call.open failed");
         }
@@ -5613,8 +5723,118 @@ impl Surface {
         self.sync_tick_timer();
     }
 
+    /// Drain everything the call sources (and `--simulate-call`) posted,
+    /// fold it into the one state machine, and re-resolve pill and card.
     fn apply_call(&mut self) {
+        let now = Instant::now();
+        let mut changed = false;
+        for signal in self.call_injected.drain(..) {
+            changed |= self.call_machine.on_signal(&signal, now);
+        }
+        while let Ok(signal) = self.call_rx.try_recv() {
+            changed |= self.call_machine.on_signal(&signal, now);
+        }
+        if changed {
+            self.call_note = None;
+            crate::log::log(&format!(
+                "call.state: {:?} caller={:?}",
+                self.call_machine.state.phase,
+                self.call_machine.state.caller()
+            ));
+        }
+        self.sync_call_clear(now);
+        self.refresh(now);
+        self.sync_tick_timer();
+    }
+
+    /// Arm (or disarm) the one-shot `Ended + 3 s` clear timer.
+    fn sync_call_clear(&mut self, now: Instant) {
+        match self.call_machine.state.ended_at {
+            Some(ended) if self.call_clear_armed != Some(ended) => {
+                self.call_clear_armed = Some(ended);
+                let wait = crate::activities::call_state::ENDED_CLEAR
+                    .saturating_sub(now.saturating_duration_since(ended))
+                    .as_millis()
+                    .max(1) as u32;
+                // SAFETY: this window owns the one-shot id; re-arming with
+                // the same id replaces the previous expiry.
+                unsafe {
+                    SetTimer(Some(self.hwnd), CALL_CLEAR_TIMER_ID, wait, None);
+                }
+            }
+            Some(_) => {}
+            None => {
+                if self.call_clear_armed.take().is_some() {
+                    // SAFETY: killing a timer that already fired is harmless.
+                    unsafe {
+                        let _ = KillTimer(Some(self.hwnd), CALL_CLEAR_TIMER_ID);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The `Ended + 3 s` timer fired: return the machine to `None`.
+    fn clear_ended_call(&mut self) {
+        self.call_clear_armed = None;
+        // SAFETY: one-shot timer; the id belongs to this window.
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), CALL_CLEAR_TIMER_ID);
+        }
+        let now = Instant::now();
+        if !self.call_machine.clear_due(now) {
+            // SetTimer can land a hair early; re-arm for the remainder
+            // instead of dropping the grace period.
+            self.sync_call_clear(now);
+            return;
+        }
+        if self.call_machine.clear(now) {
+            self.call_note = None;
+            crate::log::log("call.state: cleared");
+            self.apply_call();
+        }
+    }
+
+    /// A UIA action attempt came back (spec §3 Actions). `Invoked` for our
+    /// own Answer connects the call exactly as a provider confirmation
+    /// would; anything else shows the honest inline message and never
+    /// claims success.
+    fn note_action(&mut self, outcome: call::ActionOutcome) {
+        let action = self.call_action_pending.take();
+        match outcome {
+            call::ActionOutcome::Invoked => {
+                self.call_note = None;
+                if action == Some(CallAction::Answer)
+                    && self.call_machine.action_landed(Instant::now())
+                {
+                    crate::log::log("call.answer: invoked -> Active");
+                }
+            }
+            call::ActionOutcome::NotFound => {
+                self.call_note = Some(("Open Phone Link to do this".to_string(), Instant::now()));
+                // Bring Phone Link forward so the fallback is one click away.
+                let launch = crate::activities::call::phone_link_launch();
+                if !crate::activities::call::open_app(&launch) {
+                    crate::log::log("call.action: unable to open Phone Link");
+                }
+            }
+            call::ActionOutcome::Failed => {
+                self.call_note = Some((
+                    "Couldn't reach Phone Link \u{2014} try again".to_string(),
+                    Instant::now(),
+                ));
+            }
+        }
         self.refresh(Instant::now());
+        self.sync_tick_timer();
+    }
+
+    /// Start one UIA action on a worker thread; the outcome returns as
+    /// `WM_APP_CALL` / `CALL_WAKE_ACTION`.
+    fn start_call_action(&mut self, action: CallAction) {
+        self.call_action_pending = Some(action);
+        crate::log::log(&format!("call.action: {}", action.as_str()));
+        callsrc::action::invoke_async(self.hwnd.0 as isize, action);
     }
 
     fn draw(&mut self) -> Result<()> {
@@ -5789,6 +6009,24 @@ impl Surface {
             right: ((r.x + r.w) * self.scale).round() as i32,
             bottom: ((r.y + r.h) * self.scale).round() as i32,
         }
+    }
+}
+
+/// Caller text for pills and cards: the name (or number) the source read,
+/// otherwise wording that states the phase without inventing an identity.
+fn call_label(state: &crate::activities::call_state::CallState) -> String {
+    if let Some(name) = state.caller() {
+        let name = name.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+    }
+    match state.phase {
+        CallPhase::Incoming => "Incoming call".into(),
+        CallPhase::Dialing => "Calling\u{2026}".into(),
+        CallPhase::Active => "Call".into(),
+        CallPhase::Ended => "Call ended".into(),
+        CallPhase::None => "No call".into(),
     }
 }
 

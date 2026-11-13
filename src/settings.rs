@@ -47,33 +47,16 @@ impl Enabled {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Settings {
     pub slot_offset_dip: i32,
     pub run_at_startup: bool,
-    pub call_app_allowlist: Vec<String>,
+    /// Hidden (spec §3 Source D): read the notification database as a
+    /// fourth call source. Off by default; A–C cover normal setups.
+    pub call_use_wpn_db: bool,
     pub enabled: Enabled,
     /// Clipboard capture paused by the user; survives restarts.
     pub clipboard_paused: bool,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            slot_offset_dip: 0,
-            run_at_startup: false,
-            call_app_allowlist: vec![
-                "Teams".into(),
-                "Zoom".into(),
-                "WhatsApp".into(),
-                "Discord".into(),
-                "Skype".into(),
-                "Slack".into(),
-            ],
-            enabled: Enabled::default(),
-            clipboard_paused: false,
-        }
-    }
 }
 
 impl Settings {
@@ -92,14 +75,8 @@ impl Settings {
         if let Some(v) = json.get("runAtStartup").and_then(Json::as_bool) {
             settings.run_at_startup = v;
         }
-        if let Some(list) = json.get("callAppAllowlist").and_then(Json::as_array) {
-            let values: Vec<String> = list
-                .iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect();
-            if !values.is_empty() {
-                settings.call_app_allowlist = values;
-            }
+        if let Some(v) = json.get("call.use_wpn_db").and_then(Json::as_bool) {
+            settings.call_use_wpn_db = v;
         }
         if let Some(v) = json.get("clipboardPaused").and_then(Json::as_bool) {
             settings.clipboard_paused = v;
@@ -149,15 +126,7 @@ impl Settings {
                 Json::Num(self.slot_offset_dip as f64),
             ),
             ("runAtStartup".into(), Json::Bool(self.run_at_startup)),
-            (
-                "callAppAllowlist".into(),
-                Json::Arr(
-                    self.call_app_allowlist
-                        .iter()
-                        .map(|s| Json::Str(s.clone()))
-                        .collect(),
-                ),
-            ),
+            ("call.use_wpn_db".into(), Json::Bool(self.call_use_wpn_db)),
             ("enabled".into(), enabled),
             ("clipboardPaused".into(), Json::Bool(self.clipboard_paused)),
         ]);
@@ -320,6 +289,7 @@ mod tests {
     fn defaults_are_sane() {
         let s = Settings::default();
         assert_eq!(s.slot_offset_dip, 0);
-        assert!(s.call_app_allowlist.iter().any(|v| v == "Teams"));
+        // Source D is opt-in: the notification database stays untouched.
+        assert!(!s.call_use_wpn_db);
     }
 }

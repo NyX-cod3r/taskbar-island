@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sparse (identity-only) package manifest for TaskbarIsland — spec §3
+  Source B.
+
+  TaskbarIsland is a classic Win32 exe, so UserNotificationListener's
+  NotificationChanged hook fails with 0x80070490 ("element not found") in an
+  unpackaged process: the listener sits behind package identity plus the
+  userNotificationListener capability. The installer registers this manifest
+  next to the installed exe with `Add-AppxPackage -Register -ExternalLocation`
+  and the exe carries the matching `<msix>` element (assets/app.manifest),
+  which is what gives the running process its identity.
+
+  Nothing is packaged: only the identity and the capabilities come from here,
+  the binaries stay wherever the installer put them (AllowExternalContent).
+  Needs Windows 10 2004 (10.0.19041) or later; end users also need the
+  package to be signed with a trusted certificate (or sideloading enabled) —
+  see the release notes.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 rescap">
+
+  <!-- Name / Publisher / Application Id must match the `<msix>` element in
+       assets/app.manifest exactly. -->
+  <Identity
+    Name="TaskbarIsland.Sparse"
+    Publisher="CN=TaskbarIsland"
+    Version="0.9.0.0"
+    ProcessorArchitecture="neutral" />
+
+  <Properties>
+    <DisplayName>Taskbar Island</DisplayName>
+    <PublisherDisplayName>Taskbar Island</PublisherDisplayName>
+    <Logo>assets\app.png</Logo>
+    <!-- Identity-only package: the payload lives at the external location
+         the installer registers, not inside a package file. -->
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily
+      Name="Windows.Desktop"
+      MinVersion="10.0.19041.0"
+      MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <!-- Source B: read other apps' toasts through UserNotificationListener. -->
+    <uap3:Capability Name="userNotificationListener" />
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+
+  <Applications>
+    <!-- Win32 app: RuntimeBehavior win32App + mediumIL, no EntryPoint. -->
+    <Application
+      Id="TaskbarIsland"
+      Executable="taskbar-island.exe"
+      uap10:TrustLevel="mediumIL"
+      uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="Taskbar Island"
+        Description="Taskbar Island"
+        BackgroundColor="transparent"
+        Square150x150Logo="assets\app.png"
+        Square44x44Logo="assets\app.png" />
+    </Application>
+  </Applications>
+</Package>

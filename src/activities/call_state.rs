@@ -1,17 +1,29 @@
-//! Pure call-domain state used by Phone Link and the debug simulator.
+//! Pure call-domain state machine fed by the call sources (spec §3).
 //!
-//! Providers never persist caller identity. The state lives only in memory
-//! until the call leaves the visible lifecycle.
+//! Lifecycle: `None -> Incoming -> Active -> Ended` and
+//! `None -> Dialing -> Active -> Ended`. `Ended` returns to `None` after
+//! [`ENDED_CLEAR`]. The Active timer starts when Active begins.
+//!
+//! Sources never persist caller identity: the state lives only in memory
+//! until the call leaves the visible lifecycle. The machine is pure — every
+//! transition takes the caller's `now`, so tests drive time explicitly.
 
-use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+/// How long an Ended call stays visible before the machine returns to None.
+pub const ENDED_CLEAR: Duration = Duration::from_secs(3);
+
+/// A call is the same call when the caller text and the source that reported
+/// it match again within this window (spec §3, identity rule).
+pub const SAME_CALL_WINDOW: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallPhase {
-    Idle,
-    Ringing,
+    None,
+    Incoming,
+    Dialing,
     Active,
     Ended,
-    Missed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,146 +34,119 @@ pub struct CallIdentity {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallEvent {
+    /// A ringing call was observed (toast, notification).
     Incoming(CallIdentity),
+    /// An outgoing call started (Phone Link dial UI).
+    Dialing(CallIdentity),
+    /// The call connected: Incoming/Dialing -> Active. Fired by a successful
+    /// Answer action or by a source that sees the in-call UI.
     Answered,
-    RemoteEnded,
-    Missed,
-    Cleared,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallAction {
-    Answer,
-    Decline,
-    End,
-    Dismiss,
-}
-
-/// Provider boundary: the UI state machine remains testable without Windows
-/// or a linked phone. A provider must report its actual capability rather
-/// than claiming that a control action succeeded.
-pub trait CallProvider {
-    fn poll_event(&mut self) -> Option<CallEvent>;
-    fn perform(&mut self, action: CallAction) -> Result<(), CallProviderError>;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CallProviderError {
-    Unsupported,
-    Unavailable,
-    Failed,
-}
-
-/// The shipping Phone Link boundary until the spike has a validated detection
-/// and control transport. It deliberately reports capability absence instead
-/// of inventing a call or treating a button click as successful.
-#[derive(Debug, Default)]
-pub struct PhoneLinkProvider;
-
-impl CallProvider for PhoneLinkProvider {
-    fn poll_event(&mut self) -> Option<CallEvent> {
-        None
-    }
-
-    fn perform(&mut self, _action: CallAction) -> Result<(), CallProviderError> {
-        Err(CallProviderError::Unsupported)
-    }
-}
-
-/// Deterministic provider used by state and UI tests without a linked phone.
-#[derive(Debug)]
-pub struct SimulatedProvider {
-    events: VecDeque<CallEvent>,
-    pub next_action_result: Result<(), CallProviderError>,
-}
-
-impl Default for SimulatedProvider {
-    fn default() -> Self {
-        Self {
-            events: VecDeque::new(),
-            next_action_result: Ok(()),
-        }
-    }
-}
-
-impl SimulatedProvider {
-    pub fn with_events(events: impl IntoIterator<Item = CallEvent>) -> Self {
-        Self {
-            events: events.into_iter().collect(),
-            next_action_result: Ok(()),
-        }
-    }
-}
-
-impl CallProvider for SimulatedProvider {
-    fn poll_event(&mut self) -> Option<CallEvent> {
-        self.events.pop_front()
-    }
-
-    fn perform(&mut self, _action: CallAction) -> Result<(), CallProviderError> {
-        self.next_action_result.clone()
-    }
+    /// The call is over: any live phase -> Ended.
+    Ended,
+    /// Ended -> None, scheduled [`ENDED_CLEAR`] after the end.
+    Clear,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallState {
     pub phase: CallPhase,
     pub identity: Option<CallIdentity>,
+    /// Set when Active begins; the pill and card read the elapsed clock from
+    /// it, so no source is polled for the duration.
+    pub active_since: Option<Instant>,
+    /// Set when the call ends; [`CallState::clear_due`] reads it.
+    pub ended_at: Option<Instant>,
 }
 
 impl Default for CallState {
     fn default() -> Self {
         Self {
-            phase: CallPhase::Idle,
+            phase: CallPhase::None,
             identity: None,
+            active_since: None,
+            ended_at: None,
         }
     }
 }
 
 impl CallState {
-    pub fn apply_event(&mut self, event: CallEvent) {
+    pub fn apply(&mut self, event: CallEvent, now: Instant) {
         match event {
-            CallEvent::Incoming(identity) if self.phase == CallPhase::Idle => {
-                self.phase = CallPhase::Ringing;
+            // A fresh call supersedes a finished one; a second call while a
+            // call is already visible cannot be taken (call waiting is out
+            // of scope and faking it would invent a caller).
+            CallEvent::Incoming(identity)
+                if matches!(self.phase, CallPhase::None | CallPhase::Ended) =>
+            {
+                self.phase = CallPhase::Incoming;
                 self.identity = Some(identity);
+                self.active_since = None;
+                self.ended_at = None;
             }
-            CallEvent::Answered if self.phase == CallPhase::Ringing => {
-                self.phase = CallPhase::Active
+            CallEvent::Dialing(identity)
+                if matches!(self.phase, CallPhase::None | CallPhase::Ended) =>
+            {
+                self.phase = CallPhase::Dialing;
+                self.identity = Some(identity);
+                self.active_since = None;
+                self.ended_at = None;
             }
-            CallEvent::RemoteEnded
-                if matches!(self.phase, CallPhase::Ringing | CallPhase::Active) =>
+            CallEvent::Answered
+                if matches!(self.phase, CallPhase::Incoming | CallPhase::Dialing) =>
+            {
+                self.phase = CallPhase::Active;
+                self.active_since = Some(now);
+                self.ended_at = None;
+            }
+            CallEvent::Ended
+                if matches!(
+                    self.phase,
+                    CallPhase::Incoming | CallPhase::Dialing | CallPhase::Active
+                ) =>
             {
                 self.phase = CallPhase::Ended;
+                self.active_since = None;
+                self.ended_at = Some(now);
             }
-            CallEvent::Missed if self.phase == CallPhase::Ringing => self.phase = CallPhase::Missed,
-            CallEvent::Cleared if matches!(self.phase, CallPhase::Ended | CallPhase::Missed) => {
-                self.phase = CallPhase::Idle;
+            CallEvent::Clear if self.phase == CallPhase::Ended => {
+                self.phase = CallPhase::None;
                 self.identity = None;
+                self.active_since = None;
+                self.ended_at = None;
             }
             _ => {}
         }
     }
 
-    /// Update UI state only after the provider reports that a requested action
-    /// was delivered. This prevents a non-functional Phone Link action from
-    /// looking successful.
-    pub fn apply_action_result(
-        &mut self,
-        action: CallAction,
-        result: Result<(), CallProviderError>,
-    ) {
-        if result.is_err() {
-            return;
-        }
-        match (self.phase, action) {
-            (CallPhase::Ringing, CallAction::Answer) => self.phase = CallPhase::Active,
-            (CallPhase::Ringing, CallAction::Decline)
-            | (CallPhase::Ringing, CallAction::Dismiss) => {
-                self.phase = CallPhase::Ended;
-            }
-            (CallPhase::Active, CallAction::End) => self.phase = CallPhase::Ended,
-            _ => {}
-        }
+    /// Whether the call occupies the pill: Ended is a3 s grace state, not a
+    /// live call (spec §8: hide the pill when nothing is live).
+    pub fn live(&self) -> bool {
+        matches!(
+            self.phase,
+            CallPhase::Incoming | CallPhase::Dialing | CallPhase::Active
+        )
+    }
+
+    /// Whether the machine is due for its one-shot Clear. The UI schedules a
+    /// timer at Ended + [`ENDED_CLEAR`] and re-checks this on fire.
+    pub fn clear_due(&self, now: Instant) -> bool {
+        self.phase == CallPhase::Ended
+            && self
+                .ended_at
+                .is_some_and(|at| now.duration_since(at) >= ENDED_CLEAR)
+    }
+
+    /// Seconds the call has been active; 0.0 unless Active.
+    pub fn elapsed(&self, now: Instant) -> f64 {
+        self.active_since
+            .map(|since| now.duration_since(since).as_secs_f64())
+            .unwrap_or(0.0)
+    }
+
+    /// The caller label for pills and cards: the name when the source read
+    /// one, otherwise None so the UI can pick its own wording.
+    pub fn caller(&self) -> Option<&str> {
+        self.identity.as_ref()?.name.as_deref()
     }
 }
 
@@ -192,64 +177,97 @@ pub fn mask_number(number: &str) -> String {
 mod tests {
     use super::*;
 
-    fn incoming() -> CallEvent {
-        CallEvent::Incoming(CallIdentity {
-            name: Some("Ada".into()),
-            number: Some("+91 98765 43210".into()),
-        })
+    fn caller(name: &str) -> CallIdentity {
+        CallIdentity {
+            name: Some(name.into()),
+            number: None,
+        }
+    }
+
+    fn base() -> (CallState, Instant) {
+        (CallState::default(), Instant::now())
     }
 
     #[test]
-    fn lifecycle_and_duplicate_events_are_safe() {
-        let mut state = CallState::default();
-        state.apply_event(incoming());
-        state.apply_event(incoming());
-        assert_eq!(state.phase, CallPhase::Ringing);
-        state.apply_event(CallEvent::Answered);
-        state.apply_event(CallEvent::Answered);
+    fn incoming_lifecycle_reaches_active_and_clears_after_three_seconds() {
+        let (mut state, now) = base();
+        state.apply(CallEvent::Incoming(caller("Ada")), now);
+        assert_eq!(state.phase, CallPhase::Incoming);
+        assert!(state.live());
+        state.apply(CallEvent::Answered, now + Duration::from_secs(2));
         assert_eq!(state.phase, CallPhase::Active);
-        state.apply_event(CallEvent::RemoteEnded);
+        let connected = now + Duration::from_secs(2);
+        assert!((state.elapsed(connected + Duration::from_secs(4)) - 4.0).abs() < 0.01);
+        state.apply(CallEvent::Ended, connected + Duration::from_secs(4));
         assert_eq!(state.phase, CallPhase::Ended);
-        state.apply_event(CallEvent::Cleared);
+        assert!(!state.live(), "Ended must not hold the pill");
+        assert!(!state.clear_due(connected + Duration::from_secs(6)));
+        assert!(state.clear_due(connected + Duration::from_secs(7)));
+        state.apply(CallEvent::Clear, connected + Duration::from_secs(7));
         assert_eq!(state, CallState::default());
     }
 
     #[test]
+    fn dialing_goes_to_active_then_ended() {
+        let (mut state, now) = base();
+        state.apply(CallEvent::Dialing(caller("Ada")), now);
+        assert_eq!(state.phase, CallPhase::Dialing);
+        state.apply(CallEvent::Answered, now + Duration::from_secs(1));
+        assert_eq!(state.phase, CallPhase::Active);
+        state.apply(CallEvent::Ended, now + Duration::from_secs(9));
+        assert_eq!(state.phase, CallPhase::Ended);
+        assert_eq!(state.caller(), Some("Ada"));
+    }
+
+    #[test]
     fn remote_hangup_wins_over_late_answer() {
-        let mut state = CallState::default();
-        state.apply_event(incoming());
-        state.apply_event(CallEvent::RemoteEnded);
-        state.apply_action_result(CallAction::Answer, Ok(()));
+        let (mut state, now) = base();
+        state.apply(CallEvent::Incoming(caller("Ada")), now);
+        state.apply(CallEvent::Ended, now);
+        // A late Answered must not resurrect an ended call.
+        state.apply(CallEvent::Answered, now + Duration::from_millis(500));
         assert_eq!(state.phase, CallPhase::Ended);
     }
 
     #[test]
-    fn missed_and_failed_provider_action_do_not_fake_success() {
-        let mut state = CallState::default();
-        state.apply_event(incoming());
-        state.apply_action_result(CallAction::Decline, Err(CallProviderError::Unsupported));
-        assert_eq!(state.phase, CallPhase::Ringing);
-        state.apply_event(CallEvent::Missed);
-        assert_eq!(state.phase, CallPhase::Missed);
+    fn second_call_cannot_replace_a_live_call() {
+        let (mut state, now) = base();
+        state.apply(CallEvent::Incoming(caller("Ada")), now);
+        state.apply(
+            CallEvent::Incoming(caller("Mallory")),
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(state.caller(), Some("Ada"), "no invented call waiting");
+    }
+
+    #[test]
+    fn a_new_call_supersedes_a_finished_one_before_the_clear() {
+        let (mut state, now) = base();
+        state.apply(CallEvent::Incoming(caller("Ada")), now);
+        state.apply(CallEvent::Ended, now);
+        state.apply(
+            CallEvent::Incoming(caller("Bo")),
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(state.phase, CallPhase::Incoming);
+        assert_eq!(state.caller(), Some("Bo"));
+        assert!(state.ended_at.is_none(), "the old clear timer is dropped");
+    }
+
+    #[test]
+    fn stray_events_are_ignored() {
+        let (mut state, now) = base();
+        state.apply(CallEvent::Answered, now);
+        state.apply(CallEvent::Ended, now);
+        state.apply(CallEvent::Clear, now);
+        assert_eq!(state, CallState::default());
+        // Ended without a call, Clear without Ended: no-ops.
+        state.apply(CallEvent::Clear, now);
+        assert_eq!(state.phase, CallPhase::None);
     }
 
     #[test]
     fn number_masking_keeps_only_the_last_three_digits() {
         assert_eq!(mask_number("+91 98765 43210"), "+•• ••••• ••210");
-    }
-
-    #[test]
-    fn providers_are_explicit_about_real_and_simulated_capabilities() {
-        let mut phone_link = PhoneLinkProvider;
-        assert_eq!(
-            phone_link.perform(CallAction::Answer),
-            Err(CallProviderError::Unsupported)
-        );
-        let mut simulated = SimulatedProvider::with_events([incoming(), CallEvent::Answered]);
-        assert!(matches!(
-            simulated.poll_event(),
-            Some(CallEvent::Incoming(_))
-        ));
-        assert_eq!(simulated.perform(CallAction::Answer), Ok(()));
     }
 }

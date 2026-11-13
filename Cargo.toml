@@ -14,6 +14,17 @@ video = []
 
 [dependencies]
 windows = { version = "0.62", features = [
+    # Call sources (spec §3): package display names, the notification
+    # listener and the toast XML/text surface it hands out.
+    "ApplicationModel",
+    "Foundation_Collections",
+    # `--diag-call` reports whether this process actually has package
+    # identity (`GetCurrentPackageFullName`) — Source B cannot attach
+    # without it.
+    "Win32_Storage_Packaging_Appx",
+    "Management_Deployment",
+    "UI_Notifications",
+    "UI_Notifications_Management",
     "Foundation",
     "Media_Control",
     "Storage_Streams",

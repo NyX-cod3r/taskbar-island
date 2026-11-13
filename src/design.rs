@@ -118,9 +118,15 @@ pub const TIMER_PRESETS: [u32; 4] = [1, 5, 10, 25];
 
 // Call card
 pub const CALL_STATUS_H: f32 = 52.0;
-pub const CALL_BTN_W: f32 = 48.0;
-pub const CALL_BTN_H: f32 = 40.0;
+/// The controls row keeps one height in every spec §7 call state, so the
+/// card shell never changes size when the phase does.
+pub const CALL_ROW_H: f32 = 52.0;
+/// Mute mic / mute speakers buttons (§7: 44).
+pub const CALL_BTN_W: f32 = 44.0;
+pub const CALL_BTN_H: f32 = 44.0;
 pub const CALL_BTN_GAP: f32 = 8.0;
+/// Incoming: Decline + Answer each fill half the row, gap 10 (§7).
+pub const CALL_ANSWER_GAP: f32 = 10.0;
 pub const SIGNAL_W: f32 = 18.0;
 pub const SIGNAL_H: f32 = 16.0;
 /// Spec §8 empty state: one large muted icon, no sentences.
@@ -494,6 +500,8 @@ impl Color {
 // Activity colors (section 4.2)
 pub const MUSIC_DEFAULT: Color = rgb(0xFF, 0x6B, 0x8A);
 pub const CALL_GREEN: Color = rgb(0x4A, 0xDE, 0x80);
+/// Decline / End red (spec §7).
+pub const CALL_RED: Color = rgb(0xC4, 0x2B, 0x1C);
 pub const SHELF_BLUE: Color = rgb(0x60, 0xCD, 0xFF);
 pub const TIMER_AMBER: Color = rgb(0xFF, 0xB5, 0x47);
 pub const VOLUME_WHITE: Color = rgb(0xFF, 0xFF, 0xFF);

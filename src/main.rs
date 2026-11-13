@@ -33,17 +33,51 @@ mod uia;
 mod view;
 mod window;
 
+use std::sync::atomic::Ordering;
+
 use windows::core::w;
-use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, LPARAM, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
-use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+
+use activities::callsrc;
 
 fn main() {
+    // Spec §3 diagnostics are parsed first so they run without a taskbar,
+    // without the single-instance mutex and without creating a window.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(seconds) = diag_call_seconds(&args) {
+        // Source D stays opt-in exactly as it is in the running app.
+        let use_wpn_db = settings::Settings::load().call_use_wpn_db;
+        let dump_uia = args.iter().any(|arg| arg == "--dump-uia");
+        match callsrc::run_diag(seconds, dump_uia, use_wpn_db) {
+            Ok(path) => println!("--diag-call log: {}", path.display()),
+            Err(error) => eprintln!("--diag-call failed: {error}"),
+        }
+        return;
+    }
+    if args.iter().any(|arg| arg == "--dump-uia") {
+        callsrc::DUMP_UIA.store(true, Ordering::Relaxed);
+    }
+    if let Some(index) = args.iter().position(|arg| arg == "--simulate-call") {
+        let Some(kind) = args
+            .get(index + 1)
+            .and_then(|value| callsrc::SimKind::parse(value))
+        else {
+            eprintln!("--simulate-call needs incoming|dialing|active|end");
+            return;
+        };
+        // A running island takes it now; otherwise the code is parked for
+        // the island this launch is about to create.
+        if !deliver_simulation(kind) {
+            callsrc::PENDING_SIMULATE.store(kind.code(), Ordering::Relaxed);
+        }
+    }
     // Anchor geometry is measured in physical screen coordinates. Without
     // per-monitor awareness Windows virtualizes the popup bounds at scaled
     // displays, moving the pill away from the taskbar hit area.
@@ -111,8 +145,48 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// Release gate: the version is declared in exactly one place (Cargo.toml)
-// and every artifact that shows a version must agree with it.
+// Spec §3 diagnostics.
+
+/// `--diag-call [seconds]` (default 300 = the five minutes §3 asks for).
+fn diag_call_seconds(args: &[String]) -> Option<u64> {
+    let index = args.iter().position(|arg| arg == "--diag-call")?;
+    Some(
+        args.get(index + 1)
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|seconds| *seconds > 0)
+            .unwrap_or(300),
+    )
+}
+
+/// Hand a `--simulate-call` event to the island that is already running.
+/// Returns false when there is none, so the caller can park it instead.
+fn deliver_simulation(kind: callsrc::SimKind) -> bool {
+    let Ok(hwnd) = (unsafe { FindWindowW(w!("TaskbarIsland"), windows::core::PCWSTR::null()) })
+    else {
+        return false;
+    };
+    if hwnd.0.is_null() {
+        return false;
+    }
+    // SAFETY: posting to this app's own island window; the receiver drains
+    // the injected signal on its next paint.
+    unsafe {
+        let _ = PostMessageW(
+            Some(hwnd),
+            callsrc::WM_APP_SIMULATE,
+            WPARAM(kind.code()),
+            LPARAM(0),
+        );
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Release gate: the product identity is declared in exactly one place
+// (Cargo.toml: `version` + `[package.metadata] product-name`) and every
+// artifact that shows it must be *generated* from there - never carry its own
+// copy. CI (.github/workflows/release.yml) additionally fails a tag that
+// disagrees with Cargo.toml.
 
 #[cfg(test)]
 mod version_tests {

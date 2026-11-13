@@ -30,6 +30,7 @@ use windows::Win32::Graphics::DirectWrite::{
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows_numerics::{Matrix3x2, Vector2};
 
+use crate::activities::call_state::CallPhase;
 use crate::design::{self, ActivityKind, Color, RectD};
 use crate::icons;
 use crate::theme::Theme;
@@ -166,6 +167,18 @@ impl HitMap {
 }
 
 // --------------------------------------------------------------- painter
+
+/// One filled text button of the call controls row (spec §7): Decline,
+/// Answer, End or the launch button. Bundled so the helper stays inside the
+/// argument-count budget instead of growing one parameter per colour.
+struct CallButton<'a> {
+    element: Element,
+    rect: RectD,
+    label: &'a str,
+    fill: Color,
+    hover: Color,
+    text: Color,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct FormatKey {
@@ -1474,7 +1487,9 @@ impl Painter {
             ),
             Body::Call(_) => (
                 design::CARD_GAP,
-                design::CALL_STATUS_H + design::CARD_GAP + design::CALL_BTN_H,
+                // One height for every §7 call state: the shell never
+                // resizes when the phase changes.
+                design::CALL_STATUS_H + design::CARD_GAP + design::CALL_ROW_H,
             ),
             Body::Shelf(_) | Body::Music(_) | Body::Clipboard(_) | Body::Convert(_) => {
                 unreachable!()
@@ -2999,15 +3014,9 @@ impl Painter {
             }
             text_x = status.x + design::SIGNAL_W + 10.0;
         }
-        let text = if c.live {
-            if c.device.is_empty() {
-                c.app_name.clone()
-            } else {
-                format!("{} \u{00b7} {}", c.device, c.elapsed)
-            }
-        } else {
-            "No active call".to_string()
-        };
+        // One line per §7 call state; an honest action note stands in while
+        // it is fresh.
+        let text = c.status_text();
         self.text(
             rt,
             &text,
@@ -3025,9 +3034,126 @@ impl Painter {
             true,
         );
 
-        // Controls: mute, speaker, then the flex-width Open call button.
-        let row_y = body.y + design::CALL_STATUS_H + design::CARD_GAP;
-        let mut x = body.x;
+        // Controls row (spec §7). One constant height for every phase, so
+        // the card shell never changes size when the call state does.
+        let row = RectD::new(
+            body.x,
+            body.y + design::CALL_STATUS_H + design::CARD_GAP,
+            body.w,
+            design::CALL_ROW_H,
+        );
+        match c.phase {
+            // Incoming: Decline (red) and Answer (green), each half the row.
+            CallPhase::Incoming => {
+                let w = (row.w - design::CALL_ANSWER_GAP) * 0.5;
+                self.call_text_button(
+                    rt,
+                    input,
+                    CallButton {
+                        element: Element::CallDecline,
+                        rect: RectD::new(row.x, row.y, w, row.h),
+                        label: "Decline",
+                        fill: design::CALL_RED,
+                        hover: darken(design::CALL_RED, 0.92),
+                        text: design::white(1.0),
+                    },
+                    alpha,
+                    hits,
+                );
+                self.call_text_button(
+                    rt,
+                    input,
+                    CallButton {
+                        element: Element::CallAnswer,
+                        rect: RectD::new(row.x + w + design::CALL_ANSWER_GAP, row.y, w, row.h),
+                        label: "Answer",
+                        fill: design::CALL_GREEN,
+                        hover: darken(design::CALL_GREEN, 0.92),
+                        text: design::DARK_GLYPH,
+                    },
+                    alpha,
+                    hits,
+                );
+            }
+            // Dialing / Active: mute mic, mute speaker, then End (red, flex).
+            // The status line above already says "Calling…" while dialing.
+            CallPhase::Dialing | CallPhase::Active => {
+                let x = self.call_mutes(rt, input, c, row, alpha, hits);
+                self.call_text_button(
+                    rt,
+                    input,
+                    CallButton {
+                        element: Element::CallEnd,
+                        rect: RectD::new(
+                            x,
+                            row.y + (row.h - design::CALL_BTN_H) * 0.5,
+                            (row.right() - x).max(0.0),
+                            design::CALL_BTN_H,
+                        ),
+                        label: "End",
+                        fill: design::CALL_RED,
+                        hover: darken(design::CALL_RED, 0.92),
+                        text: design::white(1.0),
+                    },
+                    alpha,
+                    hits,
+                );
+            }
+            // None / Ended: the same mutes plus the real launch button.
+            CallPhase::None | CallPhase::Ended => {
+                let x = self.call_mutes(rt, input, c, row, alpha, hits);
+                // §7: green 16 % fill with green text, hover lifts the tint.
+                // High contrast keeps the opaque theme fill so the button
+                // still reads as a button against any background.
+                let (fill, hover) = if theme.high_contrast {
+                    let base = theme.open_call_fill();
+                    (base, darken(base, 0.92))
+                } else {
+                    (
+                        design::CALL_GREEN.with_alpha(0.16),
+                        design::CALL_GREEN.with_alpha(0.24),
+                    )
+                };
+                // `label` lives as long as this frame's format cache.
+                let label = format!("Open {}", c.app_name);
+                self.call_text_button(
+                    rt,
+                    input,
+                    CallButton {
+                        element: Element::CallOpen,
+                        rect: RectD::new(
+                            x,
+                            row.y + (row.h - design::CALL_BTN_H) * 0.5,
+                            (row.right() - x).max(0.0),
+                            design::CALL_BTN_H,
+                        ),
+                        label: &label,
+                        fill,
+                        hover,
+                        text: theme.open_call_text(accent),
+                    },
+                    alpha,
+                    hits,
+                );
+            }
+        }
+    }
+
+    /// Mute mic + mute speaker of the call controls row, vertically centred
+    /// in the constant-height row; returns the x after them, where the flex
+    /// button (End / Open) starts.
+    fn call_mutes(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        c: &crate::view::CallBody,
+        row: RectD,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) -> f32 {
+        let theme = input.theme;
+        let y = row.y + (row.h - design::CALL_BTN_H) * 0.5;
+        let mut x = row.x;
         for (element, icon, active) in [
             (
                 Element::CallMic,
@@ -3048,7 +3174,7 @@ impl Painter {
                 c.output_muted,
             ),
         ] {
-            let r = RectD::new(x, row_y, design::CALL_BTN_W, design::CALL_BTN_H);
+            let r = RectD::new(x, y, design::CALL_BTN_W, design::CALL_BTN_H);
             let pressed = input.pressed_amount(element);
             let draw = pressed_rect(r, pressed);
             let fill = if active {
@@ -3080,30 +3206,52 @@ impl Painter {
             }
             x += design::CALL_BTN_W + design::CALL_BTN_GAP;
         }
-        let open_r = RectD::new(x, row_y, (body.right() - x).max(0.0), design::CALL_BTN_H);
-        let pressed = input.pressed_amount(Element::CallOpen);
-        let draw = pressed_rect(open_r, pressed);
-        let fill = if pressed.is_some() {
-            theme.card_button_press()
-        } else if input.hovered(Element::CallOpen) {
-            theme.card_button_hover()
+        x
+    }
+
+    /// A filled text button of the call controls row (Decline / Answer /
+    /// End / Open). Hover and press darken the resting fill; `hits` gets the
+    /// unpressed rectangle so a press never shifts the target under the
+    /// pointer.
+    fn call_text_button(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        button: CallButton<'_>,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
+        let CallButton {
+            element,
+            rect,
+            label,
+            fill,
+            hover,
+            text,
+        } = button;
+        let pressed = input.pressed_amount(element);
+        let draw = pressed_rect(rect, pressed);
+        let base = if pressed.is_some() {
+            darken(fill, 0.88)
+        } else if input.hovered(element) {
+            hover
         } else {
-            theme.open_call_fill()
+            fill
         };
-        self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
+        self.fill_round(rt, draw, design::R_SURFACE, base.with_alpha(alpha));
         self.text(
             rt,
-            &format!("Open {}", c.app_name),
+            label,
             draw,
             design::FONT_OPEN_CALL,
             600,
             1,
             design::LINE_CALL_TITLE,
-            theme.open_call_text(accent).with_alpha(alpha),
+            text.with_alpha(alpha),
             true,
         );
         if alpha > 0.15 {
-            hits.add(Element::CallOpen, open_r, design::R_SURFACE);
+            hits.add(element, rect, design::R_SURFACE);
         }
     }
 

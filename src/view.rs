@@ -102,6 +102,12 @@ pub enum Element {
     CallMic,
     CallOutput,
     CallOpen,
+    /// Accept an incoming call (UIA Invoke on the toast's Answer button).
+    CallAnswer,
+    /// Reject an incoming call (UIA Invoke on the toast's Decline button).
+    CallDecline,
+    /// Hang up a dialing/active call (UIA Invoke on End call / Hang up).
+    CallEnd,
     /// The muted phone icon of an unavailable Call idle card (spec §8).
     CallIdle,
     TimerToggle,
@@ -239,9 +245,13 @@ pub struct MusicBody {
 
 #[derive(Debug, Clone)]
 pub struct CallBody {
+    /// Route line (spec §7: the endpoint the call is on).
     pub device: String,
+    /// App the card acts on; the Open button reads `Open {app_name}`.
     pub app_name: String,
-    /// Running call time; empty when no call is live.
+    /// Caller name or number as the source read it; empty when unknown.
+    pub caller: String,
+    /// Running call time; empty unless the call is Active.
     pub elapsed: String,
     pub live: bool,
     pub mic_muted: bool,
@@ -249,6 +259,48 @@ pub struct CallBody {
     /// Phone Link presence. Only read while `live` is false, where it picks
     /// between real status and the muted empty state (A prompt §5).
     pub link: crate::activities::call::PhoneLinkState,
+    /// Which of the spec §7 call-tab states to draw.
+    pub phase: crate::activities::call_state::CallPhase,
+    /// Honest inline message after an action could not be delivered
+    /// ("Open Phone Link to do this"); `None` for no message.
+    pub note: Option<String>,
+}
+
+impl CallBody {
+    /// The one status line of the card body (spec §7 call-tab states). An
+    /// action's inline note stands in while it is fresh: it says what to do
+    /// next instead of pretending anything succeeded.
+    pub fn status_text(&self) -> String {
+        use crate::activities::call_state::CallPhase;
+        if let Some(note) = &self.note {
+            return note.clone();
+        }
+        let caller = self.caller.trim();
+        match self.phase {
+            CallPhase::Incoming if caller.is_empty() => "Incoming call".into(),
+            CallPhase::Incoming => format!("Incoming call \u{b7} {caller}"),
+            CallPhase::Dialing if caller.is_empty() => "Calling\u{2026}".into(),
+            CallPhase::Dialing => format!("Calling\u{2026} \u{b7} {caller}"),
+            CallPhase::Active => {
+                // Route line first (§7), then the running clock.
+                let mut line = self.device.trim().to_string();
+                let clock = self.elapsed.trim();
+                if !clock.is_empty() {
+                    if !line.is_empty() {
+                        line.push_str(" \u{b7} ");
+                    }
+                    line.push_str(clock);
+                }
+                if line.is_empty() {
+                    "On a call".into()
+                } else {
+                    line
+                }
+            }
+            CallPhase::Ended => "Call ended".into(),
+            CallPhase::None => "No active call".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1591,6 +1643,70 @@ mod tests {
         assert_eq!(fmt_clock(228.0), "3:48");
         assert_eq!(fmt_clock(3725.0), "1:02:05");
         assert_eq!(fmt_remaining(144.0), "-2:24");
+    }
+
+    #[test]
+    fn call_status_text_follows_the_phase() {
+        use crate::activities::call::PhoneLinkState;
+        use crate::activities::call_state::CallPhase;
+
+        let body = |phase: CallPhase, caller: &str, device: &str, elapsed: &str, note| CallBody {
+            device: device.into(),
+            app_name: "Phone Link".into(),
+            caller: caller.into(),
+            elapsed: elapsed.into(),
+            live: matches!(
+                phase,
+                CallPhase::Incoming | CallPhase::Dialing | CallPhase::Active
+            ),
+            mic_muted: false,
+            output_muted: false,
+            link: PhoneLinkState::Available,
+            phase,
+            note,
+        };
+
+        assert_eq!(
+            body(CallPhase::None, "", "", "", None).status_text(),
+            "No active call"
+        );
+        assert_eq!(
+            body(CallPhase::Ended, "", "", "", None).status_text(),
+            "Call ended"
+        );
+        assert_eq!(
+            body(CallPhase::Incoming, "Priya", "", "", None).status_text(),
+            "Incoming call \u{b7} Priya"
+        );
+        assert_eq!(
+            body(CallPhase::Incoming, "", "", "", None).status_text(),
+            "Incoming call"
+        );
+        assert_eq!(
+            body(CallPhase::Dialing, "+91 9876543210", "", "", None).status_text(),
+            "Calling\u{2026} \u{b7} +91 9876543210"
+        );
+        assert_eq!(
+            body(CallPhase::Active, "", "Galaxy Buds2 Pro", "1:05", None).status_text(),
+            "Galaxy Buds2 Pro \u{b7} 1:05"
+        );
+        // No route and no clock yet: say the call exists, invent nothing.
+        assert_eq!(
+            body(CallPhase::Active, "", "", "", None).status_text(),
+            "On a call"
+        );
+        // An honest action note replaces the status line while it is fresh.
+        assert_eq!(
+            body(
+                CallPhase::Incoming,
+                "Priya",
+                "",
+                "",
+                Some("Open Phone Link to do this".into())
+            )
+            .status_text(),
+            "Open Phone Link to do this"
+        );
     }
 
     #[test]

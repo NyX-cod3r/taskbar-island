@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Fusion (side-by-side) manifest embedded in taskbar-island.exe.
+
+  The `<msix>` element is what connects the running binary to the registered
+  identity package (`assets/AppxManifest.xml`, registered by the installer
+  with `Add-AppxPackage -Register -ExternalLocation`). Its three attributes
+  must match the package manifest exactly: packageName = Identity/@Name,
+  publisher = Identity/@Publisher, applicationId = Application/@Id.
+  Without them Windows reports no package identity, and Source B
+  (UserNotificationListener) cannot attach.
+
+  Spec §3 Source B.
+-->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="0.0.0.0" name="TaskbarIsland.app" />
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
+        publisher="CN=TaskbarIsland"
+        packageName="TaskbarIsland.Sparse"
+        applicationId="TaskbarIsland" />
+</assembly>
