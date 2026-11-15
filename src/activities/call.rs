@@ -8,12 +8,17 @@
 //! Link presence probe, and [`phone_link_names`] — the localized app display
 //! names read from the package at runtime.
 
+use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{ERROR_NO_MORE_ITEMS, HWND, LPARAM, WPARAM};
+use windows::core::{implement, PCWSTR};
+use windows::Win32::Foundation::{ERROR_NO_MORE_ITEMS, HWND, LPARAM, PROPERTYKEY, WPARAM};
+use windows::Win32::Media::Audio::{
+    eCommunications, eConsole, eRender, EDataFlow, ERole, IMMDeviceEnumerator,
+    IMMNotificationClient, IMMNotificationClient_Impl, DEVICE_STATE,
+};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegEnumKeyW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
 };
@@ -24,7 +29,9 @@ use crate::activities::audio;
 pub const WM_APP_CALL: u32 = WM_APP + 6;
 /// `WM_APP_CALL` wparam: the call sources posted new signals to fold in.
 pub const CALL_WAKE_SIGNALS: usize = 0;
-/// `WM_APP_CALL` wparam: the audio worker refreshed device/mutes.
+/// `WM_APP_CALL` wparam: the audio worker refreshed device/mutes/endpoint
+/// list. `lparam` is `1` when the last default-device switch could not be
+/// applied and the worker opened Windows' sound settings instead (v0.9 §4).
 pub const CALL_WAKE_AUDIO: usize = 1;
 /// `WM_APP_CALL` wparam: a UIA action finished; `lparam` is an
 /// [`ActionOutcome`] code.
@@ -64,21 +71,38 @@ pub struct CallRuntime {
     pub device: String,
     pub mic_muted: bool,
     pub output_muted: bool,
+    /// The default communications endpoint is a Bluetooth Hands-Free profile
+    /// endpoint (proved from its own name), so the sheet can say what the
+    /// route really is instead of only its brand name.
+    pub handsfree: bool,
+    /// Endpoint id Windows routes call audio through (the default
+    /// communications render device). Empty while the query failed.
+    pub comms_id: String,
+    /// Friendly name of the default console render device — the output
+    /// sheet's "PC speakers and microphone" row. Empty on query failure.
+    pub console_device: String,
+    /// Endpoint id of that console device, for the same-id comparison.
+    pub console_id: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioCommand {
     #[allow(dead_code)] // Sent when the Call card re-reads the audio state.
     Refresh,
     ToggleMic,
     ToggleOutput,
+    /// Make this endpoint the default for every role (an output sheet's
+    /// choice). When Windows refuses, the worker opens the sound settings
+    /// page and reports it through `CALL_WAKE_AUDIO` with `lparam = 1`.
+    SetDefault(String),
 }
 
 pub fn runtime() -> Arc<Mutex<CallRuntime>> {
     Arc::new(Mutex::new(CallRuntime::default()))
 }
 
-/// Start the audio command worker (device name + endpoint mutes).
+/// Start the audio command worker (device name + endpoint mutes + the
+/// endpoint list the output sheets read).
 pub fn subscribe_audio(
     hwnd: HWND,
     shared: Arc<Mutex<CallRuntime>>,
@@ -97,10 +121,17 @@ fn audio_worker(hwnd: isize, shared: Arc<Mutex<CallRuntime>>, rx: Receiver<Audio
         return;
     }
     refresh_audio(&shared);
-    post(hwnd, WM_APP_CALL, CALL_WAKE_AUDIO);
+    audio::refresh_endpoints();
+    post(hwnd, WM_APP_CALL, CALL_WAKE_AUDIO, 0);
+    // Non-zero while the command just handled needs the honest "we opened
+    // sound settings" note instead of the routine refresh wake.
+    let mut fallback = 0isize;
     while let Ok(command) = rx.recv() {
         match command {
-            AudioCommand::Refresh => refresh_audio(&shared),
+            AudioCommand::Refresh => {
+                refresh_audio(&shared);
+                audio::refresh_endpoints();
+            }
             AudioCommand::ToggleMic => {
                 let (flow, role) = audio::communications_capture();
                 let current = audio::mute_state(flow, role).unwrap_or(false);
@@ -121,33 +152,169 @@ fn audio_worker(hwnd: isize, shared: Arc<Mutex<CallRuntime>>, rx: Receiver<Audio
                         .output_muted = actual;
                 }
             }
+            AudioCommand::SetDefault(id) => {
+                // The sheet promised a real switch: set every role at once.
+                // When Windows refuses (empty or unknown id), open its own
+                // sound page instead of moving our check mark for nothing.
+                if id.is_empty() || !audio::set_default_all(&id) {
+                    crate::log::log("call.audio: set-default refused -> sound settings");
+                    open_app("ms-settings:sound");
+                    fallback = 1;
+                }
+                // Re-read the ids either way: a successful switch must move
+                // the sheet's check mark to the row that was picked.
+                refresh_audio(&shared);
+                audio::refresh_endpoints();
+            }
         }
-        post(hwnd, WM_APP_CALL, CALL_WAKE_AUDIO);
+        post(hwnd, WM_APP_CALL, CALL_WAKE_AUDIO, fallback);
+        fallback = 0;
     }
 }
 
 fn refresh_audio(shared: &Arc<Mutex<CallRuntime>>) {
     let (rflow, rrole) = audio::communications_render();
     let (cflow, crole) = audio::communications_capture();
+    let (kflow, krole) = audio::console_render();
     let device = audio::friendly_name(rflow, rrole)
-        .or_else(|_| {
-            let (flow, role) = audio::console_render();
-            audio::friendly_name(flow, role)
-        })
+        .or_else(|_| audio::friendly_name(kflow, krole))
         .unwrap_or_default();
+    // Hands-Free AG endpoints only exist over Bluetooth's HF profile, so the
+    // endpoint's own name proves the "Bluetooth hands-free" wording.
+    let handsfree = device.to_ascii_lowercase().contains("hands-free");
     let mic = audio::mute_state(cflow, crole).unwrap_or(false);
     let output = audio::mute_state(rflow, rrole).unwrap_or(false);
+    // The output sheet's routes, read on the worker: the call's own endpoint
+    // (id only — its name is `device` above) and the PC default (name + id).
+    let comms_id = audio::default_id(rflow, rrole);
+    let console_device = audio::friendly_name(kflow, krole).unwrap_or_default();
+    let console_id = audio::default_id(kflow, krole);
     let mut runtime = shared.lock().expect("call runtime mutex poisoned");
     runtime.device = device;
+    runtime.handsfree = handsfree;
     runtime.mic_muted = mic;
     runtime.output_muted = output;
+    runtime.comms_id = comms_id;
+    runtime.console_device = console_device;
+    runtime.console_id = console_id;
 }
 
-fn post(hwnd: isize, message: u32, wake: usize) {
+fn post(hwnd: isize, message: u32, wake: usize, lparam: isize) {
     // SAFETY: posting to our own window.
     unsafe {
-        let _ = PostMessageW(Some(HWND(hwnd as *mut _)), message, WPARAM(wake), LPARAM(0));
+        let _ = PostMessageW(
+            Some(HWND(hwnd as *mut _)),
+            message,
+            WPARAM(wake),
+            LPARAM(lparam),
+        );
     }
+}
+
+/// The default-device listener (v0.9 §4). Windows *tells* us when the
+/// default render endpoint moves, so the sheets' check marks and the music
+/// chip never go stale — no polling anywhere. The callback runs on the UI
+/// thread that registered it (an STA with a message pump) and only queues an
+/// [`AudioCommand::Refresh`]: no WASAPI, no UI work, nothing that can block.
+#[implement(IMMNotificationClient)]
+struct DefaultChangeWatcher {
+    tx: Sender<AudioCommand>,
+}
+
+impl IMMNotificationClient_Impl for DefaultChangeWatcher_Impl {
+    fn OnDeviceStateChanged(
+        &self,
+        _id: &PCWSTR,
+        _state: DEVICE_STATE,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnDeviceAdded(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnDeviceRemoved(&self, _id: &PCWSTR) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn OnDefaultDeviceChanged(
+        &self,
+        flow: EDataFlow,
+        role: ERole,
+        _id: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        // Only the two render defaults the sheets offer; a capture change
+        // (plugging in a mic) is not ours to react to.
+        if flow == eRender && (role == eConsole || role == eCommunications) {
+            let _ = self.tx.send(AudioCommand::Refresh);
+        }
+        Ok(())
+    }
+
+    fn OnPropertyValueChanged(
+        &self,
+        _id: &PCWSTR,
+        _key: &PROPERTYKEY,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+/// Keep-alive for the registration: the enumerator owns the callback list,
+/// so both halves must live and die together.
+struct AudioWatcher {
+    enumerator: IMMDeviceEnumerator,
+    client: IMMNotificationClient,
+}
+
+impl Drop for AudioWatcher {
+    fn drop(&mut self) {
+        // SAFETY: this pair was registered on this thread and is still alive.
+        let _ = unsafe {
+            self.enumerator
+                .UnregisterEndpointNotificationCallback(&self.client)
+        };
+    }
+}
+
+thread_local! {
+    /// The one listener, owned by the UI thread that registered it.
+    static AUDIO_WATCH: RefCell<Option<AudioWatcher>> = const { RefCell::new(None) };
+}
+
+/// Register the default-device listener on the **calling** thread. That must
+/// be the UI thread *after* `OleInitialize`: an STA with a message pump is
+/// what dispatches the COM callback, and keeping it here means no callback
+/// can outlive the window.
+pub fn start_audio_watcher(tx: Sender<AudioCommand>) {
+    AUDIO_WATCH.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return;
+        }
+        let client: IMMNotificationClient = DefaultChangeWatcher { tx }.into();
+        let Ok(enumerator) = audio::enumerator() else {
+            crate::log::log("call.audio: no device enumerator; sheets will not self-update");
+            return;
+        };
+        // SAFETY: the calling thread is OLE-initialized (registration is a
+        // COM call), our in-proc client stays alive in `slot` below.
+        if let Err(err) = unsafe { enumerator.RegisterEndpointNotificationCallback(&client) } {
+            crate::log::log(&format!("call.audio: watcher registration failed: {err}"));
+            return;
+        }
+        *slot = Some(AudioWatcher { enumerator, client });
+        crate::log::log("call.audio: default-device watcher registered");
+    });
+}
+
+/// Undo [`start_audio_watcher`] on window destroy: dropping the pair
+/// unregisters it, so no callback can arrive after the window is gone.
+pub fn stop_audio_watcher() {
+    AUDIO_WATCH.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
 }
 
 struct RegKey(HKEY);

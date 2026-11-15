@@ -24,6 +24,9 @@ pub enum CallAction {
     Answer,
     Decline,
     End,
+    /// Hand the call back to the phone (Phone Link's own transfer control,
+    /// v0.9 §4's "Phone" row in the call audio sheet).
+    Transfer,
 }
 
 impl CallAction {
@@ -33,6 +36,9 @@ impl CallAction {
             Self::Answer => &["Answer", "Accept"],
             Self::Decline => &["Decline", "Ignore", "Reject"],
             Self::End => phonelink::END_BUTTONS,
+            // Phone Link words this control differently between builds, so
+            // every label seen in the wild is tried before giving up.
+            Self::Transfer => &["Phone", "Transfer to phone", "Transfer call"],
         }
     }
 
@@ -41,6 +47,7 @@ impl CallAction {
             Self::Answer => "answer",
             Self::Decline => "decline",
             Self::End => "end",
+            Self::Transfer => "transfer",
         }
     }
 }
@@ -167,8 +174,9 @@ fn accepts(hwnd: isize, action: CallAction) -> bool {
             };
             looks_like_toast(&class, rect.0, rect.1)
         }
-        // End lives in the Phone Link window (a minimized one still counts).
-        CallAction::End => is_phone_window(hwnd),
+        // End and Transfer both live in the Phone Link window (a minimized
+        // one still counts).
+        CallAction::End | CallAction::Transfer => is_phone_window(hwnd),
     }
 }
 

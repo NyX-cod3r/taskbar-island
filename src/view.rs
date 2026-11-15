@@ -15,6 +15,14 @@ pub enum IconId {
     Clock,
     Speaker,
     SpeakerMuted,
+    /// Over-ear headphones (the output chips and a hands-free sheet row).
+    Headphones,
+    /// Bare chevron pointing up: the output chip's affordance.
+    ChevronUp,
+    /// Phone/tablet outline (the call sheet's Phone transfer row).
+    PhoneDevice,
+    /// Screen on a stand (the music sheet's "Cast to a device…" row).
+    Cast,
     #[allow(dead_code)] // Dropdown chrome lands with the Convert card (B2).
     DownArrow,
     Mic,
@@ -47,6 +55,8 @@ pub enum IconId {
     Undo,
     #[allow(dead_code)] // "Add files" lands with the Convert card (B2).
     Plus,
+    /// §6 timer stepper (and any other decrement control).
+    Minus,
     #[allow(dead_code)] // Card back action lands with the Convert card (B2).
     Back,
     SelectAll,
@@ -99,8 +109,17 @@ pub enum Element {
     MusicPlay,
     MusicNext,
     MusicRepeat,
+    /// The music card's output chip: opens the "Play on" sheet (v0.9 §4).
+    MusicOutput,
     CallMic,
+    /// Mute the speaker endpoint of the call (both card phases).
+    CallSpeaker,
+    /// The call card's output chip: opens the "Call audio" sheet (v0.9 §4).
     CallOutput,
+    /// Close button of an output sheet.
+    CallSheetClose,
+    /// One device row of an output sheet.
+    CallSheetRow(usize),
     CallOpen,
     /// Accept an incoming call (UIA Invoke on the toast's Answer button).
     CallAnswer,
@@ -111,7 +130,10 @@ pub enum Element {
     /// The muted phone icon of an unavailable Call idle card (spec §8).
     CallIdle,
     TimerToggle,
-    TimerPreset(u32),
+    /// §6 stepper: one minute less (set view) or −1 min (running view).
+    TimerMinus,
+    /// §6 stepper: one minute more (set view) or +1 min (running view).
+    TimerPlus,
     TimerStop,
     ClipFilter(ClipFilter),
     ClipPause,
@@ -228,6 +250,74 @@ pub struct MediaControls {
     pub seek: bool,
 }
 
+/// One row of an output sheet (v0.9 §4): a route Windows can be asked to
+/// use, or an honest action row that switches nothing by itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SheetRowView {
+    /// Glyph in the row's 28 DIP tile.
+    pub icon: IconId,
+    /// Endpoint display name (`Galaxy Buds2 Pro`), or the row's own label
+    /// (`PC speakers and microphone`, `Phone`, `Cast to a device…`).
+    pub name: String,
+    /// What the route really is, or the honest hint on a non-device row.
+    pub sub: String,
+    /// This is the route Windows uses right now — the green check.
+    pub current: bool,
+    /// Endpoint id to make default. Empty on rows that do not switch one.
+    pub id: String,
+    /// The Phone row: handing the call back to Phone Link, not a device.
+    pub phone: bool,
+    /// The "Cast to a device…" row: opens Windows' own Cast UI.
+    pub cast: bool,
+}
+
+/// The output sheet sliding over the open card. An empty `rows` means there
+/// is no sheet (and the card beneath takes its hits again).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SheetView {
+    /// Header title: `Play on` for music, `Call audio` for calls.
+    pub title: String,
+    pub rows: Vec<SheetRowView>,
+}
+
+impl SheetView {
+    /// How many rows the fixed flyout can show without scrolling; the rest
+    /// are reached with the wheel while the sheet is open.
+    pub fn max_scroll(&self) -> usize {
+        self.rows.len().saturating_sub(design::SHEET_VISIBLE)
+    }
+}
+
+/// One output-sheet device row is two lines: the device itself, and what
+/// Windows says it is. Endpoints are written `Speakers (Realtek(R) Audio)`,
+/// so the parenthetical becomes the sub-line; a device without one says that
+/// it is the default (or simply that it is an audio endpoint) instead of
+/// inventing a description. Returns `(name, sub)`.
+pub fn split_endpoint(name: &str, current: bool) -> (String, String) {
+    let name = name.trim();
+    if name.is_empty() {
+        let sub = if current { "Windows default" } else { "" };
+        return ("Output device".into(), sub.into());
+    }
+    if let Some(open) = name.find(" (") {
+        if let Some(close) = name.rfind(')') {
+            if close > open + 2 {
+                let base = name[..open].trim();
+                let rest = name[open + 2..close].trim();
+                if !base.is_empty() && !rest.is_empty() {
+                    return (base.to_string(), rest.to_string());
+                }
+            }
+        }
+    }
+    let sub = if current {
+        "Windows default"
+    } else {
+        "Audio endpoint"
+    };
+    (name.to_string(), sub.into())
+}
+
 #[derive(Debug, Clone)]
 pub struct MusicBody {
     pub title: String,
@@ -241,6 +331,8 @@ pub struct MusicBody {
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub controls: MediaControls,
+    /// The "Play on" sheet (v0.9 §4): empty until the chip is pressed.
+    pub sheet: SheetView,
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +348,9 @@ pub struct CallBody {
     pub live: bool,
     pub mic_muted: bool,
     pub output_muted: bool,
+    /// The "Call audio" sheet (v0.9 §4): rows only exist for a live call,
+    /// so an idle card can never offer routes for a call that is not up.
+    pub sheet: SheetView,
     /// Phone Link presence. Only read while `live` is false, where it picks
     /// between real status and the muted empty state (A prompt §5).
     pub link: crate::activities::call::PhoneLinkState,
@@ -478,7 +573,20 @@ pub struct TimerBody {
     pub running: bool,
     /// A duration is set but the countdown has not started.
     pub armed: bool,
-    pub finished: bool,
+    /// §6 set view caption: `15 minutes · hold to repeat`.
+    pub caption: String,
+    /// §6 running view: countdown name and status line.
+    pub name: String,
+    pub status: String,
+    /// §6 running view: elapsed / total clocks flanking the wave.
+    pub elapsed: String,
+    pub total: String,
+}
+
+/// §6 set-view caption under the big readout.
+pub fn timer_caption(minutes: u32) -> String {
+    let unit = if minutes == 1 { "minute" } else { "minutes" };
+    format!("{minutes} {unit} · hold to repeat")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -816,6 +924,13 @@ pub fn fmt_clock(seconds: f64) -> String {
 
 pub fn fmt_remaining(seconds: f64) -> String {
     format!("-{}", fmt_clock(seconds))
+}
+
+/// Timer clocks are always `MM:SS` (v0.9 §6), even past an hour, so the
+/// stepper readout and the pill agree on one shape.
+pub fn fmt_mmss(seconds: f64) -> String {
+    let total = seconds.max(0.0).round() as u64;
+    format!("{}:{:02}", total / 60, total % 60)
 }
 
 /// Clipboard pill: the shell is always the clipboard glyph. `pop` holds the
@@ -1645,6 +1760,45 @@ mod tests {
         assert_eq!(fmt_remaining(144.0), "-2:24");
     }
 
+    /// v0.9 §4: an output-sheet row's two lines come from the endpoint name
+    /// Windows actually reports — split on the first parenthetical, and never
+    /// invent a description for a device that has none.
+    #[test]
+    fn endpoint_names_split_into_device_and_detail() {
+        // The common Windows form: `Speakers (Realtek(R) Audio)`.
+        assert_eq!(
+            split_endpoint("Speakers (Realtek(R) Audio)", true),
+            ("Speakers".to_string(), "Realtek(R) Audio".to_string())
+        );
+        // No parenthetical: the name stays whole and the sub-line states the
+        // honest relationship to Windows instead of a made-up model.
+        assert_eq!(
+            split_endpoint("Galaxy Buds2 Pro", true),
+            (
+                "Galaxy Buds2 Pro".to_string(),
+                "Windows default".to_string()
+            )
+        );
+        assert_eq!(
+            split_endpoint("Monitor (HDMI)", false),
+            ("Monitor".to_string(), "HDMI".to_string())
+        );
+        assert_eq!(
+            split_endpoint("USB Audio Device", false),
+            ("USB Audio Device".to_string(), "Audio endpoint".to_string())
+        );
+        // Degenerate input: an empty name becomes a placeholder row rather
+        // than a blank line, and a bare `()` is not treated as a split.
+        assert_eq!(
+            split_endpoint("   ", true),
+            ("Output device".to_string(), "Windows default".to_string())
+        );
+        assert_eq!(
+            split_endpoint("()", false),
+            ("()".to_string(), "Audio endpoint".to_string())
+        );
+    }
+
     #[test]
     fn call_status_text_follows_the_phase() {
         use crate::activities::call::PhoneLinkState;
@@ -1661,6 +1815,7 @@ mod tests {
             ),
             mic_muted: false,
             output_muted: false,
+            sheet: SheetView::default(),
             link: PhoneLinkState::Available,
             phase,
             note,

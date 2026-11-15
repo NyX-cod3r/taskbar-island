@@ -80,9 +80,13 @@ pub struct RenderInput<'a> {
     pub flyout: Option<RectD>,
     /// Overall flyout fill/shadow opacity (0..1).
     pub flyout_alpha: f32,
-    /// Flyout open/close scale about the card centre (1.0 at rest).
-    pub flyout_scale: f32,
-    /// Vertical offset in DIP (the card rises during open, drops during close).
+    /// §7 morph: the card rect scaled about its centre (1.0 at rest)…
+    pub flyout_sx: f32,
+    pub flyout_sy: f32,
+    /// …and moved in DIP, so the whole surface grows out of the pill rect.
+    /// The card is laid out at its final size either way; only this transform
+    /// changes, so the interior never re-flows mid-open.
+    pub flyout_dx: f32,
     pub flyout_dy: f32,
     pub pill_alpha: f32,
     pub top_alpha: f32,
@@ -109,6 +113,11 @@ pub struct RenderInput<'a> {
     pub rail_from: Option<ActivityKind>,
     /// Eased 0..1 progress of the rail indicator slide.
     pub rail_t: f32,
+    /// Eased 0..1 progress of the output sheet sliding up over the card
+    /// (v0.9 §4; 0 = hidden — only then does the card beneath take hits).
+    pub sheet: f32,
+    /// First visible row of an output sheet longer than the flyout shows.
+    pub sheet_scroll: usize,
     /// Highlight the shelf drop zone while a file drag hovers the card.
     pub drag_over: bool,
 }
@@ -265,19 +274,26 @@ impl Painter {
                 self.draw_bubble(rt, input, second, rect, &mut hits);
             }
         }
-        if let (Some(mut fly), Some(flyout)) = (input.flyout, input.view.flyout()) {
-            fly.y += input.flyout_dy;
-            let scale = input.flyout_scale.clamp(0.01, 1.0);
-            if (scale - 1.0).abs() > 0.0005 {
+        if let (Some(fly), Some(flyout)) = (input.flyout, input.view.flyout()) {
+            // §7: the whole surface is mapped onto the morph rect — scaled
+            // (sx, sy) about the card centre and moved by (dx, dy), so it
+            // starts as the pill and lands as the card.
+            let (sx, sy) = (input.flyout_sx, input.flyout_sy);
+            let (dx, dy) = (input.flyout_dx, input.flyout_dy);
+            let moving = (sx - 1.0).abs() > 0.0005
+                || (sy - 1.0).abs() > 0.0005
+                || dx.abs() > 0.0005
+                || dy.abs() > 0.0005;
+            if moving {
                 // SAFETY: the render target is valid for this draw call.
                 unsafe {
                     let cx = fly.x + fly.w * 0.5;
                     let cy = fly.y + fly.h * 0.5;
                     rt.SetTransform(&Matrix3x2 {
-                        M11: input.scale * scale,
-                        M22: input.scale * scale,
-                        M31: input.scale * cx * (1.0 - scale),
-                        M32: input.scale * cy * (1.0 - scale),
+                        M11: input.scale * sx,
+                        M22: input.scale * sy,
+                        M31: input.scale * (cx - cx * sx + dx),
+                        M32: input.scale * (cy - cy * sy + dy),
                         ..Matrix3x2::identity()
                     });
                 }
@@ -1327,6 +1343,9 @@ impl Painter {
             hits,
         );
         self.draw_card(rt, input, view, fly, hits);
+        // v0.9 §4: the output sheet lives inside the same rounded clip, so
+        // it can never paint past the card's corners while it slides up.
+        self.draw_output_sheet(rt, input, view, fly, alpha, hits);
         drop_rounded_layer(rt, clip);
 
         let px = 1.0 / input.scale;
@@ -1338,6 +1357,193 @@ impl Painter {
             theme.fly_border().with_alpha(alpha),
             false,
         );
+    }
+
+    // -------------------------------------------------------- output sheet
+
+    /// The output sheet (v0.9 §4): a full-flyout panel that slides up over
+    /// the open card — same window, same size, its own rgb(38,38,38)
+    /// surface, a header (14 px semibold title + 32 × 32 close) and 44 DIP
+    /// rows (28 × 28 tile, 13 px name, 11.5 px sub) with a check on the
+    /// route Windows uses right now. Nothing here can resize the card: the
+    /// panel is painted over it, inside the card's own rounded clip.
+    fn draw_output_sheet(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        view: &FlyoutView,
+        fly: RectD,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
+        let t = input.sheet.clamp(0.0, 1.0);
+        if t <= 0.001 {
+            return;
+        }
+        let sheet = match &view.body {
+            Body::Music(music) => &music.sheet,
+            Body::Call(call) => &call.sheet,
+            _ => return,
+        };
+        if sheet.rows.is_empty() {
+            return;
+        }
+        // Slide up from under the card's bottom edge (240 ms, EASE_CONTENT).
+        let panel = fly.offset(0.0, (1.0 - t) * fly.h);
+        let alpha = alpha * t;
+        // The sheet is always rgb(38,38,38), so it paints with its own
+        // white ramps instead of the theme's text colours.
+        let white = design::white;
+        self.fill_round(
+            rt,
+            panel,
+            design::R_SURFACE,
+            design::SHEET_BG.with_alpha(alpha),
+        );
+
+        let pad_x = design::SHEET_PAD_X;
+        let head_y = panel.y + design::SHEET_PAD_Y;
+        let close = RectD::new(
+            panel.right() - pad_x - design::SHEET_CLOSE,
+            head_y,
+            design::SHEET_CLOSE,
+            design::SHEET_CLOSE,
+        );
+        let title_x = panel.x + pad_x;
+        self.text(
+            rt,
+            &sheet.title,
+            RectD::new(
+                title_x,
+                head_y,
+                (close.x - 8.0 - title_x).max(0.0),
+                design::SHEET_CLOSE,
+            ),
+            design::SHEET_TITLE,
+            600,
+            0,
+            design::SHEET_CLOSE,
+            white(0.94).with_alpha(alpha),
+            true,
+        );
+        let pressed = input.pressed_amount(Element::CallSheetClose);
+        let draw = pressed_rect(close, pressed);
+        let fill = if pressed.is_some() {
+            white(0.16)
+        } else if input.hovered(Element::CallSheetClose) {
+            white(0.10)
+        } else {
+            Color::TRANSPARENT
+        };
+        self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
+        self.icon_center(
+            rt,
+            IconId::Close,
+            draw,
+            16.0,
+            white(0.72).with_alpha(alpha),
+            input.scale,
+            0.0,
+        );
+        if alpha > 0.15 {
+            hits.add(Element::CallSheetClose, close, design::R_CONTROL);
+        }
+
+        // Rows: three fit the fixed flyout exactly, the rest are scrolled in
+        // by `input.sheet_scroll` (the wheel, while the sheet owns the card).
+        let row_x = panel.x + pad_x;
+        let row_w = panel.w - pad_x * 2.0;
+        let rows_y = head_y + design::SHEET_CLOSE + design::SHEET_HEADER_GAP;
+        let stride = design::SHEET_ROW_H + design::SHEET_ROW_GAP;
+        let first = input.sheet_scroll.min(sheet.rows.len() - 1);
+        let last = (first + design::SHEET_VISIBLE).min(sheet.rows.len());
+        for (slot, index) in (first..last).enumerate() {
+            let row = &sheet.rows[index];
+            let rect = RectD::new(
+                row_x,
+                rows_y + slot as f32 * stride,
+                row_w,
+                design::SHEET_ROW_H,
+            );
+            let element = Element::CallSheetRow(index);
+            let pressed = input.pressed_amount(element);
+            let draw = pressed_rect(rect, pressed);
+            let fill = if pressed.is_some() {
+                white(0.12)
+            } else if input.hovered(element) {
+                white(0.07)
+            } else {
+                Color::TRANSPARENT
+            };
+            self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
+
+            let tile = RectD::new(
+                rect.x,
+                rect.center_y() - design::SHEET_TILE * 0.5,
+                design::SHEET_TILE,
+                design::SHEET_TILE,
+            );
+            self.fill_round(rt, tile, design::R_CONTROL, white(0.08).with_alpha(alpha));
+            self.icon_center(
+                rt,
+                row.icon,
+                tile,
+                16.0,
+                white(0.82).with_alpha(alpha),
+                input.scale,
+                0.0,
+            );
+
+            let text_x = tile.right() + 12.0;
+            let check_w = if row.current { 26.0 } else { 0.0 };
+            let text_w = (rect.right() - check_w - text_x).max(0.0);
+            let stack = design::LINE_SHEET_NAME + design::LINE_SHEET_SUB;
+            let top = rect.y + (rect.h - stack) * 0.5;
+            self.text(
+                rt,
+                &row.name,
+                RectD::new(text_x, top, text_w, design::LINE_SHEET_NAME),
+                design::SHEET_NAME,
+                500,
+                0,
+                design::LINE_SHEET_NAME,
+                white(0.95).with_alpha(alpha),
+                true,
+            );
+            if !row.sub.is_empty() {
+                self.text(
+                    rt,
+                    &row.sub,
+                    RectD::new(
+                        text_x,
+                        top + design::LINE_SHEET_NAME,
+                        text_w,
+                        design::LINE_SHEET_SUB,
+                    ),
+                    design::SHEET_SUB,
+                    400,
+                    0,
+                    design::LINE_SHEET_SUB,
+                    white(0.55).with_alpha(alpha),
+                    true,
+                );
+            }
+            if row.current {
+                let check = RectD::new(rect.right() - 20.0, rect.center_y() - 9.0, 18.0, 18.0);
+                self.icon_center(
+                    rt,
+                    IconId::Check,
+                    check,
+                    18.0,
+                    design::CALL_GREEN.with_alpha(alpha),
+                    input.scale,
+                    0.0,
+                );
+            }
+            if alpha > 0.15 {
+                hits.add(element, rect, design::R_CONTROL);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ rail
@@ -1477,14 +1683,9 @@ impl Painter {
             return;
         }
         let (gap, body_h) = match &view.body {
-            Body::Timer(_) => (
-                design::CARD_GAP,
-                design::LINE_TIMER_READOUT
-                    + design::CARD_GAP
-                    + design::TIMER_PROGRESS_H
-                    + design::CARD_GAP
-                    + design::TIMER_CTRL_H,
-            ),
+            // §6: one shell height for the set view and the running view, so
+            // starting the countdown never resizes the card.
+            Body::Timer(_) => (design::CARD_GAP, design::TIMER_BODY_H),
             Body::Call(_) => (
                 design::CARD_GAP,
                 // One height for every §7 call state: the shell never
@@ -2572,11 +2773,9 @@ impl Painter {
             true,
         );
         let meta_y = ty + design::LINE_MUSIC_TITLE + design::MUSIC_LINE_GAP;
-        let source_color = if theme.has_accent {
-            theme.accent
-        } else {
-            design::rgb(0x6C, 0xB4, 0xEE)
-        };
+        // v0.9 §5: line 2 is `artist <12 px gap> app`, one line, ellipsized.
+        // The artist gets at most 60 % of the line so the app name always
+        // keeps a visible tail instead of being pushed off the card.
         if m.artist.is_empty() {
             self.text(
                 rt,
@@ -2586,7 +2785,7 @@ impl Painter {
                 400,
                 0,
                 design::LINE_MUSIC_META,
-                source_color.with_alpha(alpha),
+                theme.music_app().with_alpha(alpha),
                 true,
             );
         } else {
@@ -2598,7 +2797,7 @@ impl Painter {
                     400,
                     design::LINE_MUSIC_META,
                 )
-                .min(tw);
+                .min(tw * design::MUSIC_META_ARTIST_MAX);
             self.text(
                 rt,
                 &m.artist,
@@ -2607,29 +2806,10 @@ impl Painter {
                 400,
                 0,
                 design::LINE_MUSIC_META,
-                theme.music_meta().with_alpha(alpha),
+                theme.music_artist().with_alpha(alpha),
                 true,
             );
-            let dot = " · ";
-            let dot_w = self.measure(
-                rt,
-                dot,
-                design::FONT_MUSIC_META,
-                400,
-                design::LINE_MUSIC_META,
-            );
-            self.text(
-                rt,
-                dot,
-                RectD::new(tx + artist_w, meta_y, dot_w + 1.0, design::LINE_MUSIC_META),
-                design::FONT_MUSIC_META,
-                400,
-                0,
-                design::LINE_MUSIC_META,
-                theme.text_tertiary().with_alpha(alpha),
-                false,
-            );
-            let sx = (tx + artist_w + dot_w).min(content.right());
+            let sx = (tx + artist_w + design::MUSIC_META_GAP).min(content.right());
             self.text(
                 rt,
                 &m.source,
@@ -2643,7 +2823,7 @@ impl Painter {
                 400,
                 0,
                 design::LINE_MUSIC_META,
-                source_color.with_alpha(alpha),
+                theme.music_app().with_alpha(alpha),
                 true,
             );
         }
@@ -2675,7 +2855,18 @@ impl Painter {
             wave_w.min(content.right() - wave_x),
             design::MUSIC_PROGRESS_H,
         );
-        self.draw_music_wave(rt, input, wave, m.fraction, m.playing, alpha);
+        self.draw_music_wave(
+            rt,
+            input,
+            wave,
+            m.fraction,
+            if m.playing {
+                design::MUSIC_WAVE_AMP
+            } else {
+                design::MUSIC_WAVE_AMP * design::WAVE_FLAT
+            },
+            alpha,
+        );
         self.text(
             rt,
             &m.remaining,
@@ -2696,11 +2887,12 @@ impl Painter {
             hits.add(Element::ProgressRow, wave, 4.0);
         }
 
-        // Controls row.
+        // Controls row (v0.9 §4): the transport starts at the left edge of
+        // the content column and the output chip owns the right end, so the
+        // row spans exactly the column's width.
         let cy = py + design::MUSIC_PROGRESS_H + gap;
         let step = design::MUSIC_BTN + design::MUSIC_BTN_GAP;
-        let total_w = step * 4.0 + design::MUSIC_PLAY_W;
-        let mut x = content.center_x() - total_w * 0.5;
+        let mut x = content.x;
         let small_y = cy + (design::MUSIC_PLAY_H - design::MUSIC_BTN) * 0.5;
 
         let idle = theme.music_meta();
@@ -2794,6 +2986,117 @@ impl Painter {
             m.controls.repeat,
             hits,
         );
+
+        // v0.9 §4: the output chip fills the rest of the row. Its text is
+        // the default device's own name (empty when the audio query came
+        // back with nothing to claim), ellipsized to the room it has.
+        let chip_label = m
+            .sheet
+            .rows
+            .iter()
+            .find(|row| row.current)
+            .map(|row| row.name.clone())
+            .unwrap_or_default();
+        let chip = RectD::new(
+            x + design::MUSIC_BTN + design::MUSIC_BTN_GAP,
+            cy,
+            design::MUSIC_CHIP_W,
+            design::MUSIC_CHIP_H,
+        );
+        self.output_chip(
+            rt,
+            input,
+            Element::MusicOutput,
+            chip,
+            IconId::Headphones,
+            &chip_label,
+            alpha,
+            hits,
+        );
+    }
+
+    /// The output chip (v0.9 §4): device glyph, device name, chevron. Used
+    /// at both ends of a card's controls row; the name ellipsizes to whatever
+    /// room the row leaves, so a long endpoint name can never push the chip
+    /// out of the card.
+    #[allow(clippy::too_many_arguments)]
+    fn output_chip(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        element: Element,
+        rect: RectD,
+        icon: IconId,
+        label: &str,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
+        if rect.w <= 1.0 || rect.h <= 1.0 {
+            return;
+        }
+        let theme = input.theme;
+        let pressed = input.pressed_amount(element);
+        let draw = pressed_rect(rect, pressed);
+        let fill = if pressed.is_some() {
+            theme.card_button_press()
+        } else if input.hovered(element) {
+            theme.card_button_hover()
+        } else {
+            theme.card_button()
+        };
+        self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
+        self.stroke_round(
+            rt,
+            draw,
+            design::R_CONTROL,
+            1.0,
+            theme.card_divider().with_alpha(alpha),
+            false,
+        );
+        // pad | glyph | gap | name (flex) | gap | chevron | pad.
+        let pad = 8.0;
+        let glyph = 16.0;
+        let chev = 14.0;
+        let icon_r = RectD::new(draw.x + pad, draw.center_y() - glyph * 0.5, glyph, glyph);
+        self.icon_center(
+            rt,
+            icon,
+            icon_r,
+            glyph,
+            theme.card_button_text().with_alpha(alpha),
+            input.scale,
+            0.0,
+        );
+        let chev_r = RectD::new(
+            draw.right() - pad - chev,
+            draw.center_y() - chev * 0.5,
+            chev,
+            chev,
+        );
+        let text_x = icon_r.right() + 6.0;
+        self.text(
+            rt,
+            label,
+            RectD::new(text_x, draw.y, (chev_r.x - 6.0 - text_x).max(0.0), draw.h),
+            design::FONT_CHIP,
+            500,
+            0,
+            draw.h,
+            theme.text_primary().with_alpha(alpha),
+            true,
+        );
+        self.icon_center(
+            rt,
+            IconId::ChevronUp,
+            chev_r,
+            chev,
+            theme.card_button_text().with_alpha(alpha),
+            input.scale,
+            0.0,
+        );
+        if alpha > 0.15 {
+            hits.add(element, rect, design::R_CONTROL);
+        }
     }
 
     fn draw_art_placeholder(
@@ -2848,7 +3151,9 @@ impl Painter {
         input: &RenderInput<'_>,
         row: RectD,
         fraction: f32,
-        playing: bool,
+        // Peak amplitude in DIP: full while playing, ~0 while flat. The
+        // timer passes a tweened value so pausing eases the wave down.
+        amplitude: f32,
         alpha: f32,
     ) {
         let theme = input.theme;
@@ -2878,11 +3183,6 @@ impl Painter {
             // SAFETY: clip and geometry are local.
             unsafe { rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE) };
             let phase = input.progress.map(|p| p.phase).unwrap_or(0.0);
-            let amplitude = if playing {
-                design::MUSIC_WAVE_AMP
-            } else {
-                design::MUSIC_WAVE_AMP * design::WAVE_FLAT
-            };
             if let Some(path) = wave_geometry_len(
                 rt,
                 row.x,
@@ -3075,10 +3375,35 @@ impl Painter {
                     hits,
                 );
             }
-            // Dialing / Active: mute mic, mute speaker, then End (red, flex).
-            // The status line above already says "Calling…" while dialing.
+            // Dialing / Active: mute mic, mute speaker, the output chip, then
+            // End (red, flex). The status line above already says "Calling…".
             CallPhase::Dialing | CallPhase::Active => {
                 let x = self.call_mutes(rt, input, c, row, alpha, hits);
+                // v0.9 §4: the chip sits between the mutes and End and names
+                // the endpoint the call is on (empty when the query failed,
+                // so it never claims a device it could not read).
+                let chip = RectD::new(
+                    x,
+                    row.y + (row.h - design::CALL_CHIP_H) * 0.5,
+                    design::CALL_CHIP_W,
+                    design::CALL_CHIP_H,
+                );
+                let chip_label = if c.device.trim().is_empty() {
+                    String::new()
+                } else {
+                    crate::view::split_endpoint(&c.device, false).0
+                };
+                self.output_chip(
+                    rt,
+                    input,
+                    Element::CallOutput,
+                    chip,
+                    IconId::Headphones,
+                    &chip_label,
+                    alpha,
+                    hits,
+                );
+                let x = chip.right() + design::CALL_BTN_GAP;
                 self.call_text_button(
                     rt,
                     input,
@@ -3165,7 +3490,7 @@ impl Painter {
                 c.mic_muted,
             ),
             (
-                Element::CallOutput,
+                Element::CallSpeaker,
                 if c.output_muted {
                     IconId::SpeakerMuted
                 } else {
@@ -4596,81 +4921,265 @@ impl Painter {
         alpha: f32,
         hits: &mut HitMap,
     ) {
+        // §6: armed = the set view (stepper + Start), everything else the
+        // running view. Both share `TIMER_BODY_H`, so the shell never moves.
+        if t.armed {
+            self.draw_timer_set(rt, input, t, body, alpha, hits);
+        } else {
+            self.draw_timer_running(rt, input, t, body, alpha, hits);
+        }
+    }
+
+    /// §6 set view: − / + stepper around the big MM:SS readout with its
+    /// hold-to-repeat caption, then a full-width amber Start button. The
+    /// content is centred inside the shared body height.
+    fn draw_timer_set(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        t: &crate::view::TimerBody,
+        body: RectD,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
         let theme = input.theme;
         let accent = design::rail_accent(ActivityKind::Timer);
-        let has_timer = t.running || t.armed || t.finished;
+        let total = design::TIMER_STEP_H + design::CARD_GAP + design::TIMER_START_H;
+        let y0 = body.y + (body.h - total) * 0.5;
 
-        // 36/40 readout; idle stays grey.
+        let minus = RectD::new(body.x, y0, design::TIMER_STEP_W, design::TIMER_STEP_H);
+        self.timer_step_button(rt, input, Element::TimerMinus, minus, alpha, hits);
+        let plus = RectD::new(
+            body.right() - design::TIMER_STEP_W,
+            y0,
+            design::TIMER_STEP_W,
+            design::TIMER_STEP_H,
+        );
+        self.timer_step_button(rt, input, Element::TimerPlus, plus, alpha, hits);
+
+        // Big readout and caption between the two stepper buttons.
+        let cx = body.x + design::TIMER_STEP_W;
+        let cw = (body.right() - design::TIMER_STEP_W - cx).max(0.0);
         self.text(
             rt,
             &t.remaining,
-            RectD::new(body.x, body.y, body.w, design::LINE_TIMER_READOUT),
-            design::FONT_TIMER_READOUT,
-            300,
-            0,
-            design::LINE_TIMER_READOUT,
-            if has_timer {
-                theme.text_primary()
-            } else {
-                theme.timer_idle()
+            RectD::new(cx, y0, cw, design::LINE_TIMER_SET),
+            design::FONT_TIMER_SET,
+            600,
+            1,
+            design::LINE_TIMER_SET,
+            theme.text_primary().with_alpha(alpha),
+            false,
+        );
+        self.text(
+            rt,
+            &t.caption,
+            RectD::new(cx, y0 + design::LINE_TIMER_SET, cw, design::LINE_MUSIC_META),
+            design::FONT_MUSIC_META,
+            400,
+            1,
+            design::LINE_MUSIC_META,
+            theme.text_tertiary().with_alpha(alpha),
+            true,
+        );
+
+        // Full-width Start (44 px, amber, dark text).
+        let start = RectD::new(
+            body.x,
+            y0 + design::TIMER_STEP_H + design::CARD_GAP,
+            body.w,
+            design::TIMER_START_H,
+        );
+        let pressed = input.pressed_amount(Element::TimerToggle);
+        let draw = pressed_rect(start, pressed);
+        let fill = if pressed.is_some() {
+            darken(accent, 0.84)
+        } else if input.hovered(Element::TimerToggle) {
+            darken(accent, 0.92)
+        } else {
+            accent
+        };
+        self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
+        self.text(
+            rt,
+            "Start",
+            draw,
+            design::FONT_BUTTON,
+            600,
+            1,
+            design::LINE_CALL_TITLE,
+            design::DARK_GLYPH.with_alpha(alpha),
+            false,
+        );
+        if alpha > 0.15 {
+            hits.add(Element::TimerToggle, start, design::R_SURFACE);
+        }
+    }
+
+    /// §6 running view: ring tile with progress, name over status, the time
+    /// left at 22 px on the right, the wave with elapsed/total, then
+    /// pause / −1 min / +1 min / stop.
+    fn draw_timer_running(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        t: &crate::view::TimerBody,
+        body: RectD,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
+        let theme = input.theme;
+        let accent = design::rail_accent(ActivityKind::Timer);
+        let y0 = body.y + (body.h - design::TIMER_BODY_H) * 0.5;
+
+        // Ring tile: track, elapsed arc, clock glyph.
+        let tile = RectD::new(body.x, y0, design::TIMER_TILE, design::TIMER_TILE);
+        self.fill_round(
+            rt,
+            tile,
+            design::R_SURFACE,
+            theme.card_button().with_alpha(alpha),
+        );
+        let f = t.fraction.clamp(0.0, 1.0);
+        if let Ok(style) = self.solid_style(rt) {
+            if let Ok(track) = self.brush(rt, theme.card_track().with_alpha(alpha)) {
+                if let Some(ring) = ring_geometry(
+                    rt,
+                    tile.center_x(),
+                    tile.center_y(),
+                    design::TIMER_RING_R,
+                    1.0,
+                ) {
+                    // SAFETY: geometry, brush and style are alive for the call.
+                    unsafe {
+                        rt.DrawGeometry(&ring, &track, design::TIMER_RING_STROKE, Some(&style));
+                    }
+                }
             }
-            .with_alpha(alpha),
+            if f > 0.001 {
+                if let Ok(brush) = self.brush(rt, accent.with_alpha(alpha)) {
+                    if let Some(ring) = ring_geometry(
+                        rt,
+                        tile.center_x(),
+                        tile.center_y(),
+                        design::TIMER_RING_R,
+                        f,
+                    ) {
+                        // SAFETY: geometry, brush and style are alive for the call.
+                        unsafe {
+                            rt.DrawGeometry(&ring, &brush, design::TIMER_RING_STROKE, Some(&style));
+                        }
+                    }
+                }
+            }
+        }
+        self.icon_center(
+            rt,
+            IconId::Clock,
+            tile,
+            18.0,
+            theme.text_secondary().with_alpha(alpha),
+            input.scale,
+            0.0,
+        );
+
+        // Name over status in the middle; time left at the right (22 px).
+        let tx = tile.right() + design::TIMER_TEXT_GAP;
+        let time_w = 96.0;
+        let mw = (body.right() - time_w - design::TIMER_TEXT_GAP - tx).max(0.0);
+        let block = design::LINE_TIMER_NAME + design::LINE_MUSIC_META;
+        let ty = y0 + (design::TIMER_TILE - block) * 0.5;
+        self.text(
+            rt,
+            &t.name,
+            RectD::new(tx, ty, mw, design::LINE_TIMER_NAME),
+            design::FONT_TIMER_NAME,
+            600,
+            0,
+            design::LINE_TIMER_NAME,
+            theme.text_primary().with_alpha(alpha),
+            true,
+        );
+        self.text(
+            rt,
+            &t.status,
+            RectD::new(
+                tx,
+                ty + design::LINE_TIMER_NAME,
+                mw,
+                design::LINE_MUSIC_META,
+            ),
+            design::FONT_MUSIC_META,
+            400,
+            0,
+            design::LINE_MUSIC_META,
+            accent.with_alpha(alpha),
+            true,
+        );
+        self.text(
+            rt,
+            &t.remaining,
+            RectD::new(body.right() - time_w, y0, time_w, design::TIMER_TILE),
+            design::FONT_TIMER_RUN,
+            600,
+            2,
+            design::LINE_TIMER_RUN,
+            theme.text_primary().with_alpha(alpha),
             false,
         );
 
-        // 4 DIP track inside the 14 DIP progress row, thumb at the playhead.
-        let py = body.y + design::LINE_TIMER_READOUT + design::CARD_GAP;
-        let track = RectD::new(
-            body.x,
-            py + (design::TIMER_PROGRESS_H - design::TIMER_TRACK_H) * 0.5,
-            body.w,
-            design::TIMER_TRACK_H,
-        );
-        self.fill_round(
+        // Wave row: elapsed ... wave ... total.
+        let wy = y0 + design::TIMER_TILE + design::CARD_GAP;
+        let row = RectD::new(body.x, wy, body.w, design::TIMER_PROGRESS_H);
+        self.text(
             rt,
-            track,
-            design::TIMER_TRACK_H * 0.5,
-            theme.card_track().with_alpha(alpha),
+            &t.elapsed,
+            RectD::new(row.x, row.y, design::MUSIC_TIME_W, row.h),
+            design::FONT_TIME_LABEL,
+            400,
+            0,
+            design::LINE_TIME,
+            theme.music_meta().with_alpha(alpha),
+            false,
         );
-        let f = t.fraction.clamp(0.0, 1.0);
-        if has_timer {
-            if f > 0.0 {
-                self.fill_round(
-                    rt,
-                    RectD::new(track.x, track.y, track.w * f, track.h),
-                    track.h * 0.5,
-                    accent.with_alpha(alpha),
-                );
-            }
-            let thumb_x = (track.x + track.w * f - design::TIMER_THUMB_W * 0.5)
-                .clamp(track.x, track.right() - design::TIMER_THUMB_W);
-            self.fill_round(
-                rt,
-                RectD::new(
-                    thumb_x,
-                    py + (design::TIMER_PROGRESS_H - design::TIMER_THUMB_H) * 0.5,
-                    design::TIMER_THUMB_W,
-                    design::TIMER_THUMB_H,
-                ),
-                design::R_THUMB,
-                design::white(alpha),
-            );
-        }
+        let wave_x = row.x + design::MUSIC_TIME_W + design::MUSIC_TIME_GAP;
+        let wave_w =
+            (row.right() - design::MUSIC_REMAIN_W - design::MUSIC_TIME_GAP - wave_x).max(40.0);
+        self.draw_music_wave(
+            rt,
+            input,
+            RectD::new(wave_x, row.y, wave_w, row.h),
+            t.fraction,
+            // The window tweens this down over 320 ms when the timer pauses.
+            input.progress.map(|p| p.amplitude).unwrap_or(0.0),
+            alpha,
+        );
+        self.text(
+            rt,
+            &t.total,
+            RectD::new(
+                row.right() - design::MUSIC_REMAIN_W,
+                row.y,
+                design::MUSIC_REMAIN_W,
+                row.h,
+            ),
+            design::FONT_TIME_LABEL,
+            400,
+            2,
+            design::LINE_TIME,
+            theme.music_meta().with_alpha(alpha),
+            false,
+        );
 
-        // Start/pause, four preset chips, reset. 304 DIP total.
-        let row_y = py + design::TIMER_PROGRESS_H + design::CARD_GAP;
-        let chips = design::TIMER_PRESETS;
-        let total_w = design::TIMER_START_W
-            + design::TIMER_CHIP_GAP
-            + chips.len() as f32 * design::TIMER_CHIP_W
-            + chips.len() as f32 * design::TIMER_CHIP_GAP
-            + design::TIMER_RESET_W;
-        let mut x = body.center_x() - total_w * 0.5;
-
-        let start = RectD::new(x, row_y, design::TIMER_START_W, design::TIMER_CTRL_H);
+        // Controls: pause/resume (48 x 40, amber), −1 min, +1 min, stop.
+        let by = wy + design::TIMER_PROGRESS_H + design::CARD_GAP;
+        let h = design::TIMER_PAUSE_H;
+        let pause = RectD::new(body.x, by, design::TIMER_PAUSE_W, h);
         let pressed = input.pressed_amount(Element::TimerToggle);
-        let draw = pressed_rect(start, pressed);
-        let fill = if input.hovered(Element::TimerToggle) {
+        let draw = pressed_rect(pause, pressed);
+        let fill = if pressed.is_some() {
+            darken(accent, 0.84)
+        } else if input.hovered(Element::TimerToggle) {
             darken(accent, 0.92)
         } else {
             accent
@@ -4690,43 +5199,25 @@ impl Painter {
             0.0,
         );
         if alpha > 0.15 {
-            hits.add(Element::TimerToggle, start, design::R_SURFACE);
-        }
-        x += design::TIMER_START_W + design::TIMER_CHIP_GAP;
-
-        for minutes in chips {
-            let r = RectD::new(x, row_y, design::TIMER_CHIP_W, design::TIMER_CTRL_H);
-            let element = Element::TimerPreset(minutes);
-            let pressed = input.pressed_amount(element);
-            let draw = pressed_rect(r, pressed);
-            let fill = if pressed.is_some() {
-                theme.card_button_press()
-            } else if input.hovered(element) {
-                theme.card_button_hover()
-            } else {
-                theme.card_button()
-            };
-            self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
-            self.text(
-                rt,
-                &format!("{minutes}m"),
-                draw,
-                design::FONT_CHIP,
-                600,
-                1,
-                design::LINE_CALL_TITLE,
-                theme.card_button_text().with_alpha(alpha),
-                false,
-            );
-            if alpha > 0.15 {
-                hits.add(element, r, design::R_SURFACE);
-            }
-            x += design::TIMER_CHIP_W + design::TIMER_CHIP_GAP;
+            hits.add(Element::TimerToggle, pause, design::R_SURFACE);
         }
 
-        let reset = RectD::new(x, row_y, design::TIMER_RESET_W, design::TIMER_CTRL_H);
+        let mut x = body.x + design::TIMER_PAUSE_W + design::CARD_GAP;
+        for element in [Element::TimerMinus, Element::TimerPlus] {
+            let r = RectD::new(x, by, design::TIMER_STOP_W, h);
+            self.timer_step_button(rt, input, element, r, alpha, hits);
+            x += design::TIMER_STOP_W + design::CARD_GAP;
+        }
+
+        // Stop sits at the far right, away from the −/+ pair.
+        let stop = RectD::new(
+            body.right() - design::TIMER_STOP_W,
+            by,
+            design::TIMER_STOP_W,
+            h,
+        );
         let pressed = input.pressed_amount(Element::TimerStop);
-        let draw = pressed_rect(reset, pressed);
+        let draw = pressed_rect(stop, pressed);
         if pressed.is_some() || input.hovered(Element::TimerStop) {
             let fill = if pressed.is_some() {
                 theme.rail_press_fill()
@@ -4745,7 +5236,47 @@ impl Painter {
             2.0 * 24.0 / 16.0,
         );
         if alpha > 0.15 {
-            hits.add(Element::TimerStop, reset, design::R_SURFACE);
+            hits.add(Element::TimerStop, stop, design::R_SURFACE);
+        }
+    }
+
+    /// Shared stepper button (§6): 56 x 56 in the set view, 40 x 40 for the
+    /// running view's ±1 min. Hold-to-repeat lives in `window.rs`.
+    fn timer_step_button(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        element: Element,
+        rect: RectD,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
+        let theme = input.theme;
+        let icon = match element {
+            Element::TimerMinus => IconId::Minus,
+            _ => IconId::Plus,
+        };
+        let pressed = input.pressed_amount(element);
+        let draw = pressed_rect(rect, pressed);
+        let fill = if pressed.is_some() {
+            theme.card_button_press()
+        } else if input.hovered(element) {
+            theme.card_button_hover()
+        } else {
+            theme.card_button()
+        };
+        self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
+        self.icon_center(
+            rt,
+            icon,
+            draw,
+            (rect.h * 0.5).min(28.0),
+            theme.card_button_text().with_alpha(alpha),
+            input.scale,
+            0.0,
+        );
+        if alpha > 0.15 {
+            hits.add(element, rect, design::R_SURFACE);
         }
     }
 
@@ -4961,6 +5492,41 @@ fn rail_label(kind: ActivityKind) -> &'static str {
         ActivityKind::Shelf => "Shelf",
         ActivityKind::Clipboard => "Clipboard",
     }
+}
+
+/// Clockwise progress ring from 12 o'clock (§6 timer tile). Drawn as a
+/// polyline of at most 360 segments: `fraction` 1.0 closes the circle.
+fn ring_geometry(
+    rt: &ID2D1RenderTarget,
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    fraction: f32,
+) -> Option<ID2D1PathGeometry> {
+    let f = fraction.clamp(0.0, 1.0);
+    if radius <= 0.5 || f <= 0.002 {
+        return None;
+    }
+    let factory = unsafe { rt.GetFactory().ok()? };
+    let path = unsafe { factory.CreatePathGeometry().ok()? };
+    let sink = unsafe { path.Open().ok()? };
+    let steps = ((f * 360.0).ceil() as usize).clamp(2, 360);
+    let start = -std::f32::consts::FRAC_PI_2;
+    let point = |angle: f32| Vector2::new(cx + radius * angle.cos(), cy + radius * angle.sin());
+    // SAFETY: sink belongs to the path and is closed below.
+    unsafe {
+        sink.BeginFigure(point(start), D2D1_FIGURE_BEGIN_HOLLOW);
+        for i in 1..=steps {
+            sink.AddLine(point(
+                start + std::f32::consts::TAU * f * (i as f32 / steps as f32),
+            ));
+        }
+        sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        if sink.Close().is_err() {
+            return None;
+        }
+    }
+    Some(path)
 }
 
 fn wave_geometry(

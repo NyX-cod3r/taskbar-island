@@ -3,8 +3,8 @@
 use windows::core::{w, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{FARPROC, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    GetDC, GetPixel, GetSysColor, ReleaseDC, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_WINDOW,
-    COLOR_WINDOWTEXT,
+    GetDC, GetPixel, GetSysColor, ReleaseDC, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT,
+    COLOR_WINDOW, COLOR_WINDOWTEXT,
 };
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Registry::{
@@ -436,23 +436,36 @@ impl Theme {
         }
     }
 
+    /// Line 2 first segment: the artist (v0.9 §5, 78 % white).
+    pub fn music_artist(self) -> Color {
+        if self.high_contrast {
+            sys_color(COLOR_WINDOWTEXT)
+        } else if self.dark {
+            design::white(0.78)
+        } else {
+            design::black(0.78)
+        }
+    }
+
+    /// Line 2 second segment: the source app (v0.9 §5, 52 % white).
+    pub fn music_app(self) -> Color {
+        if self.high_contrast {
+            sys_color(COLOR_GRAYTEXT)
+        } else if self.dark {
+            design::white(0.52)
+        } else {
+            design::black(0.52)
+        }
+    }
+
     pub fn music_track(self) -> Color {
         if self.high_contrast {
             sys_color(COLOR_WINDOWTEXT)
         } else if self.dark {
-            design::white(0.31)
+            // §7: the unplayed track is 3 px at white 22 %.
+            design::white(0.22)
         } else {
             design::black(design::LIGHT_TRACK_A)
-        }
-    }
-
-    pub fn timer_idle(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_WINDOWTEXT)
-        } else if self.dark {
-            design::white(0.43)
-        } else {
-            design::black(0.45)
         }
     }
 

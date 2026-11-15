@@ -31,6 +31,7 @@ mod tooltip;
 mod tray;
 mod uia;
 mod view;
+mod win;
 mod window;
 
 use std::sync::atomic::Ordering;

@@ -137,6 +137,28 @@ impl Countdown {
         self.total += Duration::from_secs(minutes as u64 * 60);
     }
 
+    /// §6 running view: −1 min / +1 min. The total is clamped to the
+    /// stepper's 1..=180 minute range, and a finished countdown re-arms
+    /// itself at the new total instead of ignoring the press.
+    pub fn shift_minutes(&mut self, delta: i32) {
+        if delta == 0 || !self.active() {
+            return;
+        }
+        let current = (self.total.as_secs() / 60) as i64;
+        let target = crate::design::clamp_minutes(current + delta as i64);
+        self.total = Duration::from_secs(target as u64 * 60);
+        if self.finished {
+            self.accumulated = Duration::ZERO;
+            self.started_at = None;
+            self.finished = false;
+            return;
+        }
+        // Never keep more elapsed than the new total.
+        if self.accumulated > self.total {
+            self.accumulated = self.total;
+        }
+    }
+
     pub fn stop(&mut self) {
         *self = Self::default();
     }
@@ -231,5 +253,38 @@ mod tests {
             t.remaining(now + Duration::from_secs(40)),
             Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn shift_minutes_clamps_and_rearms() {
+        let now = Instant::now();
+        // Running: ±1 minute moves the total inside 1..=180.
+        let mut t = Countdown::start("Timer", Duration::from_secs(600), now);
+        t.shift_minutes(-1);
+        assert_eq!(t.total, Duration::from_secs(540));
+        t.shift_minutes(2);
+        assert_eq!(t.total, Duration::from_secs(660));
+        assert!(t.running());
+
+        // The floor is one minute, the ceiling 180.
+        let mut small = Countdown::start("Timer", Duration::from_secs(60), now);
+        small.shift_minutes(-5);
+        assert_eq!(small.total, Duration::from_secs(60));
+        let mut large = Countdown::start("Timer", Duration::from_secs(180 * 60), now);
+        large.shift_minutes(5);
+        assert_eq!(large.total, Duration::from_secs(180 * 60));
+
+        // A finished countdown re-arms at the new total.
+        let mut done = Countdown::start("Timer", Duration::from_secs(60), now);
+        assert!(done.tick(now + Duration::from_secs(60)));
+        done.shift_minutes(14);
+        assert!(!done.finished);
+        assert!(done.armed());
+        assert_eq!(done.total, Duration::from_secs(15 * 60));
+
+        // An inactive countdown never invents a duration.
+        let mut none = Countdown::default();
+        none.shift_minutes(1);
+        assert!(!none.active());
     }
 }

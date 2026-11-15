@@ -126,12 +126,17 @@ const CLIP_CONFIRM_TIMER_ID: usize = 15;
 const CLIP_PREVIEW_TIMER_ID: usize = 16;
 /// One-shot `Ended + 3 s` clear of the call card (spec §3 state machine).
 const CALL_CLEAR_TIMER_ID: usize = 17;
+/// §6 hold-to-repeat cadence on the timer stepper (420 ms, then 110 ms).
+const TIMER_HOLD_ID: usize = 18;
 /// How long an action's inline message stays on the card before the status
 /// line takes over again (no timer: the 1 Hz call tick re-renders it).
 const ACTION_NOTE_TTL: Duration = Duration::from_secs(6);
 /// `WM_MOUSELEAVE` ships under `UI::Controls` in windows-rs 0.62; the value is
 /// stable Win32.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// Sent to the window that loses the mouse when something else captures it
+/// (§6: stops the stepper repeat; also fires on our own `ReleaseCapture`).
+const WM_CAPTURECHANGED: u32 = 0x0215;
 
 /// Set only while the low-level mouse hook is armed, so the hook procedure can
 /// post the outside-click message without touching the surface from a hook.
@@ -423,7 +428,15 @@ struct Surface {
     flyout_phase: FlyoutPhase,
     flyout_started: Instant,
     flyout_alpha: f32,
-    flyout_scale: f32,
+    /// §7 morph: the card always lays out at `flyout`, and the surface is
+    /// scaled by (`flyout_sx`, `flyout_sy`) about its centre and moved by
+    /// (`flyout_dx`, `flyout_dy`) onto the rect the tween is at — identity
+    /// once the open has landed. `flyout_from` is where the morph starts
+    /// (the pill rect).
+    flyout_from: RectD,
+    flyout_sx: f32,
+    flyout_sy: f32,
+    flyout_dx: f32,
     flyout_dy: f32,
     flyout_leave_at: Option<Instant>,
     mouse_hook: Option<HHOOK>,
@@ -433,6 +446,15 @@ struct Surface {
     rail_from: Option<ActivityKind>,
     rail_t: f32,
     rail_tween: Option<Tween>,
+    /// Output sheet slide over the open card (v0.9 §4): 0 hidden, 1 fully in
+    /// place. Animated by the rail frame timer, so it costs nothing at rest.
+    sheet_t: f32,
+    sheet_tween: Option<Tween>,
+    /// The sheet is up (its tween may still be running). Only the sheet's
+    /// own controls take hits while it covers the card.
+    sheet_open: bool,
+    /// First visible row of a sheet longer than the flyout can show.
+    sheet_scroll: usize,
     /// The separate layered popup shared by every tip in the card.
     tip: TooltipWindow,
     /// Element whose tip is pending or visible.
@@ -475,6 +497,10 @@ struct Surface {
     /// to do this") with the moment it arrived; cleared as soon as the call
     /// state changes.
     call_note: Option<(String, Instant)>,
+    /// Honest inline message from a refused default-device switch (v0.9 §4),
+    /// shown by whichever card is open; expires on [`ACTION_NOTE_TTL`] like
+    /// `call_note`.
+    output_note: Option<(String, Instant)>,
     /// Signals injected by `--simulate-call`, drained with `call_rx`.
     call_injected: Vec<Signal>,
     /// Action the UIA worker is currently attempting, so its outcome can be
@@ -535,6 +561,18 @@ struct Surface {
     /// Timestamp of the previous wave tick, for a frame-rate-independent phase.
     wave_tick_at: Instant,
     timer: Countdown,
+    /// §6 remembered duration in minutes (1..=180): the stepper's source of
+    /// truth, and what the hotkey starts when nothing is armed yet.
+    timer_minutes: u32,
+    /// The stepper changed `timer_minutes` and it is not in settings.json
+    /// yet. Written once the hold ends instead of on every 110 ms repeat.
+    timer_minutes_dirty: bool,
+    /// Set when a pause starts the 320 ms wave flatten, cleared on resume.
+    timer_flat_at: Option<Instant>,
+    /// Stepper element held down for the §6 repeat cadence.
+    timer_hold: Option<Element>,
+    /// When the finished pill started pulsing amber (§6), for `flash_t`.
+    timer_finished_at: Option<Instant>,
     /// Manual activity chosen with the wheel; `None` follows priority.
     pin: Option<ActivityKind>,
     /// Automatic winner at the previous refresh, used to release a pin when
@@ -678,6 +716,10 @@ pub fn create(
     if unsafe { OleInitialize(None).is_err() } {
         return Err(Error::from_hresult(windows::Win32::Foundation::E_FAIL));
     }
+    // v0.9 §4: the default-device listener registers on this STA thread
+    // (its message pump dispatches the callback) and only queues refreshes
+    // for the audio worker — event-driven, nothing polls.
+    call::start_audio_watcher(audio_tx.clone());
     let shelf_slot = Arc::new(Mutex::new(Vec::new()));
     let convert_accepts = Arc::new(AtomicBool::new(false));
     let clip = ClipboardRuntime::start(instance, hwnd, settings.clipboard_paused);
@@ -699,6 +741,7 @@ pub fn create(
             local_pill,
             local_flyout,
             slot_offset_dip,
+            settings.timer_minutes,
             media_rx,
             media_tx,
             call_runtime,
@@ -1075,7 +1118,7 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let x = point.x as f32 / surface.scale;
                 let y = point.y as f32 / surface.scale;
                 (surface.view.pill().is_some() && surface.pill.contains(x, y))
-                    || (surface.flyout_open && surface.flyout.contains(x, y))
+                    || (surface.flyout_open && surface.drawn_flyout().contains(x, y))
             })
             .unwrap_or(false);
             if hit {
@@ -1164,12 +1207,33 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             with_surface(|surface| {
                 surface.mouse_tracking = false;
                 surface.hide_tip();
+                // §6: leaving the card stops the stepper repeat and gives the
+                // mouse back (the release below is a no-op without capture).
+                if surface.stop_timer_hold(hwnd) {
+                    // SAFETY: balances the SetCapture in begin_timer_hold.
+                    unsafe {
+                        let _ = ReleaseCapture();
+                    }
+                }
                 let was_pressed = surface.pressed.take().is_some();
                 let changed = surface.set_hover(None, Instant::now());
                 if !surface.shelf_dragging {
                     surface.schedule_auto_close(Instant::now());
                 }
                 if changed || was_pressed {
+                    unsafe {
+                        let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
+                    }
+                }
+            });
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED => {
+            // §6: something else took the mouse (Alt+Tab, a menu, another
+            // window). The repeat timer dies with it; no ReleaseCapture here,
+            // the capture is already gone.
+            with_surface(|surface| {
+                if surface.stop_timer_hold(hwnd) {
                     unsafe {
                         let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
                     }
@@ -1197,6 +1261,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                     }
                     Some(Element::ClipScrollbar) => {
                         surface.begin_clip_scrollbar_drag(y);
+                    }
+                    // §6 stepper: the press steps once, then the hold repeats
+                    // at 420 ms / 110 ms until up, leave or capture loss.
+                    Some(element @ (Element::TimerMinus | Element::TimerPlus)) => {
+                        surface.begin_timer_hold(hwnd, element);
+                        surface.step_timer(element, Instant::now());
                     }
                     None if surface.flyout_open && surface.shelf_viewport().contains(x, y) => {
                         surface.begin_rubber(x, y);
@@ -1252,6 +1322,9 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             with_surface(|surface| {
                 let x = (lparam.0 as i16) as f32 / surface.scale;
                 let y = ((lparam.0 >> 16) as i16) as f32 / surface.scale;
+                // §6: end the stepper repeat (and persist its minutes) before
+                // the capture is handed back below.
+                surface.stop_timer_hold(hwnd);
                 surface.shelf_press = None;
                 surface.shelf_scroll_drag = None;
                 surface.clip_scroll_drag = None;
@@ -1314,8 +1387,22 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                     let _ = surface.audio_tx.send(AudioCommand::ToggleMic);
                                     None
                                 }
-                                Element::CallOutput => {
+                                Element::CallSpeaker => {
                                     let _ = surface.audio_tx.send(AudioCommand::ToggleOutput);
+                                    None
+                                }
+                                // v0.9 §4: both output chips open their sheet
+                                // over this same card (no resize, no swap).
+                                Element::MusicOutput | Element::CallOutput => {
+                                    surface.open_output_sheet(Instant::now());
+                                    None
+                                }
+                                Element::CallSheetClose => {
+                                    surface.close_output_sheet(Instant::now());
+                                    None
+                                }
+                                Element::CallSheetRow(index) => {
+                                    surface.choose_output_row(index);
                                     None
                                 }
                                 // Spec §3: real UIA presses on the provider's
@@ -1339,33 +1426,36 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                 }
                                 Element::TimerToggle => {
                                     let now = Instant::now();
-                                    if surface.timer.running() {
+                                    let was_running = surface.timer.running();
+                                    if was_running {
                                         surface.timer.toggle_pause(now);
                                     } else {
                                         if !surface.timer.active() {
-                                            surface.timer.preset(5);
+                                            surface.timer.preset(surface.timer_minutes);
                                         }
                                         surface.timer.resume(now);
                                     }
+                                    // §6: a pause eases the wave flat over 320 ms.
+                                    surface.note_timer_wave(was_running, now);
                                     surface.apply_timer(now);
                                     surface.sync_tick_timer();
                                     None
                                 }
-                                Element::TimerPreset(minutes) => {
-                                    surface.timer.preset(minutes);
-                                    surface.apply_timer(Instant::now());
-                                    surface.sync_tick_timer();
-                                    None
-                                }
+                                // The press already stepped (and the hold keeps
+                                // repeating); a button-up only ends the hold.
+                                Element::TimerMinus | Element::TimerPlus => None,
                                 Element::Rail(kind) => {
                                     surface.activate_rail(kind);
                                     None
                                 }
                                 Element::TimerStop => {
+                                    let now = Instant::now();
                                     surface.timer.stop();
-                                    surface.refresh(Instant::now());
+                                    surface.timer_flat_at = None;
+                                    surface.timer_finished_at = None;
+                                    surface.refresh(now);
                                     surface.sync_tick_timer();
-                                    surface.begin_close_flyout(Instant::now());
+                                    surface.begin_close_flyout(now);
                                     None
                                 }
                                 Element::ShelfSelectAll => {
@@ -1514,6 +1604,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             with_surface(|surface| {
                 if wparam.0 == call::CALL_WAKE_ACTION {
                     surface.note_action(call::ActionOutcome::from_code(lparam.0));
+                }
+                // v0.9 §4: `lparam = 1` means Windows refused the default
+                // switch and the worker opened its own sound page. Say that
+                // before the card rebuilds from the unchanged defaults.
+                if wparam.0 == call::CALL_WAKE_AUDIO && lparam.0 == 1 {
+                    surface.note_output_fallback();
                 }
                 surface.apply_call();
                 unsafe {
@@ -1902,17 +1998,40 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             });
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == TIMER_HOLD_ID => {
+            // §6: the first repeat lands after 420 ms, then one every 110 ms.
+            // SAFETY: this window owns the timer; re-arming switches it from
+            // the startup delay to the steady cadence.
+            unsafe {
+                SetTimer(Some(hwnd), TIMER_HOLD_ID, design::TIMER_HOLD_EVERY_MS, None);
+            }
+            let stepped = with_surface(|surface| surface.repeat_timer_step());
+            if stepped.unwrap_or(false) {
+                unsafe {
+                    let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
+                }
+            }
+            LRESULT(0)
+        }
         WM_TIMER => {
             with_surface(|surface| {
                 let mut changed = false;
                 let now = std::time::Instant::now();
-                if surface.timer.running()
-                    && (surface.timer.tick(now)
+                if surface.timer.running() {
+                    let ended = surface.timer.tick(now);
+                    if ended {
+                        // §6: the pill pulses amber from the moment it ends.
+                        surface.timer_finished_at = Some(now);
+                        surface.timer_flat_at = None;
+                        crate::log::log("timer.ended");
+                    }
+                    if ended
                         || surface.view.main.as_ref().map(|view| view.kind)
-                            == Some(ActivityKind::Timer))
-                {
-                    surface.apply_timer(now);
-                    changed = true;
+                            == Some(ActivityKind::Timer)
+                    {
+                        surface.apply_timer(now);
+                        changed = true;
+                    }
                 }
                 if surface.wave_animating() {
                     surface.advance_wave(now);
@@ -1954,6 +2073,9 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             with_surface(|surface| {
                 surface.remove_mouse_hook();
                 surface.remove_keyboard_hook();
+                // §6: a stepper held when the window dies still gets its
+                // remembered duration written out.
+                surface.persist_timer_minutes();
             });
             // SAFETY: this window owns the registration.
             unsafe {
@@ -1965,6 +2087,7 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let _ = KillTimer(Some(hwnd), DRAG_WATCH_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), RAIL_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), TOOLTIP_TIMER_ID);
+                let _ = KillTimer(Some(hwnd), TIMER_HOLD_ID);
                 let _ = KillTimer(Some(hwnd), MEDIA_CLEAR_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_SWEEP_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_POP_TIMER_ID);
@@ -1973,6 +2096,9 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_FALLBACK_HOTKEY_ID);
             }
+            // Unregister the default-device listener before OLE goes away:
+            // its enumerator and client are this thread's COM objects.
+            call::stop_audio_watcher();
             // SAFETY: the drop target belongs to this UI thread and window.
             unsafe {
                 shelf::revoke_drop_target(hwnd);
@@ -2010,6 +2136,7 @@ impl Surface {
         pill: RectD,
         flyout: RectD,
         slot_offset_dip: i32,
+        timer_minutes: u32,
         media_rx: Receiver<Option<MediaSnapshot>>,
         media_tx: Sender<MediaCommand>,
         call_runtime: Arc<Mutex<CallRuntime>>,
@@ -2068,7 +2195,10 @@ impl Surface {
             flyout_phase: FlyoutPhase::Closed,
             flyout_started: Instant::now(),
             flyout_alpha: 0.0,
-            flyout_scale: 1.0,
+            flyout_from: flyout,
+            flyout_sx: 1.0,
+            flyout_sy: 1.0,
+            flyout_dx: 0.0,
             flyout_dy: 0.0,
             flyout_leave_at: None,
             mouse_hook: None,
@@ -2077,6 +2207,10 @@ impl Surface {
             rail_from: None,
             rail_t: 1.0,
             rail_tween: None,
+            sheet_t: 0.0,
+            sheet_tween: None,
+            sheet_open: false,
+            sheet_scroll: 0,
             tip: TooltipWindow::new(),
             tip_target: None,
             tip_since: Instant::now(),
@@ -2105,6 +2239,7 @@ impl Surface {
             call_machine: CallMachine::new(),
             call_clear_armed: None,
             call_note: None,
+            output_note: None,
             call_injected: Vec::new(),
             call_action_pending: None,
             shelf_store: ShelfStore::load(),
@@ -2133,6 +2268,11 @@ impl Surface {
             wave_phase: 0.0,
             wave_tick_at: Instant::now(),
             timer: Countdown::default(),
+            timer_minutes: design::clamp_minutes(timer_minutes as i64),
+            timer_minutes_dirty: false,
+            timer_flat_at: None,
+            timer_hold: None,
+            timer_finished_at: None,
             pin: None,
             last_auto: None,
             wheel_accum: 0,
@@ -3125,6 +3265,10 @@ impl Surface {
     /// `sync_pill_override`) and the open card is frozen, so the user can
     /// browse other cards during a call and the call pill still shows.
     fn refresh(&mut self, now: Instant) {
+        // §6: the amber pill pulse only exists while the countdown is done.
+        if !self.timer.finished {
+            self.timer_finished_at = None;
+        }
         // One-shot: a user action (rail, wheel, drop) may swap the open card;
         // automatic arbitration may not while a call is involved.
         let user = self.user_card_switch;
@@ -3300,6 +3444,36 @@ impl Surface {
     /// the activity never changes underneath the user. The wheel only cycles
     /// activities while the card is closed.
     fn wheel(&mut self, delta: i32, x: f32, y: f32) -> bool {
+        // v0.9 §4: an open output sheet owns the wheel — it scrolls its rows
+        // (the flyout itself never grows, so long lists page instead).
+        if self.sheet_open && self.flyout_open && self.flyout.contains(x, y) {
+            let max = self.view_sheet().map_or(0, |sheet| sheet.max_scroll());
+            if max == 0 {
+                self.wheel_accum = 0;
+                return false;
+            }
+            self.wheel_accum += delta;
+            let mut changed = false;
+            while self.wheel_accum >= 120 {
+                self.wheel_accum -= 120;
+                let next = self.sheet_scroll.saturating_sub(1);
+                changed |= next != self.sheet_scroll;
+                self.sheet_scroll = next;
+            }
+            while self.wheel_accum <= -120 {
+                self.wheel_accum += 120;
+                let next = (self.sheet_scroll + 1).min(max);
+                changed |= next != self.sheet_scroll;
+                self.sheet_scroll = next;
+            }
+            if changed {
+                self.hide_tip();
+            } else {
+                // At an end: don't bank notches that would burst on release.
+                self.wheel_accum = 0;
+            }
+            return changed;
+        }
         let shelf_card = matches!(
             self.view.main.as_ref().map(|view| view.kind),
             Some(ActivityKind::Shelf)
@@ -4000,6 +4174,12 @@ impl Surface {
         let fraction = snapshot.fraction(now);
         let accent = snapshot.accent;
         let controls = snapshot.controls;
+        // v0.9 §4: the "Play on" rows ride along with the card, so the chip
+        // always opens a sheet that already lists this machine's devices.
+        let sheet = self.music_sheet();
+        // A refused switch (v0.9 §4) shows here too: the header status line
+        // is the only honest place on this card for it.
+        let note = Self::fresh_note(&self.output_note, now);
         let pill = PillView {
             icon: IconId::Music,
             tile: TileView::colored(accent),
@@ -4020,8 +4200,8 @@ impl Surface {
                 prefix: snapshot.artist.clone(),
                 accent: Some(snapshot.source_app.clone()),
             },
-            status: String::new(),
-            status_accent: false,
+            status: note.clone().unwrap_or_default(),
+            status_accent: note.is_some(),
             trailing: Trailing::None,
             body: Body::Music(MusicBody {
                 title: snapshot.title.clone(),
@@ -4035,6 +4215,7 @@ impl Surface {
                 shuffle: snapshot.shuffle,
                 repeat: snapshot.repeat,
                 controls,
+                sheet,
             }),
         };
         self.view.main = Some(ActivityView {
@@ -4072,9 +4253,73 @@ impl Surface {
         };
         // The inline action message stands in for the status line while it is
         // fresh: it says what to do instead of pretending anything worked.
-        let note = self.call_note.as_ref().and_then(|(text, at)| {
-            (now.saturating_duration_since(*at) < ACTION_NOTE_TTL).then(|| text.clone())
-        });
+        // A refused device switch (v0.9 §4) speaks through the same line.
+        let note = Self::fresh_note(&self.call_note, now)
+            .or_else(|| Self::fresh_note(&self.output_note, now));
+        // v0.9 §4: the "Call audio" rows exist only while the call is up —
+        // dialing or active. Exactly one row ever carries the check: the
+        // endpoint the call is on (unless that *is* the PC pair), or the PC
+        // pair itself when Windows routes call audio there. When the query
+        // failed nothing is marked current, because nothing is known.
+        let sheet = if matches!(state.phase, CallPhase::Dialing | CallPhase::Active) {
+            let comms = runtime.comms_id.trim().to_string();
+            let console = runtime.console_id.trim().to_string();
+            let mut rows = Vec::with_capacity(3);
+            if !comms.is_empty() && comms != console {
+                let device = runtime.device.trim();
+                let name = if device.is_empty() {
+                    "Call audio"
+                } else {
+                    device
+                };
+                let sub = if runtime.handsfree {
+                    "Bluetooth hands-free \u{b7} Connected".to_string()
+                } else if name == "Call audio" {
+                    String::new()
+                } else {
+                    "Connected".to_string()
+                };
+                rows.push(crate::view::SheetRowView {
+                    icon: if runtime.handsfree {
+                        IconId::Headphones
+                    } else {
+                        IconId::Speaker
+                    },
+                    name: name.to_string(),
+                    sub,
+                    current: true,
+                    id: comms.clone(),
+                    phone: false,
+                    cast: false,
+                });
+            }
+            let pc = runtime.console_device.trim();
+            let pc = if pc.is_empty() { "Default device" } else { pc };
+            rows.push(crate::view::SheetRowView {
+                icon: IconId::Speaker,
+                name: "PC speakers and microphone".into(),
+                sub: pc.to_string(),
+                current: !comms.is_empty() && comms == console,
+                id: console.clone(),
+                phone: false,
+                cast: false,
+            });
+            rows.push(crate::view::SheetRowView {
+                icon: IconId::PhoneDevice,
+                name: "Phone".into(),
+                sub: "Transfer the call back to your phone".into(),
+                current: false,
+                id: String::new(),
+                phone: true,
+                cast: false,
+            });
+            crate::view::SheetView {
+                title: "Call audio".into(),
+                rows,
+            }
+        } else {
+            crate::view::SheetView::default()
+        };
         let pill = PillView {
             icon: IconId::Phone,
             tile: TileView::colored(accent),
@@ -4115,6 +4360,7 @@ impl Surface {
                 live,
                 mic_muted: runtime.mic_muted,
                 output_muted: runtime.output_muted,
+                sheet,
                 // Only read while `live` is false; a live card never draws
                 // the idle empty state, and show_call runs at 1 Hz.
                 link: crate::activities::call::PhoneLinkState::Available,
@@ -4157,7 +4403,7 @@ impl Surface {
                 value: if self.timer.finished {
                     "Done".into()
                 } else {
-                    crate::view::fmt_clock(remaining)
+                    crate::view::fmt_mmss(remaining)
                 },
                 progress: Some(self.timer.remaining_fraction(now)),
                 kind: if self.timer.finished {
@@ -4180,11 +4426,17 @@ impl Surface {
                 status_accent: true,
                 trailing: Trailing::None,
                 body: Body::Timer(crate::view::TimerBody {
-                    remaining: crate::view::fmt_clock(remaining),
+                    remaining: crate::view::fmt_mmss(remaining),
                     fraction: self.timer.fraction(now),
                     running: self.timer.running(),
                     armed: self.timer.armed(),
-                    finished: self.timer.finished,
+                    caption: crate::view::timer_caption(design::clamp_minutes(
+                        self.timer_minutes as i64,
+                    )),
+                    name: self.timer.name.clone(),
+                    status: status.to_string(),
+                    elapsed: crate::view::fmt_mmss(self.timer.elapsed(now).as_secs_f64()),
+                    total: crate::view::fmt_mmss(self.timer.total.as_secs_f64()),
                 }),
             },
         });
@@ -4228,6 +4480,10 @@ impl Surface {
                         shuffle: false,
                         repeat: crate::view::RepeatMode::None,
                         controls: crate::view::MediaControls::default(),
+                        // Nothing is playing, but the output chip still works:
+                        // choosing where the next track goes is not a
+                        // playback action.
+                        sheet: self.music_sheet(),
                     }),
                 },
             },
@@ -4268,6 +4524,8 @@ impl Surface {
                             live: false,
                             mic_muted: false,
                             output_muted: false,
+                            // No call is up, so there is no route to offer.
+                            sheet: crate::view::SheetView::default(),
                             link,
                             phase: crate::activities::call_state::CallPhase::None,
                             note: None,
@@ -4300,11 +4558,19 @@ impl Surface {
                     status_accent: true,
                     trailing: Trailing::None,
                     body: Body::Timer(crate::view::TimerBody {
-                        remaining: "00:00".into(),
+                        // The empty card is the set view: pick a duration
+                        // with the stepper and press Start.
+                        remaining: crate::view::fmt_mmss(f64::from(self.timer_minutes) * 60.0),
                         fraction: 0.0,
                         running: false,
-                        armed: false,
-                        finished: false,
+                        armed: true,
+                        caption: crate::view::timer_caption(design::clamp_minutes(
+                            self.timer_minutes as i64,
+                        )),
+                        name: self.timer.name.clone(),
+                        status: "No timer".into(),
+                        elapsed: "0:00".into(),
+                        total: crate::view::fmt_mmss(f64::from(self.timer_minutes) * 60.0),
                     }),
                 },
             },
@@ -4337,11 +4603,17 @@ impl Surface {
         if self.timer.active() {
             if self.timer.finished {
                 self.timer.stop();
+                self.timer_flat_at = None;
                 self.refresh(now);
+                self.sync_tick_timer();
                 crate::log::log("timer.dismiss (hotkey)");
             } else {
+                let was_running = self.timer.running();
                 self.timer.toggle_pause(now);
+                // §6: a pause eases the wave flat over 320 ms.
+                self.note_timer_wave(was_running, now);
                 self.apply_timer(now);
+                self.sync_tick_timer();
             }
             return;
         }
@@ -4349,14 +4621,18 @@ impl Surface {
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .filter(|value| (1..=3600).contains(value))
-            .unwrap_or(5 * 60);
+            .unwrap_or_else(|| u64::from(design::clamp_minutes(self.timer_minutes as i64)) * 60);
         self.timer = Countdown::start("Timer", Duration::from_secs(seconds), now);
+        self.timer_flat_at = None;
         self.apply_timer(now);
+        self.sync_tick_timer();
         crate::log::log(&format!("timer.start: {seconds}s"));
     }
 
     /// True while the on-screen pill (or its card) carries a travelling wave:
-    /// music that is playing, or a countdown that is running.
+    /// music that is playing, or a countdown that is running. The timer also
+    /// animates while it flattens after a pause and while the finished pill
+    /// pulses amber, so those tweens get their frames without polling.
     fn wave_animating(&self) -> bool {
         match self.view.main.as_ref().map(|view| view.kind) {
             Some(ActivityKind::Music) => self
@@ -4364,7 +4640,11 @@ impl Surface {
                 .as_ref()
                 .map(|snapshot| snapshot.playing && snapshot.duration > 0.0)
                 .unwrap_or(false),
-            Some(ActivityKind::Timer) => self.timer.running(),
+            Some(ActivityKind::Timer) => {
+                self.timer.running()
+                    || self.timer_flash_t().is_some()
+                    || self.timer_flat_at.is_some()
+            }
             _ => false,
         }
     }
@@ -4377,9 +4657,14 @@ impl Surface {
             .as_secs_f32()
             .min(0.5);
         self.wave_tick_at = now;
-        // One wavelength every 1.2 s; the eye reads it as a running wave.
-        self.wave_phase =
-            (self.wave_phase + dt * design::WAVE_LEN / 1.2).rem_euclid(design::WAVE_LEN);
+        // §7: one wavelength every 700 ms; the eye reads it as a running wave.
+        self.wave_phase = (self.wave_phase
+            + dt * design::WAVE_LEN / (design::WAVE_MS_PER_LEN / 1000.0))
+            .rem_euclid(design::WAVE_LEN);
+        // Drop the flatten marker once it has landed (§6, 320 ms).
+        if self.timer_flat_at.is_some() && self.timer_flat() <= 0.0 {
+            self.timer_flat_at = None;
+        }
         self.refresh(now);
     }
 
@@ -4416,6 +4701,13 @@ impl Surface {
         if self.flyout_open && self.flyout_phase == FlyoutPhase::Open && self.flyout.contains(x, y)
         {
             let hit = self.hit_map.hit(x, y);
+            // v0.9 §4: while the output sheet covers the card it owns every
+            // click — the rail and the card beneath are visually covered.
+            if self.sheet_open {
+                return hit.filter(|element| {
+                    matches!(element, Element::CallSheetClose | Element::CallSheetRow(_))
+                });
+            }
             if self.content_phase != ContentPhase::Idle {
                 // Content is mid-swap; its hit rects belong to the frame that
                 // is fading out. Only the rail stays interactive.
@@ -4437,14 +4729,29 @@ impl Surface {
         let y = (py - self.origin.1) as f32 / self.scale;
         if self.flyout_open
             && self.flyout_phase != FlyoutPhase::Closed
-            && self.flyout.contains(x, y)
+            && self.drawn_flyout().contains(x, y)
         {
+            // The card is mid-morph: its hit rects are laid out at the final
+            // size, so pull the point back through the transform first (§7).
+            let (x, y) = self.unmap_flyout_point(x, y);
             return self.hit_map.hit(x, y);
         }
         if self.view.pill().is_some() && self.pill.contains(x, y) {
             return Some(Element::Pill);
         }
         None
+    }
+
+    /// Inverse of the §7 morph: a point on the painted card back into the
+    /// coordinate space the card's hit rects live in.
+    fn unmap_flyout_point(&self, x: f32, y: f32) -> (f32, f32) {
+        let t = self.flyout;
+        let sx = self.flyout_sx.max(0.05);
+        let sy = self.flyout_sy.max(0.05);
+        (
+            (x - self.flyout_dx - t.center_x()) / sx + t.center_x(),
+            (y - self.flyout_dy - t.center_y()) / sy + t.center_y(),
+        )
     }
 
     /// Put back a card that only existed because a Ctrl+drag was passing over
@@ -4627,6 +4934,9 @@ impl Surface {
         self.convert_accepts.store(false, Ordering::Relaxed);
         self.stop_convert_timer();
         self.hide_tip();
+        // v0.9 §4: the sheet belongs to the card it opened on; a rail switch
+        // takes it down with the content it was covering.
+        self.reset_output_sheet();
         let now = Instant::now();
         self.rail_from = current;
         self.rail_current = Some(kind);
@@ -4653,7 +4963,8 @@ impl Surface {
         self.sync_rail_timer();
     }
 
-    /// One frame of the rail indicator slide and the content crossfade.
+    /// One frame of the rail indicator slide, the content crossfade and the
+    /// output sheet's slide over the card (v0.9 §4).
     fn advance_rail(&mut self, now: Instant) -> bool {
         let mut changed = false;
         if let Some(tween) = self.rail_tween {
@@ -4661,6 +4972,19 @@ impl Surface {
             if tween.done(now) {
                 self.rail_t = tween.to;
                 self.rail_tween = None;
+            }
+            changed = true;
+        }
+        if let Some(tween) = self.sheet_tween {
+            self.sheet_t = tween.value(now);
+            if tween.done(now) {
+                self.sheet_t = tween.to;
+                self.sheet_tween = None;
+                if tween.to <= 0.0 {
+                    // The slide-out landed: hand the card its hits back.
+                    self.sheet_open = false;
+                    self.sheet_scroll = 0;
+                }
             }
             changed = true;
         }
@@ -4707,7 +5031,10 @@ impl Surface {
     fn sync_rail_timer(&self) {
         // SAFETY: the timer id belongs to this window.
         unsafe {
-            if self.rail_tween.is_some() || self.content_phase != ContentPhase::Idle {
+            if self.rail_tween.is_some()
+                || self.sheet_tween.is_some()
+                || self.content_phase != ContentPhase::Idle
+            {
                 SetTimer(Some(self.hwnd), RAIL_TIMER_ID, design::FRAME_MS, None);
             } else {
                 let _ = KillTimer(Some(self.hwnd), RAIL_TIMER_ID);
@@ -4749,13 +5076,19 @@ impl Surface {
                 | Element::MusicNext
                 | Element::MusicShuffle
                 | Element::MusicRepeat
+                | Element::MusicOutput
                 | Element::CallMic
+                | Element::CallSpeaker
                 | Element::CallOutput
+                | Element::CallSheetClose
+                | Element::CallSheetRow(_)
                 | Element::CallAnswer
                 | Element::CallDecline
                 | Element::CallEnd
                 | Element::CallIdle
                 | Element::TimerToggle
+                | Element::TimerMinus
+                | Element::TimerPlus
                 | Element::TimerStop
                 | Element::ClipFilter(_)
                 | Element::ClipPause
@@ -4939,6 +5272,25 @@ impl Surface {
                 Some(crate::view::RepeatMode::Track) => "Repeat track",
                 _ => "Repeat off",
             }),
+            // v0.9 §4: the two output chips and everything on their sheet.
+            // Every sheet control also carries its UIA name through this
+            // function (see `a11y_nodes`).
+            Element::MusicOutput => Some((
+                "Play on".to_string(),
+                Some("Choose where music plays".to_string()),
+            )),
+            Element::CallSheetClose => text("Close"),
+            Element::CallSheetRow(index) => {
+                let row = self.view_sheet()?.rows.get(index)?;
+                let detail = if row.current {
+                    Some("In use now".to_string())
+                } else if row.sub.is_empty() {
+                    None
+                } else {
+                    Some(row.sub.clone())
+                };
+                Some((row.name.clone(), detail))
+            }
             Element::CallIdle => {
                 // Only drawn for an unavailable phone, so the line always
                 // says which of the conditions from A prompt §5 applies.
@@ -4957,11 +5309,15 @@ impl Surface {
             } else {
                 "Mute microphone"
             }),
-            Element::CallOutput => text(if self.call_output_muted() {
+            Element::CallSpeaker => text(if self.call_output_muted() {
                 "Unmute speaker"
             } else {
                 "Mute speaker"
             }),
+            Element::CallOutput => Some((
+                "Call audio".to_string(),
+                Some("Choose where the call plays".to_string()),
+            )),
             Element::CallAnswer => text("Answer"),
             Element::CallDecline => text("Decline"),
             Element::CallEnd => text("End call"),
@@ -4979,6 +5335,15 @@ impl Surface {
                 "Start"
             }),
             Element::TimerStop => text("Stop timer"),
+            // §6: the stepper's own tooltip says what holding it does.
+            Element::TimerMinus => Some((
+                "One minute less".to_string(),
+                Some("Hold to repeat".to_string()),
+            )),
+            Element::TimerPlus => Some((
+                "One minute more".to_string(),
+                Some("Hold to repeat".to_string()),
+            )),
             _ => None,
         }
     }
@@ -5443,6 +5808,163 @@ impl Surface {
         }
     }
 
+    // ------------------------------------------------- output sheet (v0.9 §4)
+
+    /// The sheet the open card carries (music: "Play on"; a live call:
+    /// "Call audio"), or `None` for a card that has none.
+    fn view_sheet(&self) -> Option<&crate::view::SheetView> {
+        match &self.view.flyout()?.body {
+            Body::Music(music) => Some(&music.sheet),
+            Body::Call(call) => Some(&call.sheet),
+            _ => None,
+        }
+    }
+
+    /// Slide the output sheet up over the open card (240 ms, EASE_CONTENT).
+    /// The card keeps its size and its content; only the hits move, so the
+    /// sheet can never make the flyout resize.
+    fn open_output_sheet(&mut self, now: Instant) {
+        if self.sheet_open || self.view_sheet().is_none() {
+            return;
+        }
+        self.hide_tip();
+        self.sheet_open = true;
+        self.sheet_scroll = 0;
+        if self.theme.reduced_motion {
+            self.sheet_t = 1.0;
+            self.sheet_tween = None;
+        } else {
+            self.sheet_t = 0.0;
+            self.sheet_tween = Some(Tween::new(
+                now,
+                design::SHEET_MS,
+                0.0,
+                1.0,
+                design::EASE_CONTENT,
+            ));
+        }
+        crate::log::log("sheet.open");
+        self.sync_rail_timer();
+    }
+
+    /// Slide it back out. `sheet_open` holds until the tween lands, so a
+    /// click can never fall through the moving panel onto the card beneath.
+    fn close_output_sheet(&mut self, now: Instant) {
+        if !self.sheet_open {
+            return;
+        }
+        self.hide_tip();
+        if self.theme.reduced_motion {
+            self.reset_output_sheet();
+        } else {
+            self.sheet_tween = Some(Tween::new(
+                now,
+                design::SHEET_MS,
+                self.sheet_t,
+                0.0,
+                design::EASE_CONTENT,
+            ));
+        }
+        crate::log::log("sheet.close");
+        self.sync_rail_timer();
+    }
+
+    /// Drop the sheet without animating: the card is going away, or it
+    /// rebuilt into a state that has no rows left to show.
+    fn reset_output_sheet(&mut self) {
+        self.sheet_t = 0.0;
+        self.sheet_tween = None;
+        self.sheet_open = false;
+        self.sheet_scroll = 0;
+    }
+
+    /// One row of the open sheet was picked (v0.9 §4): a device route goes
+    /// to the audio worker (which either switches Windows' default for every
+    /// role or opens the sound settings and says so), Phone hands the call
+    /// back through Phone Link's own control, and Cast opens Windows' own
+    /// discovery page. A device row keeps the sheet up so the check mark can
+    /// travel to what was chosen.
+    fn choose_output_row(&mut self, index: usize) {
+        let Some(row) = self
+            .view_sheet()
+            .and_then(|sheet| sheet.rows.get(index).cloned())
+        else {
+            return;
+        };
+        crate::log::log(&format!("sheet.choose: {}", row.name));
+        if row.phone {
+            // Not a device: the transfer belongs to Phone Link, so the sheet
+            // closes and the UIA press runs instead.
+            self.close_output_sheet(Instant::now());
+            self.start_call_action(CallAction::Transfer);
+            return;
+        }
+        if row.cast {
+            let cast = "ms-settings-connectabledevices:devicediscovery";
+            if !crate::activities::call::open_app(cast) {
+                crate::log::log("sheet.cast: settings page unavailable");
+            }
+            return;
+        }
+        if row.id.is_empty() {
+            // Nothing identifiable to switch to; never fake a check mark.
+            crate::log::log("sheet.choose: row carries no endpoint id");
+            return;
+        }
+        let _ = self.audio_tx.send(AudioCommand::SetDefault(row.id.clone()));
+    }
+
+    /// Windows refused the default switch (its own sound page opened
+    /// instead): put an honest line on whatever card is open rather than
+    /// letting a check mark pretend the route moved.
+    fn note_output_fallback(&mut self) {
+        self.output_note = Some((
+            "Couldn't switch device \u{b7} opened Windows sound settings".to_string(),
+            Instant::now(),
+        ));
+    }
+
+    /// An inline note younger than [`ACTION_NOTE_TTL`], or `None`.
+    fn fresh_note(note: &Option<(String, Instant)>, now: Instant) -> Option<String> {
+        note.as_ref().and_then(|(text, at)| {
+            (now.saturating_duration_since(*at) < ACTION_NOTE_TTL).then(|| text.clone())
+        })
+    }
+
+    /// The music card's "Play on" rows: every active render endpoint Windows
+    /// reports, then the cast row. Built with the card, so the audio
+    /// worker's refresh wake re-reads it — event-driven, never polled.
+    fn music_sheet(&self) -> crate::view::SheetView {
+        let list = crate::activities::audio::endpoints();
+        let mut rows = Vec::with_capacity(list.endpoints.len() + 1);
+        for endpoint in &list.endpoints {
+            let current = !list.default_id.is_empty() && endpoint.id == list.default_id;
+            let (name, sub) = crate::view::split_endpoint(&endpoint.name, current);
+            rows.push(crate::view::SheetRowView {
+                icon: IconId::Headphones,
+                name,
+                sub,
+                current,
+                id: endpoint.id.clone(),
+                phone: false,
+                cast: false,
+            });
+        }
+        rows.push(crate::view::SheetRowView {
+            icon: IconId::Cast,
+            name: "Cast to a device\u{2026}".into(),
+            sub: "Phone, tablet or TV".into(),
+            current: false,
+            id: String::new(),
+            phone: false,
+            cast: true,
+        });
+        crate::view::SheetView {
+            title: "Play on".into(),
+            rows,
+        }
+    }
+
     fn open_flyout(&mut self, now: Instant) {
         if self.view.flyout().is_none() {
             return;
@@ -5452,17 +5974,19 @@ impl Surface {
         self.flyout_phase = FlyoutPhase::Opening;
         self.flyout_started = now;
         self.flyout_alpha = 0.0;
-        self.flyout_scale = design::FLYOUT_SCALE;
-        self.flyout_dy = design::FLYOUT_RISE;
+        // §7: the card morphs out of the pill rect, so the tween starts there.
+        self.flyout_from = self.pill;
+        self.place_flyout_morph(0.0);
         let kind = self.view.main.as_ref().map(|view| view.kind);
         self.rail_current = kind;
         self.rail_from = None;
         self.rail_t = 1.0;
         self.rail_tween = None;
+        self.reset_output_sheet();
         self.hide_tip();
         self.rail_focus = None;
         self.content_phase = ContentPhase::Idle;
-        self.content_alpha = 1.0;
+        self.content_alpha = 0.0;
         self.content_dy = 0.0;
         self.pending_kind = None;
         // A paste queued for a close that never happened must not fire on some
@@ -5493,7 +6017,9 @@ impl Surface {
         self.flyout_owner = None;
         self.flyout_phase = FlyoutPhase::Closed;
         self.flyout_alpha = 0.0;
-        self.flyout_scale = 1.0;
+        self.flyout_sx = 1.0;
+        self.flyout_sy = 1.0;
+        self.flyout_dx = 0.0;
         self.flyout_dy = 0.0;
         self.clear_auto_close();
         self.remove_mouse_hook();
@@ -5502,6 +6028,7 @@ impl Surface {
         self.rail_from = None;
         self.rail_t = 1.0;
         self.rail_tween = None;
+        self.reset_output_sheet();
         self.hide_tip();
         self.rail_focus = None;
         self.content_phase = ContentPhase::Idle;
@@ -5552,27 +6079,33 @@ impl Surface {
             * 1000.0;
         match self.flyout_phase {
             FlyoutPhase::Opening => {
-                let fade_t = (elapsed / design::FLYOUT_OPEN_FADE_MS as f32).clamp(0.0, 1.0);
-                let move_t = (elapsed / design::FLYOUT_OPEN_MOVE_MS as f32).clamp(0.0, 1.0);
-                let fade = cubic_bezier(design::EASE_FLYOUT, fade_t);
-                let moved = cubic_bezier(design::EASE_FLYOUT, move_t);
-                self.flyout_alpha = fade;
-                self.flyout_scale = design::FLYOUT_SCALE + (1.0 - design::FLYOUT_SCALE) * moved;
-                self.flyout_dy = (1.0 - moved) * design::FLYOUT_RISE;
-                if elapsed >= design::FLYOUT_OPEN_MOVE_MS as f32 {
-                    self.flyout_alpha = 1.0;
-                    self.flyout_scale = 1.0;
-                    self.flyout_dy = 0.0;
-                    self.flyout_phase = FlyoutPhase::Open;
-                    self.sync_flyout_timer();
+                if self.theme.reduced_motion {
+                    self.land_flyout_open();
+                    return true;
+                }
+                // §7: one 460 ms morph out of the pill on an overshoot curve.
+                let t = (elapsed / design::FLYOUT_OPEN_MS as f32).clamp(0.0, 1.0);
+                let eased = cubic_bezier(design::EASE_OPEN, t);
+                self.flyout_alpha = eased;
+                self.place_flyout_morph(eased);
+                // …and the content holds for 160 ms before it fades in over
+                // 280 ms, so the shell arrives first and the card fills it.
+                let content = ((elapsed - design::FLYOUT_CONTENT_DELAY_MS as f32)
+                    / design::FLYOUT_CONTENT_MS as f32)
+                    .clamp(0.0, 1.0);
+                self.content_alpha = cubic_bezier(design::EASE_CONTENT, content);
+                if t >= 1.0 {
+                    self.land_flyout_open();
                 }
                 true
             }
             FlyoutPhase::Closing => {
+                if self.theme.reduced_motion {
+                    self.finish_close_flyout();
+                    return true;
+                }
                 let t = (elapsed / design::FLYOUT_CLOSE_MS as f32).clamp(0.0, 1.0);
-                self.flyout_alpha = 1.0 - t;
-                self.flyout_scale = 1.0 - (1.0 - design::FLYOUT_SCALE) * t;
-                self.flyout_dy = design::FLYOUT_RISE * t;
+                self.flyout_alpha = 1.0 - cubic_bezier(design::EASE_CLOSE, t);
                 if t >= 1.0 {
                     self.finish_close_flyout();
                 }
@@ -5580,6 +6113,46 @@ impl Surface {
             }
             FlyoutPhase::Closed | FlyoutPhase::Open => false,
         }
+    }
+
+    /// Settle the open tween on its final frame: full shell, content landed,
+    /// morph at the identity, and the 16 ms frame timer retired.
+    fn land_flyout_open(&mut self) {
+        self.flyout_alpha = 1.0;
+        self.place_flyout_morph(1.0);
+        self.content_alpha = 1.0;
+        self.flyout_phase = FlyoutPhase::Open;
+        self.sync_flyout_timer();
+    }
+
+    /// Map the drawn surface onto the morph rect at progress `t` (0 = the
+    /// pill, 1 = the card). The card keeps its final layout throughout: only
+    /// the whole surface is scaled about its centre and moved, so nothing
+    /// inside re-flows while it grows (§7).
+    fn place_flyout_morph(&mut self, t: f32) {
+        let target = self.flyout;
+        if target.w <= 1.0 || target.h <= 1.0 {
+            return;
+        }
+        let m = RectD::lerp(self.flyout_from, target, t);
+        self.flyout_sx = (m.w / target.w).clamp(0.05, 2.0);
+        self.flyout_sy = (m.h / target.h).clamp(0.05, 2.0);
+        self.flyout_dx = m.center_x() - target.center_x();
+        self.flyout_dy = m.center_y() - target.center_y();
+    }
+
+    /// The rect the card is actually painted on: `flyout` pushed through the
+    /// current morph (the identity at rest). The window region and the
+    /// click-through test both follow it, so the un-painted area around a
+    /// half-open card never swallows input (§7).
+    fn drawn_flyout(&self) -> RectD {
+        let t = self.flyout;
+        RectD::new(
+            t.x + t.w * 0.5 * (1.0 - self.flyout_sx) + self.flyout_dx,
+            t.y + t.h * 0.5 * (1.0 - self.flyout_sy) + self.flyout_dy,
+            t.w * self.flyout_sx,
+            t.h * self.flyout_sy,
+        )
     }
 
     fn sync_flyout_timer(&self) {
@@ -5705,6 +6278,126 @@ impl Surface {
         self.refresh(now);
     }
 
+    // ------------------------------------------------------------ §6 stepper
+
+    /// Press a stepper button: take the mouse and arm the 420 ms first
+    /// repeat. The button-down has already stepped once.
+    fn begin_timer_hold(&mut self, hwnd: HWND, element: Element) {
+        self.stop_timer_hold(hwnd);
+        self.timer_hold = Some(element);
+        // SAFETY: this window owns both the timer and the capture.
+        unsafe {
+            SetCapture(hwnd);
+            SetTimer(Some(hwnd), TIMER_HOLD_ID, design::TIMER_HOLD_FIRST_MS, None);
+        }
+    }
+
+    /// Stop the repeat cadence. Returns true when a hold was active, so the
+    /// caller knows the mouse still has to be handed back. The remembered
+    /// duration is written here: once per hold, not once per 110 ms step.
+    fn stop_timer_hold(&mut self, hwnd: HWND) -> bool {
+        let held = self.timer_hold.take().is_some();
+        // SAFETY: KillTimer tolerates an id that was never created.
+        unsafe {
+            let _ = KillTimer(Some(hwnd), TIMER_HOLD_ID);
+        }
+        if held {
+            self.persist_timer_minutes();
+        }
+        held
+    }
+
+    /// One tick of the hold-to-repeat cadence (§6: 420 ms, then 110 ms).
+    fn repeat_timer_step(&mut self) -> bool {
+        let Some(element) = self.timer_hold else {
+            return false;
+        };
+        self.step_timer(element, Instant::now());
+        true
+    }
+
+    /// §6: − / + on the stepper (set view) or −1 min / +1 min on a live
+    /// countdown (running view). Range 1..=180 minutes, step 1.
+    fn step_timer(&mut self, element: Element, now: Instant) {
+        let delta = match element {
+            Element::TimerMinus => -1,
+            Element::TimerPlus => 1,
+            _ => return,
+        };
+        // Running or paused: move the live countdown itself.
+        if self.timer.active() && !self.timer.armed() && !self.timer.finished {
+            self.timer.shift_minutes(delta);
+            self.apply_timer(now);
+            self.sync_tick_timer();
+            return;
+        }
+        // Set view (or a finished countdown re-arming itself): the stepper
+        // owns the remembered duration, seeded from the timer so the two can
+        // never drift apart.
+        if self.timer.active() {
+            let seeded = design::clamp_minutes((self.timer.total.as_secs() / 60) as i64);
+            if seeded != self.timer_minutes {
+                self.timer_minutes = seeded;
+                self.timer_minutes_dirty = true;
+            }
+        }
+        let next = design::clamp_minutes(self.timer_minutes as i64 + i64::from(delta));
+        if next != self.timer_minutes {
+            self.timer_minutes = next;
+            self.timer_minutes_dirty = true;
+            if self.timer.active() {
+                self.timer.preset(next);
+            }
+            crate::log::log(&format!("timer.minutes: {next}"));
+        }
+        self.apply_timer(now);
+        self.sync_tick_timer();
+    }
+
+    /// Write the remembered duration out once per hold (or per click).
+    fn persist_timer_minutes(&mut self) {
+        if std::mem::take(&mut self.timer_minutes_dirty) {
+            let mut settings = crate::settings::Settings::load();
+            settings.timer_minutes = design::clamp_minutes(self.timer_minutes as i64);
+            settings.save();
+        }
+    }
+
+    /// §6: a pause eases the wave flat over 320 ms; running again restores
+    /// it at full amplitude immediately.
+    fn note_timer_wave(&mut self, was_running: bool, now: Instant) {
+        if self.timer.running() {
+            self.timer_flat_at = None;
+        } else if was_running {
+            self.timer_flat_at = Some(now);
+        }
+    }
+
+    /// Wave amplitude factor for the timer card and pill: 1 while running,
+    /// easing to 0 over `TIMER_FLATTEN_MS` after a pause, 0 otherwise.
+    fn timer_flat(&self) -> f32 {
+        if self.timer.running() {
+            return 1.0;
+        }
+        let Some(at) = self.timer_flat_at else {
+            return 0.0;
+        };
+        let span = design::TIMER_FLATTEN_MS as f32 / 1000.0;
+        (1.0 - at.elapsed().as_secs_f32() / span).clamp(0.0, 1.0)
+    }
+
+    /// Seconds since the finished pill started pulsing amber, while it does
+    /// (§6: `TIMER_FLASHES` pulses of `TIMER_FLASH_MS`).
+    fn timer_flash_t(&self) -> Option<f32> {
+        if !self.timer.finished {
+            return None;
+        }
+        let at = self.timer_finished_at?;
+        let span = design::TIMER_FLASH_MS as f32 / 1000.0 * design::TIMER_FLASHES as f32;
+        let elapsed = at.elapsed().as_secs_f32();
+        (elapsed < span).then_some(elapsed)
+    }
+
     fn apply_media(&mut self, snapshot: MediaSnapshot) {
         self.media_snapshot = Some(snapshot);
         if let Some(missing) = self.media_missing_at.take() {
@@ -5811,7 +6504,15 @@ impl Surface {
                 }
             }
             call::ActionOutcome::NotFound => {
-                self.call_note = Some(("Open Phone Link to do this".to_string(), Instant::now()));
+                // The transfer control is Phone Link's own, so the fallback
+                // names that exact step instead of the generic line (§4).
+                self.call_note = Some((
+                    match action {
+                        Some(CallAction::Transfer) => "Open Phone Link to transfer".to_string(),
+                        _ => "Open Phone Link to do this".to_string(),
+                    },
+                    Instant::now(),
+                ));
                 // Bring Phone Link forward so the fallback is one click away.
                 let launch = crate::activities::call::phone_link_launch();
                 if !crate::activities::call::open_app(&launch) {
@@ -5848,6 +6549,13 @@ impl Surface {
             // A different activity won while the card was open; don't leave
             // stale content (or an idle fallback) on screen.
             self.begin_close_flyout(Instant::now());
+        }
+        // v0.9 §4: a sheet lives on the card that opened it. If the card
+        // rebuilt into a state with no rows (the call ended, music stopped),
+        // the sheet has nothing left to cover with — drop it here rather than
+        // leaving a panel of dead rows over a different card.
+        if self.sheet_open && self.view_sheet().is_none_or(|sheet| sheet.rows.is_empty()) {
+            self.reset_output_sheet();
         }
         // SAFETY: the swapchain, device context and target are owned by this surface.
         unsafe {
@@ -5886,7 +6594,9 @@ impl Surface {
                 bubble: None,
                 flyout: (self.flyout_open && self.view.flyout().is_some()).then_some(self.flyout),
                 flyout_alpha: self.flyout_alpha,
-                flyout_scale: self.flyout_scale,
+                flyout_sx: self.flyout_sx,
+                flyout_sy: self.flyout_sy,
+                flyout_dx: self.flyout_dx,
                 flyout_dy: self.flyout_dy,
                 pill_alpha: 1.0,
                 top_alpha: self.flyout_alpha * self.content_alpha,
@@ -5900,7 +6610,8 @@ impl Surface {
                     .map(|index| Element::Rail(design::RAIL_ORDER[index])),
                 hover_mix: self.hover_mix,
                 sheen: None,
-                flash_t: None,
+                // §6: the finished pill pulses amber for `TIMER_FLASHES`.
+                flash_t: self.timer_flash_t(),
                 drag_bob: 0.0,
                 progress: match self.view.main.as_ref() {
                     Some(view) if view.kind == ActivityKind::Music => match &view.flyout.body {
@@ -5912,6 +6623,15 @@ impl Surface {
                             } else {
                                 design::WAVE_AMP * design::WAVE_FLAT
                             },
+                        }),
+                        _ => None,
+                    },
+                    Some(view) if view.kind == ActivityKind::Timer => match &view.flyout.body {
+                        Body::Timer(timer) => Some(ProgressVisual {
+                            fraction: timer.fraction,
+                            phase: self.wave_phase,
+                            // Tweened down over 320 ms when the timer pauses.
+                            amplitude: design::MUSIC_WAVE_AMP * self.timer_flat(),
                         }),
                         _ => None,
                     },
@@ -5933,11 +6653,8 @@ impl Surface {
                     }),
                     Some(ActivityKind::Timer) => Some(WaveVisual {
                         phase: self.wave_phase,
-                        amplitude: if self.timer.running() {
-                            design::PILL_WAVE_AMP
-                        } else {
-                            design::PILL_WAVE_AMP * design::WAVE_FLAT
-                        },
+                        // §6: a pause eases the pill wave flat too.
+                        amplitude: design::PILL_WAVE_AMP * self.timer_flat(),
                     }),
                     _ => None,
                 },
@@ -5945,6 +6662,9 @@ impl Surface {
                 rail_current: self.rail_current,
                 rail_from: self.rail_from,
                 rail_t: self.rail_t,
+                // v0.9 §4: eased slide of the output sheet over the card.
+                sheet: self.sheet_t,
+                sheet_scroll: self.sheet_scroll,
                 drag_over: self.shelf_hover,
             };
             match self.painter.draw(&render_target, &input) {
@@ -5984,7 +6704,9 @@ impl Surface {
                 let _ = DeleteObject(pill.into());
             }
             if self.flyout_open && self.view.flyout().is_some() {
-                let r = self.physical(self.flyout);
+                // The morphed rect, so the region hugs what is actually
+                // painted while the card grows out of the pill (§7).
+                let r = self.physical(self.drawn_flyout());
                 let halo = (design::SHADOW_HALO * scale).round() as i32;
                 let radius = (design::R_SURFACE * 2.0 * scale).round() as i32 + halo * 2;
                 let fly = CreateRoundRectRgn(

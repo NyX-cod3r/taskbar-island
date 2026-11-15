@@ -83,17 +83,29 @@ pub const HEADER_TILE: f32 = 28.0;
 pub const HEADER_GAP: f32 = 10.0;
 
 // Music card
-pub const MUSIC_ART: f32 = 64.0;
-pub const R_ART: f32 = 6.0;
+/// Album art on the music card (v0.9 §5: 72 x 72, radius 8).
+pub const MUSIC_ART: f32 = 72.0;
+pub const R_ART: f32 = 8.0;
 pub const MUSIC_INFO_GAP: f32 = 12.0;
 pub const MUSIC_LINE_GAP: f32 = 3.0;
-pub const MUSIC_PROGRESS_H: f32 = 14.0;
-pub const MUSIC_WAVE_AMP: f32 = 2.0;
-pub const MUSIC_WAVE_LEN: f32 = 14.0;
-pub const MUSIC_WAVE_STROKE: f32 = 2.6;
+/// Line 2 is `artist <gap> app` on one line (v0.9 §5): the gap between the
+/// two segments, and the artist's share of the line so the app name always
+/// keeps a visible tail.
+pub const MUSIC_META_GAP: f32 = 12.0;
+pub const MUSIC_META_ARTIST_MAX: f32 = 0.6;
+/// Wave row height. §7 draws a 3 DIP wave (amplitude 3) under a 18 DIP thumb,
+/// so the row has to be taller than the old 14 DIP to hold both.
+pub const MUSIC_PROGRESS_H: f32 = 20.0;
+/// §7 "Flyout Motion": wavelength 20, amplitude 3, stroke 3, round cap.
+pub const MUSIC_WAVE_AMP: f32 = 3.0;
+/// Matches `WAVE_LEN` (the phase travels in whole wavelengths), so the wrap
+/// of `wave_phase` lands exactly on a wave crest and never jumps.
+pub const MUSIC_WAVE_LEN: f32 = 20.0;
+pub const MUSIC_WAVE_STROKE: f32 = 3.0;
 pub const MUSIC_TRACK_STROKE: f32 = 3.0;
-pub const MUSIC_THUMB_W: f32 = 3.5;
-pub const MUSIC_THUMB_H: f32 = 14.0;
+/// §7: the progress thumb is 4 x 18 white.
+pub const MUSIC_THUMB_W: f32 = 4.0;
+pub const MUSIC_THUMB_H: f32 = 18.0;
 pub const MUSIC_TIME_W: f32 = 30.0;
 pub const MUSIC_REMAIN_W: f32 = 34.0;
 pub const MUSIC_TIME_GAP: f32 = 10.0;
@@ -103,18 +115,46 @@ pub const MUSIC_GLYPH: f32 = 18.0;
 pub const MUSIC_PLAY_W: f32 = 56.0;
 pub const MUSIC_PLAY_H: f32 = 34.0;
 
-// Timer card
-pub const TIMER_CTRL_H: f32 = 34.0;
-pub const TIMER_START_W: f32 = 64.0;
-pub const TIMER_CHIP_W: f32 = 44.0;
-pub const TIMER_CHIP_GAP: f32 = 6.0;
-pub const TIMER_RESET_W: f32 = 34.0;
-pub const TIMER_TRACK_H: f32 = 4.0;
-pub const TIMER_PROGRESS_H: f32 = 14.0;
-pub const TIMER_THUMB_W: f32 = 3.0;
-pub const TIMER_THUMB_H: f32 = 14.0;
-/// Preset chips, in minutes. Idle arms the timer; running adds the minutes.
-pub const TIMER_PRESETS: [u32; 4] = [1, 5, 10, 25];
+// Timer card (v0.9 §6: a stepper with hold-to-repeat; the preset chips are
+// gone). The card shell keeps ONE height for both views so the flyout never
+// resizes when the countdown starts.
+/// Set view: the − / + stepper buttons (56 x 56, radius 8).
+pub const TIMER_STEP_W: f32 = 56.0;
+pub const TIMER_STEP_H: f32 = 56.0;
+/// Set view: full-width Start button (44 px high, amber, dark text).
+pub const TIMER_START_H: f32 = 44.0;
+/// Running view: pause/resume (48 x 40, amber) and stop (40 x 40).
+pub const TIMER_PAUSE_W: f32 = 48.0;
+pub const TIMER_PAUSE_H: f32 = 40.0;
+pub const TIMER_STOP_W: f32 = 40.0;
+/// Running view: the 56 x 56 ring tile and the gap to its text column.
+pub const TIMER_TILE: f32 = 56.0;
+pub const TIMER_TEXT_GAP: f32 = 12.0;
+/// Countdown ring inside the tile: radius and stroke.
+pub const TIMER_RING_R: f32 = 17.0;
+pub const TIMER_RING_STROKE: f32 = 3.0;
+/// Wave row under the ring tile (elapsed ... wave ... total). Same §7 wave +
+/// thumb as the music card, so it shares `MUSIC_PROGRESS_H`'s height.
+pub const TIMER_PROGRESS_H: f32 = 20.0;
+/// Hold-to-repeat on the stepper: the first repeat after 420 ms, then one
+/// every 110 ms until the button is released.
+pub const TIMER_HOLD_FIRST_MS: u32 = 420;
+pub const TIMER_HOLD_EVERY_MS: u32 = 110;
+/// Duration in minutes: a 1-minute step inside 1..=180, 15 by default.
+pub const TIMER_MIN_MINUTES: u32 = 1;
+pub const TIMER_MAX_MINUTES: u32 = 180;
+pub const TIMER_DEFAULT_MINUTES: u32 = 15;
+/// Pausing flattens the wave over 320 ms instead of snapping it flat.
+pub const TIMER_FLATTEN_MS: u32 = 320;
+
+/// Clamp a minute count into the §6 stepper range.
+pub fn clamp_minutes(minutes: i64) -> u32 {
+    minutes.clamp(TIMER_MIN_MINUTES as i64, TIMER_MAX_MINUTES as i64) as u32
+}
+
+/// One body height for both timer views: the running view is the taller one
+/// (ring tile + wave + buttons), the set view is centred inside it.
+pub const TIMER_BODY_H: f32 = TIMER_TILE + CARD_GAP + TIMER_PROGRESS_H + CARD_GAP + TIMER_PAUSE_H;
 
 // Call card
 pub const CALL_STATUS_H: f32 = 52.0;
@@ -131,6 +171,44 @@ pub const SIGNAL_W: f32 = 18.0;
 pub const SIGNAL_H: f32 = 16.0;
 /// Spec §8 empty state: one large muted icon, no sentences.
 pub const EMPTY_ICON_DIP: f32 = 36.0;
+
+// ------------------------------------------- audio output sheet (v0.9 §4)
+// The sheet slides up inside the same flyout (240 ms, EASE_CONTENT), covers
+// it entirely and never changes the card's size. Its numbers are the
+// design's own px: the sheet is full-bleed, so nothing else has to scale.
+pub const SHEET_PAD_X: f32 = 16.0;
+pub const SHEET_PAD_Y: f32 = 12.0;
+pub const SHEET_TITLE: f32 = 14.0;
+pub const SHEET_CLOSE: f32 = 32.0;
+/// Gap between the header band and the first row.
+pub const SHEET_HEADER_GAP: f32 = 8.0;
+pub const SHEET_ROW_H: f32 = 44.0;
+pub const SHEET_ROW_GAP: f32 = 4.0;
+pub const SHEET_TILE: f32 = 28.0;
+pub const SHEET_NAME: f32 = 13.0;
+pub const SHEET_SUB: f32 = 11.5;
+/// Line boxes of a row's name / sub stack (design 16 / 14.5 px).
+pub const LINE_SHEET_NAME: f32 = 16.0;
+pub const LINE_SHEET_SUB: f32 = 14.5;
+/// Sheet surface: always rgb(38,38,38), whatever theme the card is in.
+pub const SHEET_BG: Color = rgb(38, 38, 38);
+/// Slide-up duration: 240 ms, cubic-bezier(.2,.9,.25,1) — EASE_CONTENT.
+pub const SHEET_MS: u32 = 240;
+/// Rows the fixed flyout shows at once: PAD_Y + CLOSE + header gap + 3 rows
+/// + 2 row gaps = 192 = FLY_H exactly. Anything past this scrolls.
+pub const SHEET_VISIBLE: usize = 3;
+
+// Output chips (v0.9 §4). Ink of both chips' device name.
+pub const FONT_CHIP: f32 = 12.0;
+/// Music chip, at the right end of the controls row. The design's 148 DIP
+/// assumes its 404 DIP content column; this shell has 329, so the chip
+/// takes exactly what the transport row leaves and nothing is dropped.
+pub const MUSIC_CHIP_W: f32 = 105.0;
+pub const MUSIC_CHIP_H: f32 = 36.0;
+/// Call chip (dialing / active), between the mute buttons and End. The full
+/// design size fits here: mic + speaker + chip still leave End a flex button.
+pub const CALL_CHIP_W: f32 = 150.0;
+pub const CALL_CHIP_H: f32 = 44.0;
 
 // Shelf card. The shelf owns the whole content column from
 // `card_content_rect()` (CARD_PAD on all four sides), a 28 DIP toolbar, then a
@@ -402,15 +480,23 @@ pub const R_THUMB: f32 = 2.0;
 pub const WAVE_LEN: f32 = 20.0;
 pub const WAVE_AMP: f32 = 3.0;
 pub const WAVE_FLAT: f32 = 0.02;
+/// §7: the wave scrolls one wavelength every 700 ms.
+pub const WAVE_MS_PER_LEN: f32 = 700.0;
 
 // --------------------------------------------------------------- timings
-/// Approved flyout motion: 180 ms fade, 220 ms scale/rise, 110 ms close.
-pub const FLYOUT_OPEN_FADE_MS: u32 = 180;
-pub const FLYOUT_OPEN_MOVE_MS: u32 = 220;
-pub const FLYOUT_CLOSE_MS: u32 = 110;
-pub const FLYOUT_RISE: f32 = 6.0;
-pub const FLYOUT_SCALE: f32 = 0.94;
-pub const EASE_FLYOUT: [f32; 4] = [0.2, 0.8, 0.2, 1.0];
+/// §7 "Flyout Motion": the card morphs out of the pill rect over 460 ms on an
+/// overshoot curve, its content fades in 160 ms later over 280 ms, and it
+/// leaves over 260 ms on the standard ease. The card is always laid out at
+/// its final size — the morph is a scale/translate of the whole surface, so
+/// the interior never re-flows.
+pub const FLYOUT_OPEN_MS: u32 = 460;
+pub const FLYOUT_CLOSE_MS: u32 = 260;
+pub const EASE_OPEN: [f32; 4] = [0.2, 1.1, 0.3, 1.0];
+pub const EASE_CLOSE: [f32; 4] = [0.4, 0.0, 0.2, 1.0];
+/// Content starts fading in this long after the open begins…
+pub const FLYOUT_CONTENT_DELAY_MS: u32 = 160;
+/// …and takes this long to land.
+pub const FLYOUT_CONTENT_MS: u32 = 280;
 pub const HOVER_MS: u32 = 160;
 pub const AUTO_CLOSE_MS: u32 = 700;
 /// Players drop the GSMTC session for a moment while a track changes. Keep
@@ -618,13 +704,19 @@ pub const LINE_HINT: f32 = 14.0;
 pub const LINE_CARD_STATUS: f32 = 16.0;
 pub const FONT_MUSIC_TITLE: f32 = 16.0;
 pub const LINE_MUSIC_TITLE: f32 = 20.0;
-pub const FONT_MUSIC_META: f32 = 12.0;
+pub const FONT_MUSIC_META: f32 = 12.5;
 pub const LINE_MUSIC_META: f32 = 16.0;
-pub const FONT_TIMER_READOUT: f32 = 36.0;
-pub const LINE_TIMER_READOUT: f32 = 40.0;
+/// §6 set view readout (40 px) and its line box.
+pub const FONT_TIMER_SET: f32 = 40.0;
+pub const LINE_TIMER_SET: f32 = 48.0;
+/// §6 running view: the time left at the right of the ring tile.
+pub const FONT_TIMER_RUN: f32 = 22.0;
+pub const LINE_TIMER_RUN: f32 = 28.0;
+/// §6 running view: the name over the status line.
+pub const FONT_TIMER_NAME: f32 = 16.0;
+pub const LINE_TIMER_NAME: f32 = 20.0;
 pub const FONT_CALL_TITLE: f32 = 18.0;
 pub const LINE_CALL_TITLE: f32 = 24.0;
-pub const FONT_CHIP: f32 = 12.0;
 pub const FONT_OPEN_CALL: f32 = 13.0;
 
 // ------------------------------------------------------------ activity ids
@@ -722,6 +814,18 @@ impl RectD {
             ..self
         }
     }
+
+    /// Linear interpolation between two rects (§7: the flyout morphs from the
+    /// pill rect to the card rect).
+    pub fn lerp(a: Self, b: Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        Self {
+            x: a.x + (b.x - a.x) * t,
+            y: a.y + (b.y - a.y) * t,
+            w: a.w + (b.w - a.w) * t,
+            h: a.h + (b.h - a.h) * t,
+        }
+    }
 }
 
 // Layout invariants, checked at compile time in every build: the convert
@@ -783,6 +887,78 @@ mod tests {
         assert_eq!(content.h, 178.0);
         assert_eq!(RAIL_INSET, 6.0);
         assert_eq!(RAIL_BTN * 5.0 + RAIL_GAP * 4.0 + RAIL_INSET * 2.0, FLY_H);
+    }
+
+    /// v0.9 §4: the output sheet covers the fixed flyout instead of resizing
+    /// it — header + three 44 DIP rows + gaps add up to FLY_H exactly — and
+    /// a row's two-line stack fits inside its own band.
+    #[test]
+    fn output_sheet_fills_the_fixed_flyout() {
+        assert_eq!(SHEET_BG, rgb(38, 38, 38));
+        assert_eq!(SHEET_MS, 240, "the sheet rides EASE_CONTENT for 240 ms");
+        let header = SHEET_PAD_Y + SHEET_CLOSE + SHEET_HEADER_GAP;
+        let rows =
+            SHEET_ROW_H * SHEET_VISIBLE as f32 + SHEET_ROW_GAP * (SHEET_VISIBLE as f32 - 1.0);
+        assert!(
+            (header + rows - FLY_H).abs() <= 0.01,
+            "header + {} rows must fill the flyout: {rows}",
+            SHEET_VISIBLE
+        );
+        // Compile-time layout invariants (they depend on no runtime value).
+        const {
+            assert!(LINE_SHEET_NAME + LINE_SHEET_SUB <= SHEET_ROW_H);
+            assert!(SHEET_TILE <= SHEET_ROW_H);
+        }
+        assert_eq!(SHEET_VISIBLE, 3);
+    }
+
+    /// v0.9 §4 chips: the music chip exactly fills what the transport row
+    /// leaves in the 329 DIP content column, and the call row (mic +
+    /// speaker + chip) still leaves End a usable flex button.
+    #[test]
+    fn output_chips_fit_the_rows_they_live_in() {
+        let content = FLY_W - CARD_CONTENT_X - CARD_PAD * 2.0;
+        let transport = (MUSIC_BTN + MUSIC_BTN_GAP) * 4.0 + MUSIC_PLAY_W;
+        let music_row = transport + MUSIC_BTN_GAP + MUSIC_CHIP_W;
+        assert!(
+            (music_row - content).abs() <= 0.01,
+            "music chip must fill the rest of the controls row: {music_row} vs {content}"
+        );
+        assert_eq!(MUSIC_CHIP_H, 36.0);
+        let used = CALL_BTN_W * 2.0 + CALL_BTN_GAP * 3.0 + CALL_CHIP_W;
+        assert_eq!(CALL_CHIP_W, 150.0);
+        assert_eq!(CALL_CHIP_H, CALL_BTN_H);
+        assert!(
+            content - used >= 60.0,
+            "End button too narrow after the call chip: {}",
+            content - used
+        );
+    }
+
+    /// v0.9 §7: the wave (wavelength 20, amplitude 3, stroke 3, round cap,
+    /// 700 ms per wavelength), the 4 x 18 thumb and the open/close timings all
+    /// come straight from the brief, and the taller wave row still leaves both
+    /// cards inside the fixed 178 DIP content column.
+    #[test]
+    fn flyout_motion_and_wave_match_the_v09_brief() {
+        assert_eq!(FLYOUT_OPEN_MS, 460);
+        assert_eq!(FLYOUT_CLOSE_MS, 260);
+        assert_eq!(FLYOUT_CONTENT_DELAY_MS, 160);
+        assert_eq!(FLYOUT_CONTENT_MS, 280);
+        assert_eq!(WAVE_MS_PER_LEN, 700.0);
+        assert_eq!(WAVE_LEN, 20.0);
+        assert_eq!(WAVE_AMP, 3.0);
+        assert_eq!(MUSIC_WAVE_LEN, WAVE_LEN, "the phase wraps in wavelengths");
+        assert_eq!(MUSIC_WAVE_AMP, WAVE_AMP);
+        assert_eq!(MUSIC_WAVE_STROKE, 3.0);
+        assert_eq!(MUSIC_TRACK_STROKE, 3.0);
+        assert_eq!(MUSIC_THUMB_W, 4.0);
+        assert_eq!(MUSIC_THUMB_H, 18.0);
+        const {
+            assert!(MUSIC_THUMB_H + 2.0 <= MUSIC_PROGRESS_H);
+            assert!(MUSIC_ART + CARD_GAP * 2.0 + MUSIC_PROGRESS_H + MUSIC_PLAY_H <= 178.0);
+            assert!(TIMER_BODY_H <= 178.0);
+        }
     }
 
     /// card_content_rect() derives from the fixed values at every DPI: padding

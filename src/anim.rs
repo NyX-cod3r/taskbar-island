@@ -93,8 +93,31 @@ mod tests {
     fn bezier_hits_endpoints() {
         assert!((cubic_bezier(design::EASE_CONTENT, 0.0) - 0.0).abs() < 1e-4);
         assert!((cubic_bezier(design::EASE_CONTENT, 1.0) - 1.0).abs() < 1e-4);
-        let midpoint = cubic_bezier(design::EASE_FLYOUT, 0.5);
-        assert!(midpoint > 0.5 && midpoint < 1.0);
+        assert!((cubic_bezier(design::EASE_OPEN, 0.0) - 0.0).abs() < 1e-4);
+        assert!((cubic_bezier(design::EASE_OPEN, 1.0) - 1.0).abs() < 1e-4);
+        assert!((cubic_bezier(design::EASE_CLOSE, 0.0) - 0.0).abs() < 1e-4);
+        assert!((cubic_bezier(design::EASE_CLOSE, 1.0) - 1.0).abs() < 1e-4);
+    }
+
+    /// §7: the open curve overshoots (its control point sits above 1), so the
+    /// card springs slightly past its final rect before settling; the close
+    /// curve is a plain ease with no overshoot.
+    #[test]
+    fn open_curve_overshoots_and_close_does_not() {
+        let peak = (0..=100)
+            .map(|i| cubic_bezier(design::EASE_OPEN, i as f32 / 100.0))
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            peak > 1.0,
+            "EASE_OPEN must overshoot past 1.0, peaked at {peak}"
+        );
+        let close_peak = (0..=100)
+            .map(|i| cubic_bezier(design::EASE_CLOSE, i as f32 / 100.0))
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            close_peak <= 1.0 + 1e-4,
+            "EASE_CLOSE must not overshoot, peaked at {close_peak}"
+        );
     }
 
     #[test]

@@ -54,6 +54,26 @@ pub fn spec(icon: IconId) -> IconSpec {
             filled: false,
             stroke: 2.0,
         },
+        IconId::Headphones => IconSpec {
+            path: "M4 14v-2a8 8 0 0 1 16 0v2M4 14h3v6H6a2 2 0 0 1-2-2v-4zm16 0h-3v6h1a2 2 0 0 0 2-2v-4z",
+            filled: false,
+            stroke: 2.0,
+        },
+        IconId::ChevronUp => IconSpec {
+            path: "M6 15l6-6 6 6",
+            filled: false,
+            stroke: 2.0,
+        },
+        IconId::PhoneDevice => IconSpec {
+            path: "M7 2h10a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zM11 19h2",
+            filled: false,
+            stroke: 1.8,
+        },
+        IconId::Cast => IconSpec {
+            path: "M3 5h18v11H3zM8 20h8M12 16v4",
+            filled: false,
+            stroke: 2.0,
+        },
         IconId::DownArrow => IconSpec {
             path: "M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19.5h14",
             filled: false,
@@ -203,6 +223,11 @@ pub fn spec(icon: IconId) -> IconSpec {
         },
         IconId::Plus => IconSpec {
             path: "M12 5v14M5 12h14",
+            filled: false,
+            stroke: 2.2,
+        },
+        IconId::Minus => IconSpec {
+            path: "M5 12h14",
             filled: false,
             stroke: 2.2,
         },
@@ -921,6 +946,7 @@ mod tests {
             IconId::Copy,
             IconId::Undo,
             IconId::Plus,
+            IconId::Minus,
             IconId::Back,
             IconId::SelectAll,
             IconId::Trash,

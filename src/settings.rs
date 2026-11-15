@@ -10,7 +10,7 @@ use windows::Win32::System::Registry::{
     HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE, REG_SZ,
 };
 
-use crate::design::ActivityKind;
+use crate::design::{self, ActivityKind};
 use crate::json::{self, Json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,7 @@ impl Enabled {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub slot_offset_dip: i32,
     pub run_at_startup: bool,
@@ -57,6 +57,21 @@ pub struct Settings {
     pub enabled: Enabled,
     /// Clipboard capture paused by the user; survives restarts.
     pub clipboard_paused: bool,
+    /// §6 "remember the last duration": the stepper's minutes (1..=180).
+    pub timer_minutes: u32,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            slot_offset_dip: 0,
+            run_at_startup: false,
+            call_use_wpn_db: false,
+            enabled: Enabled::default(),
+            clipboard_paused: false,
+            timer_minutes: design::TIMER_DEFAULT_MINUTES,
+        }
+    }
 }
 
 impl Settings {
@@ -80,6 +95,9 @@ impl Settings {
         }
         if let Some(v) = json.get("clipboardPaused").and_then(Json::as_bool) {
             settings.clipboard_paused = v;
+        }
+        if let Some(v) = json.get("timerMinutes").and_then(Json::as_i32) {
+            settings.timer_minutes = design::clamp_minutes(v as i64);
         }
         if let Some(enabled) = json.get("enabled") {
             settings.enabled = Enabled {
@@ -129,6 +147,10 @@ impl Settings {
             ("call.use_wpn_db".into(), Json::Bool(self.call_use_wpn_db)),
             ("enabled".into(), enabled),
             ("clipboardPaused".into(), Json::Bool(self.clipboard_paused)),
+            (
+                "timerMinutes".into(),
+                Json::Num(design::clamp_minutes(self.timer_minutes as i64) as f64),
+            ),
         ]);
         let _ = std::fs::write(path, json::to_string_pretty(&doc));
     }
@@ -291,5 +313,10 @@ mod tests {
         assert_eq!(s.slot_offset_dip, 0);
         // Source D is opt-in: the notification database stays untouched.
         assert!(!s.call_use_wpn_db);
+        // §6: the stepper starts at 15 minutes and clamps to 1..=180.
+        assert_eq!(s.timer_minutes, design::TIMER_DEFAULT_MINUTES);
+        assert_eq!(design::clamp_minutes(0), design::TIMER_MIN_MINUTES);
+        assert_eq!(design::clamp_minutes(5000), design::TIMER_MAX_MINUTES);
+        assert_eq!(design::clamp_minutes(42), 42);
     }
 }
