@@ -1,32 +1,36 @@
-# Privacy Policy
+# Privacy policy
 
-## Overview
+TaskbarIsland is free, open-source software (GPL-3.0). It runs entirely on your PC. It collects nothing and sends nothing to any server.
 
-TaskbarIsland is fully offline free software. It collects and sends nothing to any external server or service.
+## What the app does not do
 
-## Data Collection
+- No telemetry, no analytics, no crash reporting, no update check, no remote logging.
+- The app itself makes no network connections. File conversion runs offline with local engines. The optional converters pack, if you choose to install it, is a separate download that you start yourself from the GitHub Releases page.
 
-TaskbarIsland collects and transmits zero data. There is no telemetry, no update check, no remote logging, and no phoning home of any kind.
+## What the app reads, and what it keeps
 
-## Clipboard History
+- **Clipboard history:** kept only on this PC, at most 30 items for at most 7 days. You can pause or clear it at any time. The app respects the flags that password managers set on copied items and does not store those items.
+- **Media info:** title, artist and app name are read from Windows to show on the pill. They are not saved.
+- **Calls:** the app reads Phone Link notification and window text on this PC only to show who is calling. Caller names and numbers stay in memory during the call and are not saved. Diagnostic logs, if you enable them, mask phone numbers (for example +00 00•• ••• 000).
+- **File shelf:** the app keeps only a list of file paths. Your files stay where they are.
 
-The clipboard history feature stores items only on the current Windows PC. Items are retained for a maximum of 7 days and at most 30 items total. History entries are marked as excluded from history by other apps (such as password managers) and are never stored for password-manager copies.
+## Where data lives
 
-## Caller Identity
+Everything stays inside two folders for your Windows user, both named
+`TaskbarIsland`:
 
-Caller names and numbers stay in memory only during a call session. They are never logged unmasked. In logs, numbers are masked as +91 98•• ••• 421. No caller data is persisted to disk.
+- `%APPDATA%\TaskbarIsland` (Roaming) — `settings.json` (your preferences).
+- `%LOCALAPPDATA%\TaskbarIsland` (Local) — `clipboard\` (the encrypted
+  clipboard history), `shelf.json` (the file shelf's list of paths) and, only
+  if you turn diagnostics on, `diag\` (call logs).
 
-## Data Location
+Nothing is written anywhere else, and nothing leaves the PC.
 
-All user data (clipboard history, settings, call state) is stored in the application data folder under the current Windows user profile. The exact path is: %APPDATA%\\TaskbarIsland\
+## Deleting your data
 
-## Data Deletion
+Uninstall TaskbarIsland from Windows Settings (Apps), then delete the two
+folders above if you want to remove everything.
 
-To delete all data:- Uninstall TaskbarIsland using the Windows Add/Remove programs app or the silent uninstaller- The application data folder at %APPDATA%\\TaskbarIsland\ can be manually deleted if needed- After uninstall, no user data should remain except what the user does not remove
+## Contact
 
-## No Background Networking
-
-TaskbarIsland does not initiate any network connections, does not check for updates, and does not transmit any usage data. The application is designed to be fully offline.
-
----
-This is a plain-language template, not legal advice. Consult qualified legal counsel for advice on your specific situation.
+Open an issue: https://github.com/NyX-cod3r/taskbar-island/issues

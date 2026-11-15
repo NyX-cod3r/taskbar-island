@@ -22,7 +22,7 @@
   unsigned under our name). Releasing is `docs/release-process.md`; code signing is
   `docs/signing.md` (all steps still `[AFTER APPROVAL]`).
 
-## Status (updated 2026-11-03)
+## Status (updated 2026-11-15)
 - **Phase 1 COMPLETE** (commit a8f4744): empty anchored pill, `WS_CHILD` inside `Shell_TrayWnd`
   (no topmost/z-order fight), geometry only in anchor.rs. Rendering: D3D11 ->
   `CreateSwapChainForComposition` (premultiplied alpha) -> DComp visual on the pill HWND -> D2D
@@ -421,6 +421,53 @@
   page; every other wheel over an open card is ignored (accumulator zeroed). Verified: wheel over
   the open music card logs nothing and never switches; after closing the card the same wheel
   still pins the next activity. 46/46 tests pass.
+
+- **v0.9 spec sections 2-7 COMPLETE on branch `v0.9`** (2026-11-15), shipped as
+  `0.9.0`:
+  - **§2 clipboard file badge**: `CF_HDROP` is classified by content, so a copied
+    image file lands in *All* and *Images* with a thumbnail and the `FILE` badge
+    instead of being filed as text (`810bc5d`).
+  - **§3 call sources**: one call-source state machine behind four honest sources
+    with a `--diag-call` log (`%LOCALAPPDATA%\TaskbarIsland\diag\call-*.log`,
+    phone numbers masked); Answer/Decline/End go through UIA or an honest
+    fallback (`385d379`). **Not proven on a real call** — owner must run one.
+  - **§4 output picker**: music chip 105 x 36 at the end of the controls row and
+    call chip 150 x 44 between mute and End open a sheet that slides up *inside*
+    the fixed flyout (240 ms `EASE_CONTENT`, `rgb(38,38,38)`, header + 3 visible
+    44 DIP rows, extra rows wheel-scroll, flyout never resizes).
+    `IPolicyConfig::SetDefaultEndpoint` sets all three roles (call also sets the
+    comms default), failure opens `ms-settings:sound`; Phone transfers through a
+    UIA invoke (`Phone` / `Transfer to phone` / `Transfer call`) with an honest
+    "Open Phone Link to transfer" fallback; `IMMNotificationClient` refreshes the
+    list on device/default changes — **no polling**. Row choice: device rows keep
+    the sheet open and move the check, Phone closes and transfers, "Cast to a
+    device…" opens `ms-settings-connectabledevices:devicediscovery`.
+  - **§5 music two-line text**: title (16 px semibold ellipsis) over
+    `artist <12 px gap> app` (78 % / 52 % white), the app resolved from the
+    session's `SourceAppUserModelId`.
+  - **§6 timer stepper**: presets gone; −/big MM:SS/+ (1..180, default 15,
+    hold-to-repeat 420 ms then 110 ms) with a full-width amber Start, and a
+    running view that shares one `TIMER_BODY_H` so the shell never resizes.
+  - **§7 flyout motion**: the card morphs out of the pill rect over **460 ms**
+    on `cubic-bezier(.2,1.1,.3,1)`, leaves over **260 ms** on
+    `cubic-bezier(.4,0,.2,1)`, and its content holds **160 ms** then fades in
+    over **280 ms**. The card is laid out at its final size the whole time —
+    only a scale/translate of the surface moves — so nothing inside re-flows,
+    and `update_window_region` + `WM_NCHITTEST` follow the *painted* rect, so
+    the un-painted area around a half-open card never swallows a click.
+    Closing on outside click / Esc / 700 ms pointer-leave is unchanged.
+    Wave per brief: wavelength 20, amplitude 3, stroke 3 round cap, **700 ms per
+    wavelength**, track 3 px at white 22 %, thumb 4 x 18 white; music and timer
+    wave rows grew 14 → 20 DIP so the thumb fits its row. Shell sizes stay at
+    design.rs (400 x 192 flyout, 56 rail, 224 pill).
+  - **Gates**: `cargo test` **325 passed / 0 failed / 1 ignored**, clippy 0,
+    fmt 0, `tools\build.ps1 -Mode Installer` green with the manifest gate, and
+    `tools\tests\install-smoke.ps1` **8/8 PASS** on the freshly installed
+    release. 60-minute soak CSV in `target\soak\`.
+  - **Not tested** (also in `docs/testing.md`): a real Phone Link call, real
+    device plug/unplug churn, the DPI 100/125/150 light+dark re-run, clean-VM
+    install, CI's first run, the SignPath flow, Explorer drag-out and human-eye
+    checks of the new motion/sheet/wave.
 
 ## Version naming (x.y.z)
 

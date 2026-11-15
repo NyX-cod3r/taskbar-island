@@ -1,32 +1,156 @@
 # Testing
 
-What is tested in this repository, what is skipped, and why. Updated as the
-v0.9 work lands; the gate evidence below was rescued from the scratch logs at
-the workspace root before those were deleted by the v0.9 cleanup
-(`docs/cleanup-plan.md`).
+What is tested in this repository, what is skipped, and why. The v0.9 gate
+evidence below was produced on branch `v0.9` on 2026-11-15; the quoted v0.8.0
+logs were rescued from the scratch logs at the workspace root before those
+were deleted by the v0.9 cleanup (`docs/cleanup-plan.md`).
 
-## Rust gates (current)
+## Rust gates (current, v0.9)
 
-| Gate | Command | Last known result |
+| Gate | Command | Result (2026-11-15) |
 | --- | --- | --- |
-| Unit/integration tests | `cargo test` | **272 passed, 0 failed, 1 ignored** — re-run green after the v0.9 cleanup (post-delete gate, branch `chore/cleanup`) |
-| Release build | `cargo build --release` | Green after the cleanup (5 m 32 s from an empty `target/`) |
+| Unit/integration tests | `cargo test` | **325 passed, 0 failed, 1 ignored** |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Clean, no diagnostics |
+| Format | `cargo fmt --all` (then `--check`) | Clean, no diffs |
+| Release build | `tools\build.ps1 -Mode Installer` | Green (49 s compile), manifest gate passed (`exactly one <assembly> root including <msix>`) |
+| Installer gate | `powershell -File tools\tests\install-smoke.ps1` | **8 checked, 0 failed** (stop → install → exe/version → byte-match against `target\release` → launch → pill/tray windows → single-instance) |
 | Ignored test | `convert::jobs::live_external_engines_convert_real_files` | Needs live engines in `%LOCALAPPDATA%\Filee\engines`; run manually when engines are installed |
-| Clippy | `cargo clippy --all-targets -- -D warnings` | Clean at the v0.8.0 release; re-run after v0.9 changes |
-| Format | `cargo fmt --check` | Clean at the v0.8.0 release; re-run after v0.9 changes |
 
 Toolchain note: builds must use the WinLibs gcc — a broken `C:\MinGW\bin\gcc.exe`
 shadows it. `tools\build.ps1` and `tools\cargo-winlibs.cmd` prepend the WinLibs
 `mingw64\bin` to `PATH` automatically.
 
-## Engine golden suite
+`cargo test` alone is not evidence that a change works: the pill, the tray, the
+clipboard listener and the installer only exist in the installed copy, which is
+why `install-smoke.ps1` is the release gate.
 
-`TI_ENGINES_DIR=%LOCALAPPDATA%\Filee\engines cargo test convert::golden` —
-**13 passed, 22 skipped, 0 failed** at the v0.8.0 release. The 22 skips are the
-rows whose engine payload is absent from this machine; they print a SKIP line,
-they are not silent. The per-row table (missing payload → skipped rows) lives in
-`docs/release/v0.8.0/test-report.md` §3 and will be restated here per the v0.9
-brief §1 ("List each skipped row with the reason in docs/testing.md").
+## Engine golden suite (skip table)
+
+```powershell
+$env:TI_ENGINES_DIR = "$env:LOCALAPPDATA\Filee\engines"
+cargo test convert::golden -- --nocapture
+```
+
+**13 passed, 0 failed, 22 SKIP lines** (re-run on branch `v0.9`, 2026-11-15 —
+identical to the v0.8.0 run). The skips are exactly the rows whose engine
+payload is absent from this machine; only `ffmpeg`, `pandoc` and `tesseract`
+are present, and `tessdata\eng.traineddata` is missing too. They are printed
+by the suite, never silent:
+
+| Missing payload | Skipped rows |
+| --- | --- |
+| LibreOffice | md→pdf, docx→pdf, pdf→docx, pdf→odt, pptx→pdf, pptx→odp, pptx→png, csv→pdf, csv→xlsx (9) |
+| Poppler | pdf→txt, pdf→md, pdf→png pages, pdf text, pdf embedded images, pdf page→png, pdf split, pdf merge, merge pdfs (9) |
+| qpdf | pdf rotate left, pdf web-optimize (2) |
+| Ghostscript | pdf compress (1) |
+| Tesseract language data | pdf make searchable (1) |
+
+The 13 rows that can run with the present payloads all pass. The app hides or
+disables the options that need a missing engine and never invents success.
+
+## Soak (v0.9, 60 minutes)
+
+`powershell -File tools\soak.ps1 -Minutes 60` samples the *installed* release
+process once a minute — working set, private bytes, handles, threads, CPU
+seconds consumed in the interval and `Responding` — and writes
+`target\soak\soak-0.9.0-<stamp>.csv`. The app is not touched during the run:
+this measures the resting, event-driven cost, so a leak would show as a trend
+in handles or private bytes.
+
+Run of 2026-11-15, `target\soak\soak-0.9.0-20261115-203008.csv`, installed
+release, one process the whole time (pid 9032, no restart):
+
+| Measure | First sample (20:31:08) | Last sample (21:30:09) | Min / max over the run |
+| --- | --- | --- | --- |
+| Working set | 70.96 MB | 71.05 MB | 69.75 / 71.56 MB |
+| Private bytes | 54.97 MB | 54.91 MB | 54.74 / 55.11 MB |
+| Handles | 510 | 503 | 497 / 520 |
+| Threads | 20 | 18 | — |
+| `Responding` | True | **60 of 60 samples True** (0 unresponsive) | — |
+
+- **CPU: 14.937 s consumed over the 60 minutes** = 0.249 s/sample =
+  **0.41 % of one core** — the resting, event-driven cost (no timers running,
+  nothing live).
+- **No growth trend.** Private bytes end 0.06 MB *below* where they started
+  and never leave the 54.74–55.11 MB band; handles end 7 lower after peaking
+  at 520 mid-run; working set oscillates in a 1.8 MB band (first three samples
+  average 70.93 MB, last three 71.31 MB — inside the band, with the run's
+  maximum at sample 6). A leak would show as a monotonic climb in private
+  bytes or handles; neither appears.
+
+## Card UI screenshots (v0.9)
+
+`powershell -File tools\tests\ui-smoke.ps1` photographs the *installed* card
+UI into `target\soak\ui\`: 13 PNGs (six activities in dark and light, plus one
+mid-morph frame) and `pins.log`, the app's own `activity.show:` trail proving
+which pin produced which shot.
+
+How it drives the app (the script documents this in its header): the wheel only
+cycles while the card is closed, so each state is *close → notch → click*; the
+notch is a `WM_MOUSEWHEEL` posted straight to the island HWND rather than a
+synthesized mouse event, because the message normally goes to the **focus**
+window and a mouse-event run silently skipped notches (two shots came out
+byte-identical). Every notch is read back from the app's log, so each file is
+named after the activity actually on screen — a run with a wrong label is
+impossible to miss, and `pins.log` shows one `activity.show` line per posted
+notch (66 lines for 61 notches + 5 restore notches).
+
+| File | Shows |
+| --- | --- |
+| `00-morph-midopen.png` | Card at t≈150 ms of the 460 ms open: laid out at final size but **content still transparent** (160 ms hold before the 280 ms fade) — spec 7's content delay, with the desktop bleeding through |
+| `01-auto-dark/light.png` | Auto with nothing else live resolves to the **shelf** (it holds 1 file), so it is pixel-identical to the shelf shot in light |
+| `02-music-*` | Music empty state, two-line text, and the §4 output chip (`Speak…`) at the end of the controls row |
+| `03-call-*` | Call empty state (`No active call` / `Open Phone Link`) |
+| `04-shelf-*` | Shelf with its one file tile and the `1` count |
+| `05-timer-*` | §6 stepper: `− 15:00 +`, "15 minutes · hold to repeat", full-width amber Start |
+| `06-clipboard-*` | Clipboard list, 30/30, filter tabs, pause and clear |
+
+Both themes are the real thing: the card follows the app theme (light cards in
+the `-light` shots) while the pill stays dark because it samples the *taskbar*
+tone — the taskbar is dark on this machine. The owner's theme is restored in a
+`finally` block, so an aborted run cannot leave the machine in light mode.
+
+## What is exercised manually (v0.9)
+
+- Clipboard file images: a copied image file appears in **All** and **Images**
+  with a thumbnail and the `FILE` badge (spec 2).
+- Output picker: chip label follows the real default device; the sheet slides
+  up inside the fixed flyout; picking a device changes the Windows default;
+  the list refreshes when a device connects (spec 4).
+- Music two-line text and the timer stepper, including hold-to-repeat (specs
+  5 and 6).
+- Flyout open/close motion and the wave (spec 7).
+
+Captured rather than remembered: `tools\tests\ui-smoke.ps1` photographs all six
+cards in dark and light plus a mid-morph frame into `target\soak\ui\` (see
+*Card UI screenshots* above), and `tools\soak.ps1` records the 60-minute
+numbers above. Those are machine-read screenshots, so the *human-eye* judgement
+of the new motion and wave is still listed as not tested.
+
+## Not tested (v0.9)
+
+Stated honestly so nothing is claimed that was not run:
+
+- **A real incoming, outgoing and ended Phone Link call.** The detector and
+  the UIA actions exist and are unit-tested, but no phone is linked on this
+  machine, so **call support is not claimed** until the owner runs one call
+  and sends the `--diag-call` log (`%LOCALAPPDATA%\TaskbarIsland\diag\`).
+- **Real audio-device churn** (plugging a headset in mid-open): the watcher is
+  `IMMNotificationClient`-based and event-driven, but no device was attached
+  or removed during the v0.9 run.
+- **DPI matrix 100 / 125 / 150 %, light and dark, auto-hide taskbar.** Run for
+  v0.8.0 (`docs/release/v0.8.0/test-report.md` §5, §6, §9) and **not re-run
+  after the v0.9 UI changes** — changing the system scale programmatically is
+  not safe to script on the owner's machine. Must be re-run by hand before
+  1.0.0.
+- **Clean-VM install** (Windows Sandbox absent on this machine).
+- **CI's first run on a `v<x.y.z>` tag** and the **SignPath flow** — both are
+  written but have never executed; every signing step in `docs/signing.md` is
+  still `[AFTER APPROVAL]`.
+- **Real Explorer drag-out of a shelf tile** (DoDragDrop cannot be scripted
+  reliably) and **human-eye checks** of the new motion, sheet and wave.
+- The one ignored test (`live_external_engines_convert_real_files`) and the
+  22 golden rows above.
 
 ## Release-gate evidence (v0.8.0, quoted from the deleted scratch logs)
 
@@ -41,7 +165,7 @@ From `rv8-*` (release worktree `D:\ti-release-v08`, 2026-11-08/09):
 - `cargo test` → **187 passed, 0 failed, 1 ignored** (rv8-test-out.txt), then
   **188 passed, 0 failed, 1 ignored** after the last fix (rv8-test2-out.txt).
 
-From the main-tree logs (superseded by the current 272-test baseline):
+From the main-tree logs (superseded by the current 325-test baseline):
 
 - `build-err.txt` — v0.7.0 dev build with 139 warnings (pre-burn-down).
 - `clippy-err.txt` — the pre-burn-down state: 182 clippy errors (debt later
@@ -51,15 +175,3 @@ From the main-tree logs (superseded by the current 272-test baseline):
 
 These logs were deleted because every number in them is reproduced by running
 the gates again; the quoted results above keep the historical record.
-
-## Not tested (v0.8.0 release, carried into v0.9)
-
-Stated in `docs/release/v0.8.0/test-report.md` and repeated here so it is not
-lost:
-
-- A real incoming/outgoing Phone Link call (no phone was linked; the spike
-  returned NO-GO). v0.9 §3 replaces the detector — until a real call log exists,
-  call support is **not claimed**.
-- Clean-VM install (Windows Sandbox absent on this machine).
-- DPI 100/125/150 light+dark and auto-hide were run for v0.8.0 and must be
-  re-run after the v0.9 UI changes.

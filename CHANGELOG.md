@@ -4,6 +4,100 @@ All notable changes to TaskbarIsland are recorded here. The format follows
 Keep a Changelog; versions follow the owner's x.y.z scheme (the app stays on
 0.x until the owner approves 1.0.0).
 
+## 0.9.0 (2026-11-15)
+
+### Added
+
+- **Output picker (spec 4).** A chip with the device icon, the real default
+  device name (ellipsized) and a chevron sits at the end of the music
+  controls row (105 x 36) and between mute and End on the call card
+  (150 x 44). It opens an output sheet that slides up *inside* the same
+  flyout (240 ms, `EASE_CONTENT`, full flyout size, `rgb(38,38,38)`, 12/16
+  padding, 44 px rows with a 28 x 28 tile, name, sub line and a check on the
+  current device) - the flyout never resizes. The music list is every active
+  render endpoint plus "Cast to a device..." (sub: "Phone, tablet or TV"); the
+  call list is the Bluetooth hands-free endpoint, the PC speakers and
+  microphone, and Phone. Choosing a device sets the default for all three
+  roles through `IPolicyConfig::SetDefaultEndpoint` (failures fall back to
+  `ms-settings:sound`), the call row also sets the communications default,
+  and Phone hands the call over through a UIA invoke
+  (`Phone` / `Transfer to phone` / `Transfer call`) with an honest
+  "Open Phone Link to transfer" fallback. An `IMMNotificationClient` watcher
+  refreshes the list when devices appear or the default changes - no polling.
+- **Music two-line text (spec 5).** Line 1 is the title (16 px, semibold,
+  ellipsis); line 2 is the artist at 78 % white, a 12 px gap and the source
+  app at 52 %, resolved from the session's `SourceAppUserModelId` (browsers
+  report their page, e.g. YouTube Music, Spotify, Chrome). Art stays 72 x 72
+  at radius 8; the freed space holds the wavy progress bar, the controls row
+  and the output chip.
+- **Timer stepper (spec 6).** The 5/10/15 presets are gone. The set view is
+  `-` (56 x 56) / big MM:SS time / `+`, range 1..180 minutes, default 15,
+  hold-to-repeat (first repeat 420 ms, then every 110 ms, released on mouse
+  up, leave or capture loss) and a full-width amber Start button. The running
+  view is ring tile (56 x 56), name and status, time left at the right, the
+  wavy bar with elapsed and total, then pause (48 x 40), -1 min, +1 min and
+  stop (40 x 40). One shell height serves both views, so the flyout never
+  resizes when the countdown starts; the pill shows the time left and pulses
+  amber when it ends.
+- **Flyout motion (spec 7).** The card morphs out of the pill rect over
+  460 ms on `cubic-bezier(.2,1.1,.3,1)` and leaves over 260 ms on
+  `cubic-bezier(.4,0,.2,1)`; content holds for 160 ms and then fades in over
+  280 ms. The card is laid out at its final size throughout - only the
+  surface's scale and translate move - so nothing inside re-flows mid-open,
+  and the window region plus hit test follow the painted rect, so the
+  un-painted area around a half-open card never swallows a click. Closing on
+  outside click, Esc or 700 ms after the pointer leaves is unchanged.
+- **Wave and progress per spec 7.** Wavelength 20, amplitude 3, stroke 3 with
+  round caps, one wavelength every 700 ms (was 1.2 s), track 3 px at white
+  22 %, thumb 4 x 18 white. The music and timer wave rows grew to 20 DIP so
+  the taller thumb sits inside its own row.
+- **Split installers, single-source identity, CI draft release.** The core
+  setup (`TaskbarIsland-Setup.exe`: our executable plus `LICENSE`/`NOTICE`,
+  nothing else) is separate from the optional **Converters pack**
+  (`TaskbarIsland-Converters-Setup.exe`, third-party engines only), so the
+  artifact that gets code-signed contains only our own binaries; the tray's
+  "Manage engines..." now prefers the pack and still falls back to the
+  pre-0.9 setup copy. `version` and `[package.metadata] product-name` in
+  `Cargo.toml` feed the exe's VERSIONINFO (`build.rs` renders
+  `assets/app.rc`) and Inno Setup (`/DMyAppVersion`, `/DMyAppName`), with
+  `version_tests` failing the suite if a literal copy reappears. Bumped to
+  0.9.0.
+- **`.github/workflows/release.yml`.** On a `v<x.y.z>` tag a clean runner
+  builds the core installer from source, runs the tests, **fails when the tag
+  disagrees with `Cargo.toml`**, hashes the installer and uploads the setup,
+  its SHA-256, the update payload and `manifest.txt` to a **draft** release -
+  never publishing and never using a stored secret.
+- **Release and signing docs.** `README.md` (with the *Code signing policy*:
+  author / reviewer / approver roles, the no-network privacy statement,
+  SmartScreen explanation and a SignPath Foundation line kept as a pending
+  placeholder), `docs/signing.md` (every SignPath step marked
+  `[AFTER APPROVAL]`) and `docs/release-process.md`
+  (bump -> test -> merge -> tag -> CI draft -> sign -> owner publishes).
+- **License audit.** The core installer ships no third-party code and every
+  Rust dependency is OSI-approved; the only item whose terms are not
+  verifiable from the file alone (per-language Tesseract `tessdata`) stays
+  pack-only. Recorded in `THIRD_PARTY_LICENSES.md`.
+- **GCC 16 / binutils manifest conflict workaround** (sourceware 34362):
+  `tools\build.ps1` moves the toolchain's `default-manifest.o` aside and
+  gates every release build on the exe carrying exactly one `<assembly>` root
+  including our `<msix>` element (sparse-package identity, spec 3 Source B).
+- **Soak harness** (`tools\soak.ps1`): samples working set, private bytes,
+  handles, threads, per-interval CPU and responsiveness of the installed
+  process into `target\soak\*.csv`.
+
+### Changed
+
+- **Call sources (spec 3).** One call-source state machine behind four honest
+  sources, a `--diag-call` log (`%LOCALAPPDATA%\TaskbarIsland\diag\`) that
+  masks phone numbers, and Answer/Decline/End driven through UIA or an honest
+  fallback message instead of a demo state.
+- **Clipboard file images (spec 2).** `CF_HDROP` payloads are classified by
+  content, so a copied image file lands in *Images* with a thumbnail and the
+  `FILE` badge instead of being filed as plain text.
+- Tooltips flip to the left of their control when the tip would run past the
+  right edge of the screen, so rail and right-hand card controls keep their
+  copy on screen.
+
 ## 0.8.0 (2026-11-11)
 
 ### Added
