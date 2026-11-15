@@ -4,6 +4,38 @@ All notable changes to TaskbarIsland are recorded here. The format follows
 Keep a Changelog; versions follow the owner's x.y.z scheme (the app stays on
 0.x until the owner approves 1.0.0).
 
+## 0.10.0 (2026-11-16)
+
+### Changed
+
+- **Slim activity rail (design section 1).** The side rail narrows to 48
+  design px (38.4 DIP): five 28.8 x 28.8 r6 buttons with 14.4 px glyphs,
+  6.4 DIP gaps, a 2.4 x 14.4 accent bar and a 1 px white 8 % divider. The
+  content column widens to 346.6 DIP - shelf tiles become 78.65, convert
+  options 62.92 and the music chip 122.6 so it still fills exactly what the
+  transport row leaves. Tokens and `design-tokens.json` follow the rail.
+- **Call card (design section 2).** Three equal rows (header / connected box
+  / action row) fill the fixed 178 DIP content column with 48.67 DIP rows and
+  16 DIP gaps: the header keeps the caller over its sub line and the
+  right-aligned state word, the connected box shows the device name over its
+  meta line with signal bars (14.4 x 12.8) and an in-box green Output chip
+  (105.6 x 35.2), and the action row is three equal Hold / End call / Mute
+  buttons. Incoming calls get an equal Decline / Answer pair, and the idle
+  card offers "Open Phone Link". The Output chip opens the same output sheet
+  0.9.0 shipped ("Call audio", 44 px rows), sliding up inside the fixed
+  flyout - it never resizes.
+- **Honest Hold.** Hold/Resume drives Phone Link's own UIA button: the
+  control stays disabled with "Hold isn't available for this call" until a
+  400 ms probe has seen Phone Link's own Hold button *for this call*, "On
+  hold" appears only once Phone Link confirms a Resume button exists, and the
+  state is dropped the moment the call ends. A held state is amber.
+
+### Added
+
+- New glyphs for the call card: PhoneEnd (hang-up handset), Headphones,
+  ChevronUp and PhoneDevice, baked into `src/icons.rs` from the design SVG
+  paths.
+
 ## 0.9.0 (2026-11-15)
 
 ### Added

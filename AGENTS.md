@@ -27,7 +27,7 @@
   unsigned under our name). Releasing is `docs/release-process.md`; code signing is
   `docs/signing.md` (all steps still `[AFTER APPROVAL]`).
 
-## Status (updated 2026-11-15)
+## Status (updated 2026-11-16)
 - **Phase 1 COMPLETE** (commit a8f4744): empty anchored pill, `WS_CHILD` inside `Shell_TrayWnd`
   (no topmost/z-order fight), geometry only in anchor.rs. Rendering: D3D11 ->
   `CreateSwapChainForComposition` (premultiplied alpha) -> DComp visual on the pill HWND -> D2D
@@ -473,10 +473,33 @@
     device plug/unplug churn, the DPI 100/125/150 light+dark re-run, clean-VM
     install, CI's first run, the SignPath flow, Explorer drag-out and human-eye
     checks of the new motion/sheet/wave.
+- **v0.10.0 sections 1-2 COMPLETE on branch `v0.10.0`** (2026-11-16), shipped as
+  `0.10.0`:
+  - **§1 slim rail**: the side rail narrows to 48 design px (38.4 DIP) - five
+    28.8 DIP r6 buttons, 14.4 DIP glyphs, 6.4 DIP gaps, a 2.4 x 14.4 accent bar
+    and a white 8 % divider - and the content column widens to 346.6 DIP
+    (shelf tiles 78.65, convert options 62.92, music chip 122.6). Tokens and
+    `design-tokens.json` follow.
+  - **§2 call card**: three equal rows (header / connected box / action row)
+    fill the fixed 178 DIP column - device name over its meta line with signal
+    bars (14.4 x 12.8) and the in-box green Output chip (which opens the 0.9.0
+    output sheet), then three equal Hold / End call / Mute buttons; incoming
+    calls get Decline / Answer. Hold is honest: disabled with a reason until a
+    400 ms probe has seen Phone Link's own button for *this* call, amber while
+    held, dropped the moment the call ends.
+  - **Gates**: `cargo test` **326 passed / 0 failed / 1 ignored**, clippy 0,
+    fmt 0, `tools\build.ps1 -Mode Installer` green with the manifest gate, and
+    `tools\tests\install-smoke.ps1` **8/8 PASS** on the freshly installed
+    0.10.0 release. `tools\tests\ui-smoke.ps1` re-captured all 13 card shots
+    (`target\soak\ui-v0.10\`).
+  - **Not tested** (also in `docs/testing.md`): a real call and live
+    Hold/Resume, live-call card states, the DPI re-run, clean-VM install, CI's
+    tag run, the SignPath flow, Explorer drag-out, human-eye checks, and a
+    60-minute soak re-run (the v0.9 soak stands; the 0.10 delta is layout-only).
 
 ## Version naming (x.y.z)
 
-Current version: `0.9.0` → `x = 0`, `y = 9`, `z = 0`.
+Current version: `0.10.0` → `x = 0`, `y = 10`, `z = 0`.
 
 | Part | Meaning | When to bump |
 |------|---------|--------------|
@@ -487,4 +510,4 @@ Current version: `0.9.0` → `x = 0`, `y = 9`, `z = 0`.
 Rules:
 - Never hardcode the version or the product name in multiple places. Both live in `Cargo.toml` (`version = "x.y.z"`, `[package.metadata] product-name = "..."`) and nowhere else: `build.rs` renders them into the Windows VERSIONINFO, `tools\build.ps1` passes them to Inno Setup (`/DMyAppVersion`, `/DMyAppName`), and CI refuses a tag that disagrees. `version_tests` in `src/main.rs` fails the suite if a literal copy reappears in `assets\app.rc`, `installer\*.iss` or `tools\build.ps1`.
 - Before `1.0.0` we stay at `x = 0`. `1.0.0` is the first public release, gated on all cards being perfect and owner approval.
-- Example flow from here: small bug fix → `0.9.1`; a card overhaul → `0.10.0`; owner-approved public launch → `1.0.0`.
+- Example flow from here: small bug fix → `0.10.1`; a card overhaul → `0.11.0`; owner-approved public launch → `1.0.0`.

@@ -1,18 +1,19 @@
 # Testing
 
-What is tested in this repository, what is skipped, and why. The v0.9 gate
-evidence below was produced on branch `v0.9` on 2026-11-15; the quoted v0.8.0
-logs were rescued from the scratch logs at the workspace root before those
-were deleted by the v0.9 cleanup (`docs/cleanup-plan.md`).
+What is tested in this repository, what is skipped, and why. The current gate
+evidence was produced on branch `v0.10.0` on 2026-11-16 (the v0.9 gates ran
+on 2026-11-15); the quoted v0.8.0 logs were rescued from the scratch logs at
+the workspace root before those were deleted by the v0.9 cleanup
+(`docs/cleanup-plan.md`).
 
-## Rust gates (current, v0.9)
+## Rust gates (current, v0.10)
 
-| Gate | Command | Result (2026-11-15) |
+| Gate | Command | Result (2026-11-16) |
 | --- | --- | --- |
-| Unit/integration tests | `cargo test` | **325 passed, 0 failed, 1 ignored** |
+| Unit/integration tests | `cargo test` | **326 passed, 0 failed, 1 ignored** |
 | Clippy | `cargo clippy --all-targets -- -D warnings` | Clean, no diagnostics |
 | Format | `cargo fmt --all` (then `--check`) | Clean, no diffs |
-| Release build | `tools\build.ps1 -Mode Installer` | Green (49 s compile), manifest gate passed (`exactly one <assembly> root including <msix>`) |
+| Release build | `tools\build.ps1 -Mode Installer` | Green, manifest gate passed (`exactly one <assembly> root including <msix>`), `dist\TaskbarIsland-Setup.exe` for 0.10.0 |
 | Installer gate | `powershell -File tools\tests\install-smoke.ps1` | **8 checked, 0 failed** (stop → install → exe/version → byte-match against `target\release` → launch → pill/tray windows → single-instance) |
 | Ignored test | `convert::jobs::live_external_engines_convert_real_files` | Needs live engines in `%LOCALAPPDATA%\Filee\engines`; run manually when engines are installed |
 
@@ -149,6 +150,39 @@ Stated honestly so nothing is claimed that was not run:
   still `[AFTER APPROVAL]`.
 - **Real Explorer drag-out of a shelf tile** (DoDragDrop cannot be scripted
   reliably) and **human-eye checks** of the new motion, sheet and wave.
+- The one ignored test (`live_external_engines_convert_real_files`) and the
+  22 golden rows above.
+
+## Card UI screenshots (v0.10)
+
+`powershell -File tools\tests\ui-smoke.ps1` re-run against the installed
+0.10.0 release (2026-11-16): **13 PNGs + `pins.log`** (61 notches, final pin
+`None`) in `target\soak\ui-v0.10\` - the slim rail with every card in dark and
+light plus the mid-morph frame. Machine-read, so the *human-eye* judgement of
+the rail and the new call card is still listed as not tested.
+
+## What is exercised manually (v0.10)
+
+- The idle call card (header, "No active call" box, mic/speaker squares, "Open
+  Phone Link") and the music card's widened output chip (122.6 DIP) -
+  photographed; both are visible in the shots above.
+- The slim rail's five tiles, accent bar and 38.4 DIP width - photographed.
+
+## Not tested (v0.10)
+
+Stated honestly so nothing is claimed that was not run:
+
+- **Everything under *Not tested (v0.9)* above still applies**: a real Phone
+  Link call, real device churn, the DPI matrix, clean-VM install, CI's tag
+  run, SignPath, Explorer drag-out and human-eye checks.
+- **Live-call card states**: the connected box with signal bars, the in-box
+  Output chip, incoming Decline/Answer, three equal Hold / End call / Mute
+  buttons and amber "On hold" - no call could be placed on this machine, so
+  only the idle card was photographed. Hold/Resume is unit-tested (UIA press,
+  400 ms probe, honest disabled state) but **not claimed on a live call**.
+- **The 60-minute soak was not re-run for 0.10.0.** The v0.9 soak above
+  covers the same event-driven core; the 0.10 delta is layout-only (slim
+  rail, call card). Re-run before 1.0.0.
 - The one ignored test (`live_external_engines_convert_real_files`) and the
   22 golden rows above.
 
