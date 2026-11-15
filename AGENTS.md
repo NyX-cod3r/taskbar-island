@@ -471,9 +471,10 @@
     release. 60-minute soak CSV in `target\soak\`.
   - **Not tested** (also in `docs/testing.md`): a real Phone Link call, real
     device plug/unplug churn, the DPI 100/125/150 light+dark re-run, clean-VM
-    install, CI's first run, the SignPath flow, Explorer drag-out and human-eye
-    checks of the new motion/sheet/wave.
-- **v0.10.0 sections 1-2 COMPLETE on branch `v0.10.0`** (2026-11-16), shipped as
+    install, the SignPath flow, Explorer drag-out and human-eye checks of the
+    new motion/sheet/wave. (CI's first tag run, pending when this was written,
+    has since gone green — see the v0.10.0 entry below.)
+- **v0.10.0 sections 1-2 COMPLETE on branch `v0.10`** (2026-11-16), shipped as
   `0.10.0`:
   - **§1 slim rail**: the side rail narrows to 48 design px (38.4 DIP) - five
     28.8 DIP r6 buttons, 14.4 DIP glyphs, 6.4 DIP gaps, a 2.4 x 14.4 accent bar
@@ -492,10 +493,15 @@
     `tools\tests\install-smoke.ps1` **8/8 PASS** on the freshly installed
     0.10.0 release. `tools\tests\ui-smoke.ps1` re-captured all 13 card shots
     (`target\soak\ui-v0.10\`).
+  - **CI**: tag `v0.10.0` pushed → workflow `release` run **43755768572**
+    `success` (tag↔`Cargo.toml` check, tests, installer, hash, draft release
+    with 4 assets); the draft was hash- and version-verified, then published
+    with these notes. The `v0.9.0` tag run (43745736845) was also green, so
+    CI's first tag run is no longer untested.
   - **Not tested** (also in `docs/testing.md`): a real call and live
-    Hold/Resume, live-call card states, the DPI re-run, clean-VM install, CI's
-    tag run, the SignPath flow, Explorer drag-out, human-eye checks, and a
-    60-minute soak re-run (the v0.9 soak stands; the 0.10 delta is layout-only).
+    Hold/Resume, live-call card states, the DPI re-run, clean-VM install, the
+    SignPath flow, Explorer drag-out, human-eye checks, and a 60-minute soak
+    re-run (the v0.9 soak stands; the 0.10 delta is layout-only).
 
 ## Version naming (x.y.z)
 

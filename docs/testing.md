@@ -1,7 +1,7 @@
 # Testing
 
 What is tested in this repository, what is skipped, and why. The current gate
-evidence was produced on branch `v0.10.0` on 2026-11-16 (the v0.9 gates ran
+evidence was produced on branch `v0.10` (tag `v0.10.0`) on 2026-11-16 (the v0.9 gates ran
 on 2026-11-15); the quoted v0.8.0 logs were rescued from the scratch logs at
 the workspace root before those were deleted by the v0.9 cleanup
 (`docs/cleanup-plan.md`).
@@ -15,6 +15,7 @@ the workspace root before those were deleted by the v0.9 cleanup
 | Format | `cargo fmt --all` (then `--check`) | Clean, no diffs |
 | Release build | `tools\build.ps1 -Mode Installer` | Green, manifest gate passed (`exactly one <assembly> root including <msix>`), `dist\TaskbarIsland-Setup.exe` for 0.10.0 |
 | Installer gate | `powershell -File tools\tests\install-smoke.ps1` | **8 checked, 0 failed** (stop → install → exe/version → byte-match against `target\release` → launch → pill/tray windows → single-instance) |
+| CI tag run | `git push origin refs/tags/v0.10.0` → workflow `release` | Run **43755768572** `success` on tag `v0.10.0` = `f9d6b39`: tag↔`Cargo.toml` check, tests, installer, hash, draft release with 4 assets (published after verification) |
 | Ignored test | `convert::jobs::live_external_engines_convert_real_files` | Needs live engines in `%LOCALAPPDATA%\Filee\engines`; run manually when engines are installed |
 
 Toolchain note: builds must use the WinLibs gcc — a broken `C:\MinGW\bin\gcc.exe`
@@ -145,9 +146,11 @@ Stated honestly so nothing is claimed that was not run:
   not safe to script on the owner's machine. Must be re-run by hand before
   1.0.0.
 - **Clean-VM install** (Windows Sandbox absent on this machine).
-- **CI's first run on a `v<x.y.z>` tag** and the **SignPath flow** — both are
-  written but have never executed; every signing step in `docs/signing.md` is
-  still `[AFTER APPROVAL]`.
+- **CI's first run on a `v<x.y.z>` tag** was still pending when this section
+  was written; it has since executed — see the *CI tag run* row above
+  (`v0.9.0` run 43745736845 and `v0.10.0` run 43755768572, both `success`).
+- **The SignPath flow** — written but never executed; every signing step in
+  `docs/signing.md` is still `[AFTER APPROVAL]`.
 - **Real Explorer drag-out of a shelf tile** (DoDragDrop cannot be scripted
   reliably) and **human-eye checks** of the new motion, sheet and wave.
 - The one ignored test (`live_external_engines_convert_real_files`) and the
@@ -173,8 +176,9 @@ the rail and the new call card is still listed as not tested.
 Stated honestly so nothing is claimed that was not run:
 
 - **Everything under *Not tested (v0.9)* above still applies**: a real Phone
-  Link call, real device churn, the DPI matrix, clean-VM install, CI's tag
-  run, SignPath, Explorer drag-out and human-eye checks.
+  Link call, real device churn, the DPI matrix, clean-VM install, SignPath,
+  Explorer drag-out and human-eye checks. (CI's tag run is no longer in this
+  list — it ran green, in the gates table above.)
 - **Live-call card states**: the connected box with signal bars, the in-box
   Output chip, incoming Decline/Answer, three equal Hold / End call / Mute
   buttons and amber "On hold" - no call could be placed on this machine, so
