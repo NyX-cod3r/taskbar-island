@@ -344,6 +344,35 @@ Two bugs from the owner's test of the installed build, measured and fixed:
   portion of the log (`phonelink.read` at startup, one early
   `toast.read`); zero after the fix landed.
 
+## Release verification (v0.11.0, 2026-11-22)
+
+Per `docs/release-process.md`:
+
+- **CI** run `45012540083` for tag `v0.11.0` **success** (all 10 steps: tag
+  ↔`Cargo.toml`, tests, installer, hash, draft release with 4 assets).
+- **Draft checked** (`target\verify-draft.ps1`, ALL PASS): setup hash matches
+  the published `.sha256` (`fd93cdd2…f025dc9`), `manifest.txt` version 0.11.0
+  and payload hash match the shipped exe (`acd13d0c…79abf3b`), both
+  VERSIONINFOs read 0.11.0, signature `NotSigned` (SignPath is
+  `[AFTER APPROVAL]`). Note: `GET /releases/tags/{tag}` 404s for drafts —
+  the list endpoint is needed, and the local `gh` keyring token cannot see
+  drafts at all (the git credential token can).
+- **Published** (owner's step executed per the release objective), and
+  `releases/latest` resolves to `v0.11.0` with all four assets.
+- **Published bytes installed on this machine**
+  (`target\verify-published.ps1`): hash-verified copy of the released setup
+  installed silently, installed exe hash equals the published payload,
+  VERSIONINFO 0.11.0, pill + tray windows up, single instance, and the pill
+  is a `WS_CHILD` of `Shell_TrayWnd` (style `0x50000000`). Re-checked after
+  two further stop → reinstall → launch cycles: embed first-try each time.
+- **Observed once, not reproduced**: on the first two launches immediately
+  after the initial install over the running app, `pill.embed` was refused
+  ~19 times over ~100 s (the top-level fallback drew the pill the whole
+  time, so it stayed visible), then the 2 s guard re-embedded it and it has
+  embedded first-try on every launch since — including full reinstall
+  cycles. Cause not identified; if it recurs, the log line to look for is
+  `pill.embed: refused`.
+
 ## Not tested (v0.11)
 
 Stated honestly so nothing is claimed that was not run:

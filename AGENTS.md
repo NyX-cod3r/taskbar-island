@@ -570,6 +570,17 @@
     region and the card host's card+halo region; `FindByClass` alone resolved
     to the host's empty region) and then passed **13 shots** in
     `target\soak\ui-v0.11\`.
+  - **CI + release (2026-11-22)**: branch pushed, tag `v0.11.0` pushed at
+    `6007b3b` → workflow `release` run **45012540083** `success` (tag↔`Cargo.toml`,
+    tests, installer, hash, draft with 4 assets). The draft was verified
+    (`target\verify-draft.ps1`: setup hash = published `.sha256`, manifest
+    version + payload hash match, both VERSIONINFOs 0.11.0, `NotSigned`) and
+    published; `releases/latest` resolves to v0.11.0 with all four assets.
+    The published bytes were then installed on this machine and verified
+    (hash match, pill+tray windows, single instance, pill = `WS_CHILD` of
+    `Shell_TrayWnd`). Gotcha: `GET /releases/tags/{tag}` 404s for drafts and
+    the local `gh` keyring token cannot see drafts — use the list endpoint
+    with the git credential token.
   - **Not tested** (also in `docs/testing.md`): everything under the v0.9 and
     v0.10 "not tested" lists (real call, device churn, clean-VM, SignPath,
     Explorer drag-out, human-eye card checks), the DPI 100/150 % + light
