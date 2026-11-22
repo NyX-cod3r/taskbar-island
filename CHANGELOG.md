@@ -4,6 +4,129 @@ All notable changes to TaskbarIsland are recorded here. The format follows
 Keep a Changelog; versions follow the owner's x.y.z scheme (the app stays on
 0.x until the owner approves 1.0.0).
 
+## 0.11.0 (2026-11-22)
+
+### Changed
+
+- **One shared card grid (design section 1).** Every card (Music, Timer,
+  Call, Shelf, Clipboard and the output sheet) lays out inside one content
+  rectangle: the flyout interior minus the 48 px rail minus `CARD_PAD = 8`
+  DIP on all four sides (434 x 222 at the reference size), with no
+  card-private outer margin - only gaps between a card's own elements. The
+  rail is 48 px: five 36 x 36 r6 buttons, 6 px gaps, 8 px top padding, a
+  1 px white 8 % divider and a 3 x 18 accent bar. `--debug-layout` draws the
+  shared rect as a single cyan box plus each card's used bounds, and a unit
+  test fails if any card's root rect drifts from the shared one. Idle and
+  empty states keep the identical layout, dimmed.
+- **Music card (design section 2).** Replaced: an album-colour radial glow
+  top left (30 %, about 280 x 190) plus a faint one bottom right (10 %;
+  `#FF6B8A` when there is no album colour, none while empty); a 96 x 96 r8
+  art tile with an album-colour shadow; title at 22 px semibold over line 2
+  (artist at 80 % white, a 12 px gap, then the source app at 52 %, resolved
+  from the session's source AUMID); a 36 x 36 output button at the far right
+  with a device-name tooltip; the wavy progress bar (wavelength 20,
+  amplitude 3, stroke 3 round cap, 700 ms per wave, flattening in 320 ms on
+  pause, 4 x 18 thumb) over the elapsed / `-m:ss` remaining row; and centred
+  controls (shuffle 44, previous 56, white 76 x 56 play, next 56, repeat 44).
+  "Nothing playing" keeps the whole layout dimmed with `--:--` and disabled
+  controls - only the output button stays active.
+- **Timer card (design section 3).** Set view: a 48 px header (amber tile,
+  name, sub-line, "No timer"), the 64 px stepper (`-` / 40 px tabular
+  `MM:SS` with its caption / `+`, 1..180, hold-to-repeat after 420 ms then
+  every 110 ms), a presets row (`5 min` / `15 min` / `30 min` - the button
+  matching the current time fills amber 20 % and the two controls stay in
+  sync), and a full-width amber Start. Running view shares the same shell:
+  ring header with the label and total, 56 px time-left over an amber wavy
+  bar, and four equal controls (Pause/Resume amber, `-1 min`, `+1 min`,
+  Stop).
+- **Call card (design section 4).** The same three rows in every state
+  (header 60 / box 60 / buttons 66): the header carries a 60 x 60 caller
+  tile, name, sub-line and right-aligned status; the white 6 % box holds the
+  state with its action inside (`Open Phone Link` when idle, a pulsing green
+  dot when incoming, the device name + sub-line + green `Output` button when
+  active); the button row is three exactly equal `Hold` / `End call` /
+  `Mute` (or equal `Decline` / `Answer` when incoming), dimmed to 38 % but
+  in place when idle. Hold and Mute only show `On hold` / `Muted` after
+  Phone Link's own UIA button confirms - never a faked state.
+- **Output sheet (design section 6).** Restyled onto the shared grid: it
+  still slides up inside the fixed flyout (240 ms,
+  `cubic-bezier(.2,.9,.25,1)`, rgb(38,38,38), 8 DIP padding) with a 36 px
+  header (`Play on` / `Call audio` + a 36 x 36 close) and 44 px music /
+  52 px call rows - 32 x 32 icon tile, name, sub-line, check on the current
+  device. Behavior is unchanged from 0.9.0 (policy-config endpoint set,
+  `IMMNotificationClient` refresh, Cast panel, Phone transfer).
+- **Shelf and Clipboard (design section 5)** were kept as built and
+  re-checked against `CARD_PAD`: the 36 px toolbars, the 4 x 2 equal-tile
+  grid, and the clipboard header's five filter icons over `n / 30` with
+  36 px text / 56 px image rows.
+
+### Added
+
+- **The pill lives in the taskbar (design section 8).** `TaskbarAl` in
+  `HKCU\...\Explorer\Advanced` is watched with `RegNotifyChangeKeyValue`
+  (no polling): icons centered (`1`) parks the pill in the empty left side
+  exactly 12 DIP from the screen edge (the old Widgets slot), icons
+  left-aligned (`0`) parks it in the free band before the system tray with
+  an 8 DIP gap, flush right when the band is too narrow plus a one-time
+  "Not enough room on the taskbar for the island" tray notice. The free
+  bands come from UI Automation walks of the taskbar (`TaskbarFrame` icon
+  group, `TrayNotifyWnd`), re-scanned on alignment changes, UIA structure
+  events (debounced 150 ms), DPI change and `TaskbarCreated`; every move is
+  a 200 ms ease-out slide and every placement clamp lives in `anchor.rs`.
+  Auto is the only mode - the spec's `Island position` tray menu was
+  dropped per the owner's instruction. An alignment flip gets its own
+  one-shot 900 ms debounce because Windows slides the icon group for about
+  550 ms (measured): the old single 150 ms debounce scanned the half-way
+  group, Auto mis-picked the tray band, and no later event corrected it.
+
+### Fixed
+
+- **The island no longer hides behind the taskbar (design section 7,
+  Stage A).** The pill is a `WS_CHILD` of `Shell_TrayWnd`, painted with the
+  same DirectComposition swap chain and hit-tested through its own rounded
+  window region. Opening Start, clicking taskbar elements and auto-hide can
+  never hide or blink it because it *is* part of the taskbar; the old
+  fullscreen-hiding logic for the pill is gone (the flyout still hides for
+  fullscreen). The `tools\spike-embed\` spike answered feasibility first:
+  `HWND_TOP` above the taskbar's XAML bridge heals once and holds (the
+  spike's original `insert-after-bridge` heal fired 334x and never stuck),
+  re-embed on `TaskbarCreated` is immediate, and the visibility-change
+  counter records zero unexpected changes. On `explorer.exe` restart the
+  pill re-finds the new `Shell_TrayWnd` and re-embeds without restarting
+  the app (verified live: new taskbar handle, placement still correct).
+- **The island appears the moment the auto-hidden taskbar reveals (owner
+  bug 1).** The pill child's rect is parent-relative, so a sync that ran
+  while the bar was tucked baked the hidden offset (`top = card - bar`);
+  on reveal the child rode the parent up 58 px, landed above the parent's
+  client top and stayed clipped until the next 2 s guard tick - "sometimes
+  delayed, sometimes instant" depending on timer phase. A
+  `SetWinEventHook` on `EVENT_OBJECT_LOCATIONCHANGE | SHOW | HIDE`,
+  filtered to `Shell_TrayWnd`, now posts `WM_APP_TASKBAR_MOVED` on every
+  taskbar move/reveal, and the handler re-anchors and re-aligns the child;
+  `sync_pill_child` also runs at the end of every `sync_anchor` visible
+  path, and startup no longer bails out when the bar is hidden at launch
+  (fullscreen/presentation still gates). Verified live: the hook fired on
+  an Explorer restart, origin alignment (`pill.Top == card.Top`) held
+  across 124 reveal samples and both restarts, and the island survived.
+  *Auto-hide itself cannot be forced in the test environment (three
+  approaches failed), so a natural hide -> reveal cycle still needs a check
+  on the owner's machine.*
+- **The island no longer stutters when windows open or unrelated settings
+  change (owner bug 2, "measure everything").** Two measured hot spots:
+  every system window open used to pay a cross-process UIA subtree dump
+  (<= 400 nodes) just to decide it was not a toast - `toast.read timed
+  out after 500 ms` appeared regularly in the old log - and every write
+  under `Explorer\Advanced` used to trigger a 900 ms alignment wait plus a
+  full taskbar rescan. The dump is now gated behind
+  `looks_like_toast(class, width, height)` and the registry watcher only
+  reacts to a real `TaskbarAl` flip (structure events still reach the
+  scanner via UIA within 150 ms). Verified live: 5 windows opened/closed
+  cost 625 ms / 9 s with zero UIA timeouts, a sibling registry write
+  produced zero log lines and zero slides, each `TaskbarAl` flip still
+  produced exactly one debounced slide in both directions with no squeeze
+  notice, idle CPU is 16-47 ms / 10 s, card-open 0 ms / 10 s and
+  music-playing 656 ms / 10 s (the 80 ms wave tick, unchanged).
+
 ## 0.10.0 (2026-11-16)
 
 ### Changed

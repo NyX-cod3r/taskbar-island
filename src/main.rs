@@ -65,6 +65,11 @@ fn main() {
     if args.iter().any(|arg| arg == "--dump-uia") {
         callsrc::DUMP_UIA.store(true, Ordering::Relaxed);
     }
+    // v0.11 §1: stroke the shared card grid over the open card so any card
+    // that paints outside `design::card_content_rect()` is visible at a glance.
+    if args.iter().any(|arg| arg == "--debug-layout") {
+        render::DEBUG_LAYOUT.store(true, Ordering::Relaxed);
+    }
     if let Some(index) = args.iter().position(|arg| arg == "--simulate-call") {
         let Some(kind) = args
             .get(index + 1)
@@ -121,6 +126,10 @@ fn main() {
     // matrix is ready before the first Convert card opens and startup never
     // blocks on FFmpeg's DLLs.
     engines::start_background_probe();
+    // §8: scan the taskbar's free region once behind a 400 ms budget so the
+    // very first frame already sits in the right slot. The watchers take over
+    // from `window::create`. Placement is Auto-only (v0.11 owner feedback).
+    anchor::scan_initial(std::time::Duration::from_millis(400));
     // `Anchor::compute` works in physical pixels and needs the display's real
     // DPI. Hard-coding 96 made the whole surface 20 % small at 125 % scaling.
     let dpi = anchor::dpi_for_window(taskbar);
@@ -128,7 +137,13 @@ fn main() {
         eprintln!("unable to compute taskbar anchor");
         return;
     };
-    if !anchor.visible {
+    // Auto-hide: the bar may be *hidden* when the island starts (sign-in
+    // with the bar tucked away, a relaunch while it is hidden) — starting
+    // anyway is the difference between "the island is missing" and "it
+    // rides out with the first reveal" (the taskbar-move hook re-anchors
+    // the moment the bar shows). Fullscreen/presentation still gates
+    // startup, as before.
+    if !crate::anchor::is_allowed() {
         return;
     }
 

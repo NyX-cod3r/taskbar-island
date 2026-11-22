@@ -1,0 +1,41 @@
+[+0ms][epoch=1794852726448] event spike-start pid=8656
+[+0ms][epoch=1794852726448] info Shell_TrayWnd=0x12010e screenRect=0,1140,1920,1200
+[+0ms][epoch=1794852726448] info TaskbarCreated message id=0xc0c5
+[+2ms][epoch=1794852726450] trace hwnd=0x1002b4 msg=0x0024 w=0x0 l=0xe5a6dfea40
+[+2ms][epoch=1794852726450] trace hwnd=0x1002b4 msg=0x0081 w=0x0 l=0xe5a6dfe9f0
+[+3ms][epoch=1794852726451] trace hwnd=0x1002b4 msg=0x0083 w=0x0 l=0xe5a6dfea60
+[+3ms][epoch=1794852726452] trace hwnd=0x1002b4 msg=0x0001 w=0x0 l=0xe5a6dfe9c0
+[+3ms][epoch=1794852726452] event relay-created hwnd=0x1002b4
+[+4ms][epoch=1794852726452] trace hwnd=0x2f03ea msg=0x0081 w=0x0 l=0xe5a6dfe3b0
+[+4ms][epoch=1794852726452] trace hwnd=0x2f03ea msg=0x0083 w=0x0 l=0xe5a6dfe420
+[+6ms][epoch=1794852726455] trace hwnd=0x2f03ea msg=0x0001 w=0x0 l=0xe5a6dfe380
+[+6ms][epoch=1794852726455] trace hwnd=0x2f03ea msg=0x0005 w=0x0 l=0x2200f0
+[+6ms][epoch=1794852726455] trace hwnd=0x2f03ea msg=0x0003 w=0x0 l=0x0
+[+7ms][epoch=1794852726455] event created hwnd=0x2f03ea
+[+7ms][epoch=1794852726455] trace hwnd=0x2f03ea msg=0x0046 w=0x0 l=0xe5a6dfe980
+[+7ms][epoch=1794852726455] trace hwnd=0x2f03ea msg=0x0083 w=0x1 l=0xe5a6dfe950
+[+7ms][epoch=1794852726455] trace hwnd=0x2f03ea msg=0x0046 w=0x0 l=0xe5a6dfe980
+[+7ms][epoch=1794852726455] trace hwnd=0x1002b4 msg=0x001c w=0x1 l=0x0
+[+7ms][epoch=1794852726455] trace hwnd=0x2f03ea msg=0x0086 w=0x0 l=0x0
+[+7ms][epoch=1794852726455] trace hwnd=0x2f03ea msg=0x0006 w=0x1 l=0x0
+[+11ms][epoch=1794852726459] trace hwnd=0x2f03ea msg=0x0281 w=0x1 l=0xc000000f
+[+12ms][epoch=1794852726460] trace hwnd=0x2f03ea msg=0x0282 w=0x2 l=0x0
+[+12ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x0007 w=0x0 l=0x0
+[+12ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x0047 w=0x0 l=0xe5a6dfe980
+[+12ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x0003 w=0x0 l=0x0
+[+12ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x007c w=0xfffffffffffffff0 l=0xe5a6dfe960
+[+13ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x007d w=0xfffffffffffffff0 l=0xe5a6dfe960
+[+13ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x007c w=0xffffffffffffffec l=0xe5a6dfe960
+[+13ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x007d w=0xffffffffffffffec l=0xe5a6dfe960
+[+13ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x0046 w=0x0 l=0xe5a6dfe980
+[+13ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x0083 w=0x1 l=0xe5a6dfe950
+[+13ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x0047 w=0x0 l=0xe5a6dfe980
+[+13ms][epoch=1794852726461] trace hwnd=0x2f03ea msg=0x0003 w=0x0 l=0xd0008
+[+13ms][epoch=1794852726462] trace hwnd=0x2f03ea msg=0x000f w=0x0 l=0x0
+[+13ms][epoch=1794852726462] trace hwnd=0x2f03ea msg=0x0014 w=0xb01002c l=0x0
+[+13ms][epoch=1794852726462] event first-paint hwnd=0x2f03ea count=1
+[+13ms][epoch=1794852726462] event parented hwnd=0x2f03ea taskbar=0x12010e pos=(8, 13) size=240x34 taskbarH=60 z='HWND_TOP (above bridge first try)' aboveTl=0 visibleAfter=1 bridge=0x5017e
+[+13ms][epoch=1794852726462] event ready z='HWND_TOP (above bridge first try)' poll=100ms kill=120000ms
+[+14ms][epoch=1794852726462] trace hwnd=0x1002b4 msg=0x031f w=0x1 l=0x0
+[+132ms][epoch=1794852726580] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,13 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+132ms][epoch=1794852726580] info taskbar-children[7]: TbiSpikeClass,Windows.UI.Composition.DesktopWindowContentBridge,Windows.UI.Core.CoreWindow,Start,TrayDummySearchControl,TrayNotifyWnd,ReBarWindow32

@@ -1,0 +1,16 @@
+[package]
+name = "spike-embed"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Stage-A feasibility spike: GDI child window embedded in Shell_TrayWnd"
+
+# Fully standalone package: NOT part of the taskbar-island workspace, so the
+# root Cargo.toml / src/ are untouched and `cargo build --offline` needs no
+# registry access at all (raw Win32 FFI, zero dependencies).
+[workspace]
+
+[dependencies]
+
+[profile.dev]
+debug = 1

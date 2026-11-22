@@ -17,7 +17,7 @@ use windows::Win32::Graphics::Direct2D::{
     ID2D1DeviceContext, ID2D1Image, D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
     D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE,
 };
-use windows::Win32::Graphics::Direct3D11::ID3D11Texture2D;
+use windows::Win32::Graphics::Direct3D11::{ID3D11DeviceContext, ID3D11Texture2D};
 use windows::Win32::Graphics::DirectComposition::{IDCompositionTarget, IDCompositionVisual};
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
@@ -28,7 +28,7 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, EndPaint,
-    ScreenToClient, SetWindowRgn, PAINTSTRUCT, RGN_OR,
+    InvalidateRect, ScreenToClient, SetWindowRgn, UpdateWindow, PAINTSTRUCT, RGN_OR,
 };
 use windows::Win32::System::Ole::{IDropTarget, OleInitialize};
 use windows::Win32::System::SystemServices::MK_LBUTTON;
@@ -41,17 +41,19 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_SPACE, VK_T, VK_TAB, VK_UP, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetCursorPos,
-    GetForegroundWindow, GetMessageW, GetSystemMetrics, GetWindow, GetWindowRect, KillTimer,
-    LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW, SetTimer, SetWindowPos,
-    SetWindowsHookExW, ShowWindow, TranslateMessage, UnhookWindowsHookEx, CS_DBLCLKS, CS_HREDRAW,
-    CS_VREDRAW, GW_HWNDPREV, HHOOK, HTTRANSPARENT, HWND_TOPMOST, IDC_ARROW, KBDLLHOOKSTRUCT, MSG,
-    MSLLHOOKSTRUCT, SM_CXDRAG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
+    GetForegroundWindow, GetMessageW, GetParent, GetSystemMetrics, GetWindow, GetWindowRect,
+    IsWindow, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW, SetParent,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, ShowWindow, TranslateMessage,
+    UnhookWindowsHookEx, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV,
+    HHOOK, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST, IDC_ARROW, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
+    SM_CXDRAG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
     SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP,
-    WM_CREATE, WM_DESTROY, WM_ERASEBKGND, WM_GETOBJECT, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT,
-    WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER, WNDCLASSEXW, WS_EX_NOACTIVATE,
-    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETOBJECT, WM_HOTKEY, WM_KEYDOWN,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
+    WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
+    WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::activities::call::{self, AudioCommand, CallRuntime};
@@ -80,7 +82,7 @@ use crate::tooltip::{self, TipRequest, TooltipWindow};
 use crate::view::{
     ActivityView, AlbumArt, Body, ConvertBody, ConvertOptionView, ConvertState, ConvertTabView,
     DoneView, Element, FlyoutView, IconId, Leading, MusicBody, PillKind, PillView, Subtitle,
-    TileView, Trailing, ViewModel, WheelAction, WorkingView,
+    TileView, ViewModel, WheelAction, WorkingView,
 };
 
 const CLASS_NAME: windows::core::PCWSTR = w!("TaskbarIsland");
@@ -132,6 +134,12 @@ const TIMER_HOLD_ID: usize = 18;
 /// Phone Link's own button (v0.10 §2 honesty: state only after confirmation).
 const HOLD_PROBE_TIMER_ID: usize = 19;
 const HOLD_PROBE_DELAY_MS: u32 = 400;
+/// §8: one-shot debounce before a taskbar geometry event triggers a rescan,
+/// so an event storm (icons pinned, windows opening) becomes one scan.
+const SPACE_DEBOUNCE_TIMER_ID: usize = 20;
+/// §8 frames for the 200 ms ease-out slide between placements.
+const SLIDE_TIMER_ID: usize = 21;
+const SLIDE_TICK_MS: u32 = 16;
 /// How long an action's inline message stays on the card before the status
 /// line takes over again (no timer: the 1 Hz call tick re-renders it).
 const ACTION_NOTE_TTL: Duration = Duration::from_secs(6);
@@ -148,6 +156,42 @@ static HOOK_HWND: AtomicIsize = AtomicIsize::new(0);
 
 /// Set only while the rail keyboard hook is armed.
 static HOOK_KEYS_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// §7 Stage A: the pill child (`WS_CHILD` inside `Shell_TrayWnd`). 0 whenever
+/// the island is drawing the pill in its own top-level window instead (embed
+/// refused, or the child died with Explorer and is waiting to be re-embedded).
+/// The surface mirrors this handle; the static is what `WM_DESTROY` and the
+/// z-order guard read without borrowing the surface.
+static PILL_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// The top-level card window — the message hub every worker posts to. Set
+/// once by `create`, so `WM_DESTROY` can tell the pill child dying from the
+/// app quitting even when the surface borrow is unavailable.
+static CARD_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// §8: the in-flight placement slide. `None` whenever the island sits still,
+/// so the resting process owns no timer beyond the existing low-frequency
+/// ones — the slide only exists while it is animating.
+static SLIDE: Mutex<Option<Slide>> = Mutex::new(None);
+
+/// §8: a `TaskbarAl` alignment wait is running. Windows slides the icon
+/// group into its new alignment for ~550 ms, so that wait uses the longer
+/// debounce — and a structure event arriving meanwhile must not shorten it
+/// back to the 150 ms storm debounce (it would scan the half-way group).
+static ALIGN_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// §8: start, target and duration bookkeeping of one slide. The window is
+/// always centred on the pill, so its local rects are translation-invariant:
+/// only the window position moves and nothing inside has to be re-laid out.
+/// The target anchor rides along so the last frame can land exactly on it.
+#[derive(Clone, Copy)]
+struct Slide {
+    from: (i32, i32),
+    to: (i32, i32),
+    size: (i32, i32),
+    start: Instant,
+    anchor: crate::anchor::Anchor,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FlyoutPhase {
@@ -424,6 +468,20 @@ struct Surface {
     // Kept alive for the window lifetime; the visual owns the swapchain.
     _comp_target: IDCompositionTarget,
     _visual: IDCompositionVisual,
+    /// §7 Stage A: the pill child (`WS_CHILD` of `Shell_TrayWnd`) and its
+    /// own composition stack over the same frame — `draw` renders once into
+    /// `swapchain`, mirrors it across with `CopyResource`, then both windows
+    /// present and each DWM region selects its part of the one image.
+    /// Null/`None` while this window draws the pill itself (embed refused,
+    /// or the child died with Explorer and awaits re-embedding).
+    pill_hwnd: HWND,
+    pill_swapchain: Option<IDXGISwapChain1>,
+    pill_comp_target: Option<IDCompositionTarget>,
+    pill_visual: Option<IDCompositionVisual>,
+    /// OLE registration of the pill child, revoked when it dies.
+    _pill_drop: Option<IDropTarget>,
+    /// Immediate context for the per-frame `CopyResource` pill mirror.
+    d3d_ctx: ID3D11DeviceContext,
     pill: RectD,
     flyout: RectD,
     flyout_open: bool,
@@ -577,6 +635,9 @@ struct Surface {
     timer_hold: Option<Element>,
     /// When the finished pill started pulsing amber (§6), for `flash_t`.
     timer_finished_at: Option<Instant>,
+    /// When the current incoming call started ringing (§4), for
+    /// `call_pulse_t`; cleared the moment the phase moves on.
+    call_incoming_at: Option<Instant>,
     /// Manual activity chosen with the wheel; `None` follows priority.
     pin: Option<ActivityKind>,
     /// Automatic winner at the previous refresh, used to release a pin when
@@ -589,7 +650,10 @@ struct Surface {
     pressed: Option<Element>,
     hover_mix: f32,
     hover_tween: Option<Tween>,
-    mouse_tracking: bool,
+    /// Window `TrackMouseEvent` is armed on — one per receiving window, so
+    /// the pill child and the card each get their own leave (§7: the pill
+    /// crossing re-arms on the next `WM_MOUSEMOVE`, self-healing either way).
+    mouse_tracking: Option<HWND>,
     /// User nudge from settings; kept so the anchor can be recomputed when
     /// the tray geometry changes after startup.
     slot_offset_dip: i32,
@@ -687,6 +751,9 @@ pub fn create(
             None,
         )?
     };
+    // §7 Stage A: `WM_DESTROY` needs the card handle without borrowing the
+    // surface, so the pill child dying can never be mistaken for quitting.
+    CARD_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
     unsafe {
         SetWindowPos(
             hwnd,
@@ -731,6 +798,11 @@ pub fn create(
     // by Surface for the window lifetime.
     let shelf_target =
         unsafe { shelf::register_drop_target(hwnd, shelf_slot.clone(), convert_accepts.clone())? };
+    // §7 Stage A: embed the pill as a `WS_CHILD` of the taskbar before the
+    // surface exists, so `Surface::new` can give it its own composition stack
+    // over the same frame. A refused embed logs and returns `None`: the
+    // surface then draws the pill in this window exactly as before.
+    let pill = create_pill_window(hwnd, instance);
     SURFACE.with(|surface| {
         let width = (rect.right - rect.left).max(1) as u32;
         let height = (rect.bottom - rect.top).max(1) as u32;
@@ -738,6 +810,7 @@ pub fn create(
         let local_flyout = anchor.local(anchor.flyout);
         *surface.borrow_mut() = Some(Surface::new(
             hwnd,
+            pill,
             width,
             height,
             anchor.scale,
@@ -831,6 +904,9 @@ pub fn create(
             }
         }
     }
+    // §8: start the taskbar-alignment and free-region watchers on their own
+    // threads. They post back here; nothing on this thread ever polls.
+    crate::anchor::start_watching(hwnd);
     Ok(hwnd)
 }
 
@@ -959,6 +1035,202 @@ fn reassert_topmost(hwnd: HWND) {
     }
 }
 
+/// §7 Stage A: create the pill as a `WS_CHILD` of `Shell_TrayWnd` with the
+/// embed sequence the spike proved stable (`tools/spike-embed/RESULTS.md`).
+///
+/// The window starts as a hidden `WS_POPUP` (a plain popup grabs the
+/// foreground the moment it exists), is re-parented, then forced to
+/// `WS_CHILD | WS_VISIBLE` and raised to the top of the taskbar's child
+/// list. Its rect is the island window's own rect in taskbar client
+/// coordinates (`anchor::pill_child`), so pill child and card share one
+/// coordinate space and one rendered frame. `None` means the taskbar
+/// refused the embed: the caller keeps the top-level fallback, where the
+/// card window draws the pill itself.
+fn create_pill_window(card: HWND, instance: HINSTANCE) -> Option<HWND> {
+    let taskbar = crate::anchor::taskbar_window()?;
+    let mut window = RECT::default();
+    let mut bar = RECT::default();
+    // SAFETY: both windows are live; the rects are writable out pointers.
+    unsafe {
+        if GetWindowRect(card, &mut window).is_err() || GetWindowRect(taskbar, &mut bar).is_err() {
+            return None;
+        }
+    }
+    let rect = crate::anchor::pill_child(window, bar);
+    let width = (rect.right - rect.left).max(1);
+    let height = (rect.bottom - rect.top).max(1);
+    // SAFETY: the class was registered by `register`; all handles are ours.
+    let pill = unsafe {
+        CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
+            CLASS_NAME,
+            w!("Taskbar Island Pill"),
+            WS_POPUP, // hidden: no flash at (0, 0) before the reparent
+            0,
+            0,
+            width,
+            height,
+            None,
+            None,
+            Some(instance),
+            None,
+        )
+        .ok()?
+    };
+    // SAFETY: a small linear sequence on this thread's own window.
+    // `SetParent` only reports `Err` for a null previous parent, so the
+    // `GetParent` check below — not its return value — is the ground truth.
+    let embedded = unsafe {
+        let _ = SetParent(pill, Some(taskbar));
+        SetWindowLongPtrW(pill, GWL_STYLE, (WS_CHILD | WS_VISIBLE).0 as isize);
+        SetWindowLongPtrW(
+            pill,
+            GWL_EXSTYLE,
+            (WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP).0 as isize,
+        );
+        SetWindowPos(
+            pill,
+            Some(HWND_TOP),
+            rect.left,
+            rect.top,
+            width,
+            height,
+            SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOACTIVATE,
+        )
+        .is_ok()
+            && GetParent(pill).unwrap_or_default() == taskbar
+    };
+    if !embedded {
+        crate::log::log("pill.embed: refused; the card window keeps drawing the pill");
+        // SAFETY: the window was created above on this thread.
+        let _ = unsafe { DestroyWindow(pill) };
+        return None;
+    }
+    // SAFETY: invalidate and synchronously repaint the child's region.
+    unsafe {
+        let _ = InvalidateRect(Some(pill), None, false);
+        let _ = UpdateWindow(pill);
+    }
+    PILL_HWND.store(pill.0 as isize, Ordering::Relaxed);
+    crate::log::log(&format!(
+        "pill.embed: hwnd={:#x} taskbar={:#x}",
+        pill.0 as isize, taskbar.0 as isize
+    ));
+    Some(pill)
+}
+
+/// §7 Stage A: keep the embedded pill alive. Called from the 2 s z-order
+/// timer and on `WM_SETTINGCHANGE` — event-driven, no sub-second polling.
+/// Parent death (Explorer restart) takes the child with it, and the
+/// taskbar's XAML bridge can be re-created or raised above it: a dead pill
+/// is re-embedded, a live one is raised back to the top of the taskbar's
+/// child list only when a sibling sits above it (spike run 3's `hwnd-top`
+/// heal — one shot that stuck, where `insert-after-bridge` churned 334
+/// times over 82 s and never landed).
+fn guard_pill(card: HWND) {
+    let Some(taskbar) = crate::anchor::taskbar_window() else {
+        return; // Explorer is restarting; `TaskbarCreated` re-embeds.
+    };
+    let raw = PILL_HWND.load(Ordering::Relaxed);
+    if raw == 0 {
+        rebuild_pill(card);
+        return;
+    }
+    let pill = HWND(raw as *mut core::ffi::c_void);
+    // SAFETY: read-only handle queries on this thread's own window.
+    let parented = unsafe { IsWindow(Some(pill)).as_bool() }
+        && unsafe { GetParent(pill).unwrap_or_default() } == taskbar;
+    if !parented {
+        rebuild_pill(card);
+        return;
+    }
+    // Re-align if the taskbar slid under a card the anchor could not follow
+    // (a no-op — two GetWindowRects and a comparison — when nothing moved).
+    sync_pill_child(card, taskbar);
+    // SAFETY: read-only z-order walk among the taskbar's children.
+    let above = unsafe { GetWindow(pill, GW_HWNDPREV).unwrap_or_default() };
+    if above.0.is_null() {
+        return;
+    }
+    // SAFETY: pill is this thread's child window; position and size are
+    // explicitly not touched.
+    unsafe {
+        let _ = SetWindowPos(
+            pill,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+    crate::log::log("pill.heal: a sibling sat above the pill; raised to HWND_TOP");
+}
+
+/// Re-create the pill child after its parent died (Explorer restart) or an
+/// embed that never happened. The rect comes from the card window's
+/// *current* position, so both windows stay origin-aligned without
+/// recomputing the anchor.
+fn rebuild_pill(card: HWND) {
+    let instance = match unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) } {
+        Ok(instance) => instance.into(),
+        Err(error) => {
+            crate::log::log_err("pill.embed", &error);
+            return;
+        }
+    };
+    // Defensive: drop any stale handle first — its window may have died
+    // while the surface borrow was unavailable to detach it.
+    let stale = PILL_HWND.swap(0, Ordering::Relaxed);
+    if stale != 0 {
+        let stale_hwnd = HWND(stale as *mut core::ffi::c_void);
+        with_surface(|surface| surface.detach_pill(stale_hwnd));
+        // SAFETY: destroying a dead handle fails harmlessly.
+        let _ = unsafe { DestroyWindow(stale_hwnd) };
+    }
+    let Some(pill) = create_pill_window(card, instance) else {
+        return; // logged inside; the card window keeps drawing the pill
+    };
+    let outcome: Option<Result<()>> = with_surface(|surface| {
+        surface.attach_pill(pill)?;
+        surface.draw()
+    });
+    if !matches!(outcome, Some(Ok(()))) {
+        if let Some(Err(error)) = &outcome {
+            crate::log::log_err("pill.embed", error);
+        }
+        PILL_HWND.store(0, Ordering::Relaxed);
+        // SAFETY: the window was created above on this thread.
+        let _ = unsafe { DestroyWindow(pill) };
+    }
+}
+
+/// §7 Stage A: the pill child's own composition stack over the same frame.
+/// The descriptor is the card's own (one rendered frame, mirrored across
+/// each draw), the target is bound to the child HWND and the visual rooted
+/// there — the arrangement Phase 1 shipped with the pill as a taskbar child.
+fn build_pill_stack(
+    pill: HWND,
+    desc: &DXGI_SWAP_CHAIN_DESC1,
+) -> Result<(IDXGISwapChain1, IDCompositionTarget, IDCompositionVisual)> {
+    let stack = gpu::shared()?;
+    // SAFETY: COM interfaces and the descriptor are valid on this thread.
+    unsafe {
+        let device: IUnknown = stack.d3d.cast()?;
+        let swapchain = stack
+            .dxgi_factory
+            .CreateSwapChainForComposition(&device, desc, None)?;
+        // Not topmost: the pill is a `WS_CHILD`, never a top-level window.
+        let comp_target = stack.comp.CreateTargetForHwnd(pill, false)?;
+        let visual = stack.comp.CreateVisual()?;
+        visual.SetContent(&swapchain.cast::<IUnknown>()?)?;
+        comp_target.SetRoot(&visual)?;
+        stack.comp.Commit()?;
+        Ok((swapchain, comp_target, visual))
+    }
+}
+
 /// Sample the taskbar's rendered tone around the island so the pill can pick
 /// text and fill colors that contrast with the bar, not with the registry's
 /// light/dark preference (which customizers can leave disagreeing).
@@ -1025,12 +1297,12 @@ fn paste_is_due(target: HWND, foreground: HWND) -> bool {
     !target.0.is_null() && target == foreground
 }
 
-/// Recompute the anchor and slide the island when the tray's left edge has
-/// moved. Adding or removing tray icons (or taskbar pins, which can add
-/// them) shifts `TrayNotifyWnd` left and right; the pill must follow so it
-/// always keeps the 12 DIP gap and never ends up under the hidden-menu
-/// button. Only position changes are applied — the window's size is fixed
-/// for its swapchain, so a taskbar height/DPI change is left to a restart.
+/// Recompute the anchor and slide the island to its new place (§8). The
+/// alignment, the free band and the placement rule are all
+/// resolved in `anchor::layout`; this only notices a position change, arms
+/// the one-time squeeze notice and hands the move to the 200 ms ease-out
+/// slide. Only position changes are applied — the window's size is fixed for
+/// its swapchain, so a taskbar height change is left to a restart.
 fn sync_anchor(hwnd: HWND) {
     let Some(taskbar) = crate::anchor::taskbar_window() else {
         return;
@@ -1042,6 +1314,18 @@ fn sync_anchor(hwnd: HWND) {
     let Some(anchor) = crate::anchor::Anchor::compute(taskbar, dpi, slot) else {
         return;
     };
+    // §8: a free band narrower than the pill still shows the pill, plus one
+    // tray notice per episode; room coming back re-arms it for the next one.
+    if anchor.insufficient_space {
+        if crate::anchor::notice_due() {
+            crate::tray::notice(
+                "TaskbarIsland",
+                "Not enough room on the taskbar for the island",
+            );
+        }
+    } else {
+        crate::anchor::notice_clear();
+    }
     if !anchor.visible {
         return;
     }
@@ -1058,11 +1342,119 @@ fn sync_anchor(hwnd: HWND) {
         // Size changes need a swapchain resize; not supported at runtime.
         return;
     }
-    if current.left == anchor.window.left && current.top == anchor.window.top {
+    // §7 Stage A + auto-hide: any anchor sync also heals the pill child.
+    // A reveal that never moves the window (the common case) would
+    // otherwise wait for a slide frame or the 2 s guard tick to re-align
+    // the child to the bar's new position.
+    sync_pill_child(hwnd, taskbar);
+    begin_slide(hwnd, anchor);
+}
+
+/// §8: move the island to `anchor`'s window rect over 200 ms. Retarget-safe:
+/// a slide already heading to the same rect keeps running, a new target
+/// restarts from wherever the window is now, and a window already sitting on
+/// the target is left alone (the common no-op on the 2 s anchor tick).
+fn begin_slide(hwnd: HWND, anchor: crate::anchor::Anchor) {
+    let to = (anchor.window.left, anchor.window.top);
+    let size = (
+        anchor.window.right - anchor.window.left,
+        anchor.window.bottom - anchor.window.top,
+    );
+    let mut current = RECT::default();
+    // SAFETY: current is a valid out pointer.
+    if unsafe { GetWindowRect(hwnd, &mut current) }.is_err() {
         return;
     }
-    // Move outside any surface borrow: SetWindowPos synchronously dispatches
-    // window messages back into wnd_proc.
+    let from = (current.left, current.top);
+    {
+        let mut slot = SLIDE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if slot.as_ref().map(|slide| slide.to) == Some(to) {
+            return;
+        }
+        if from == to {
+            // Already there: drop any slide an earlier target left running.
+            *slot = None;
+            drop(slot);
+            // SAFETY: this window owns the timer.
+            unsafe {
+                let _ = KillTimer(Some(hwnd), SLIDE_TIMER_ID);
+            }
+            return;
+        }
+        *slot = Some(Slide {
+            from,
+            to,
+            size,
+            start: Instant::now(),
+            anchor,
+        });
+    }
+    crate::log::log(&format!("anchor.slide: {from:?} -> {to:?}"));
+    // SAFETY: this window owns the timer; it runs only while animating.
+    unsafe {
+        SetTimer(Some(hwnd), SLIDE_TIMER_ID, SLIDE_TICK_MS, None);
+    }
+}
+
+/// §8: one frame of the slide. The move happens outside the surface borrow
+/// (`SetWindowPos` dispatches messages back into wnd_proc); the surface only
+/// mirrors the new origin so hit-testing follows, and the pill child is
+/// re-aligned to the card it shares a coordinate space with.
+fn advance_slide(hwnd: HWND) {
+    let slot = SLIDE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(slide) = slot.as_ref().copied() else {
+        // A late tick after the slide landed or was cancelled.
+        drop(slot);
+        // SAFETY: this window owns the timer.
+        unsafe {
+            let _ = KillTimer(Some(hwnd), SLIDE_TIMER_ID);
+        }
+        return;
+    };
+    drop(slot);
+    let t = slide.start.elapsed().as_millis() as f32 / design::SLIDE_MS as f32;
+    if t >= 1.0 {
+        finish_slide(hwnd, slide);
+        return;
+    }
+    let eased = cubic_bezier(design::EASE_SLIDE, t);
+    let x = (slide.from.0 as f32 + (slide.to.0 - slide.from.0) as f32 * eased).round() as i32;
+    let y = (slide.from.1 as f32 + (slide.to.1 - slide.from.1) as f32 * eased).round() as i32;
+    // SAFETY: hwnd is this thread's island window.
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            x,
+            y,
+            slide.size.0,
+            slide.size.1,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
+        );
+    }
+    with_surface(|surface| surface.origin = (x, y));
+    // §7 Stage A: the child follows the card (outside the surface borrow).
+    sync_pill_child(hwnd, crate::anchor::taskbar_window().unwrap_or_default());
+}
+
+/// The last frame: land exactly on the target rect, re-derive the local
+/// surfaces from the anchor that produced it, and retire the timer.
+fn finish_slide(hwnd: HWND, slide: Slide) {
+    {
+        let mut slot = SLIDE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = None;
+    }
+    // SAFETY: this window owns the timer.
+    unsafe {
+        let _ = KillTimer(Some(hwnd), SLIDE_TIMER_ID);
+    }
+    let anchor = slide.anchor;
     // SAFETY: hwnd is this thread's island window.
     unsafe {
         let _ = SetWindowPos(
@@ -1070,8 +1462,8 @@ fn sync_anchor(hwnd: HWND) {
             None,
             anchor.window.left,
             anchor.window.top,
-            new_w,
-            new_h,
+            slide.size.0,
+            slide.size.1,
             SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER,
         );
     }
@@ -1081,6 +1473,55 @@ fn sync_anchor(hwnd: HWND) {
         surface.flyout = anchor.local(anchor.flyout);
         let _ = surface.draw();
     });
+    // §7 Stage A: the child follows the card — outside the surface borrow,
+    // because SetWindowPos dispatches messages back into wnd_proc.
+    sync_pill_child(hwnd, crate::anchor::taskbar_window().unwrap_or_default());
+}
+
+/// §7 Stage A: keep the pill child's rect origin-aligned with the card. The
+/// child's client origin must *be* the card's window origin (one coordinate
+/// space for drawing, hit-testing and both DWM regions), so its rect is
+/// recomputed from both windows' actual positions and only touched when it
+/// has drifted — e.g. the taskbar slid under a card the anchor could not
+/// follow because its size changed (a swapchain cannot resize at runtime).
+/// Returns `true` when the child was actually moved (the auto-hide reveal
+/// handler logs that as its proof of work).
+fn sync_pill_child(card: HWND, taskbar: HWND) -> bool {
+    let raw = PILL_HWND.load(Ordering::Relaxed);
+    if raw == 0 {
+        return false;
+    }
+    let pill = HWND(raw as *mut core::ffi::c_void);
+    let mut window = RECT::default();
+    let mut bar = RECT::default();
+    let mut current = RECT::default();
+    // SAFETY: all three are live windows; the rects are writable out pointers.
+    if unsafe { GetWindowRect(card, &mut window) }.is_err()
+        || unsafe { GetWindowRect(taskbar, &mut bar) }.is_err()
+        || unsafe { GetWindowRect(pill, &mut current) }.is_err()
+    {
+        return false;
+    }
+    let want = crate::anchor::pill_child(window, bar);
+    if (current.left, current.top, current.right, current.bottom)
+        == (want.left, want.top, want.right, want.bottom)
+    {
+        return false;
+    }
+    // SAFETY: pill is this thread's child window; position and size only —
+    // no activation, no z-order change.
+    unsafe {
+        let _ = SetWindowPos(
+            pill,
+            None,
+            want.left,
+            want.top,
+            want.right - want.left,
+            want.bottom - want.top,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+    }
+    true
 }
 
 extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -1136,7 +1577,10 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             let button_down = (wparam.0 & MK_LBUTTON.0 as usize) != 0;
             let drag_paths = with_surface(|surface| {
                 surface.note_pointer_inside();
-                if !surface.mouse_tracking {
+                // One tracking arm per receiving window: the pill child and
+                // the card each get their own leave (§7). Re-arming on every
+                // move from a different window keeps this self-healing.
+                if surface.mouse_tracking != Some(hwnd) {
                     let mut track = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
                         dwFlags: TME_LEAVE,
@@ -1147,7 +1591,7 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                     unsafe {
                         let _ = TrackMouseEvent(&mut track);
                     }
-                    surface.mouse_tracking = true;
+                    surface.mouse_tracking = Some(hwnd);
                 }
                 let x = (lparam.0 as i16) as f32 / surface.scale;
                 let y = ((lparam.0 >> 16) as i16) as f32 / surface.scale;
@@ -1209,7 +1653,11 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
         }
         WM_MOUSELEAVE => {
             with_surface(|surface| {
-                surface.mouse_tracking = false;
+                // Only the window that armed the tracking clears it — the
+                // pill child's leave must not disarm the card's (§7).
+                if surface.mouse_tracking == Some(hwnd) {
+                    surface.mouse_tracking = None;
+                }
                 surface.hide_tip();
                 // §6: leaving the card stops the stepper repeat and gives the
                 // mouse back (the release below is a no-op without capture).
@@ -1396,12 +1844,6 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                     let _ = surface.audio_tx.send(AudioCommand::ToggleMic);
                                     None
                                 }
-                                // The idle card's speaker square mutes the
-                                // endpoint Windows routes call audio through.
-                                Element::CallSpeaker => {
-                                    let _ = surface.audio_tx.send(AudioCommand::ToggleOutput);
-                                    None
-                                }
                                 // v0.9 §4: both output chips open their sheet
                                 // over this same card (no resize, no swap).
                                 Element::MusicOutput | Element::CallOutput => {
@@ -1441,7 +1883,7 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                     None
                                 }
                                 // Real launches only: Phone Link itself.
-                                Element::CallOpen | Element::CallIdle => {
+                                Element::CallOpen => {
                                     surface.open_call_app();
                                     None
                                 }
@@ -1478,6 +1920,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                 // The press already stepped (and the hold keeps
                                 // repeating); a button-up only ends the hold.
                                 Element::TimerMinus | Element::TimerPlus => None,
+                                // §3 preset chip: take that duration for the
+                                // stepper (and the next Start) and remember it.
+                                Element::TimerPreset(minutes) => {
+                                    surface.set_timer_preset(minutes, Instant::now());
+                                    None
+                                }
                                 Element::Rail(kind) => {
                                     surface.activate_rail(kind);
                                     None
@@ -1864,6 +2312,10 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
         WM_TIMER if wparam.0 == ZORDER_TIMER_ID => {
             reassert_topmost(hwnd);
             sync_anchor(hwnd);
+            // §7 Stage A: keep the embedded pill alive — re-embed a child
+            // that died with Explorer, raise one a taskbar sibling sits
+            // above (spike run 3's `hwnd-top` heal).
+            guard_pill(hwnd);
             // The bar can restyle without a WM_SETTINGCHANGE (customizers,
             // Explorer restarts); re-sample so the pill follows its tone.
             with_surface(|surface| {
@@ -1958,6 +2410,62 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                     }
                 }
             });
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == SPACE_DEBOUNCE_TIMER_ID => {
+            // §8: the debounce expired — one fresh scan of the free region.
+            // SAFETY: this window owns the timer.
+            unsafe {
+                let _ = KillTimer(Some(hwnd), SPACE_DEBOUNCE_TIMER_ID);
+            }
+            ALIGN_PENDING.store(false, Ordering::Relaxed);
+            crate::anchor::request_scan();
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == SLIDE_TIMER_ID => {
+            // §8: one frame of the 200 ms placement slide.
+            advance_slide(hwnd);
+            LRESULT(0)
+        }
+        // §8: a geometry event (registry or UIA) — wait out the storm, then scan.
+        crate::anchor::WM_APP_SPACE_CHANGED => {
+            let alignment = wparam.0 != 0;
+            // An alignment wait already running is never shortened: the icons
+            // are still sliding, and a structure event in the middle of that
+            // slide would otherwise trigger a scan of the half-way group.
+            if !alignment && ALIGN_PENDING.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
+            let ms = if alignment {
+                design::ALIGN_DEBOUNCE_MS
+            } else {
+                design::SPACE_DEBOUNCE_MS
+            };
+            if alignment {
+                ALIGN_PENDING.store(true, Ordering::Relaxed);
+            }
+            // SAFETY: this window owns the timer; re-arming restarts the wait.
+            unsafe {
+                SetTimer(Some(hwnd), SPACE_DEBOUNCE_TIMER_ID, ms, None);
+            }
+            LRESULT(0)
+        }
+        // §8: the watcher's scan landed — place the pill with the slide.
+        crate::anchor::WM_APP_SPACE_APPLY => {
+            sync_anchor(hwnd);
+            LRESULT(0)
+        }
+        // §7/auto-hide: the taskbar itself slid (the bar revealing or
+        // hiding). Re-anchor first — a bar that hid under a window left
+        // mid-slide by an earlier tick needs its position back — then make
+        // sure the pill child is realigned even when the anchor found
+        // nothing to move (the common case: the window never left, only
+        // the child's parent-relative rect went stale).
+        crate::anchor::WM_APP_TASKBAR_MOVED => {
+            sync_anchor(hwnd);
+            if sync_pill_child(hwnd, crate::anchor::taskbar_window().unwrap_or_default()) {
+                crate::log::log("anchor.pill: re-aligned after taskbar move");
+            }
             LRESULT(0)
         }
         WM_APP_THUMB => {
@@ -2101,11 +2609,40 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             });
             LRESULT(0)
         }
+        // §7 Stage A: Explorer restarted — the old taskbar took the pill
+        // child with it. Re-anchor on the new bar first (the child's rect is
+        // derived from the card's current position), then embed a fresh one.
+        // The broadcast only reaches top-level windows, so `hwnd` is the card.
+        msg if crate::tray::is_taskbar_created(msg) => {
+            sync_anchor(hwnd);
+            rebuild_pill(hwnd);
+            // §8: the watched taskbar element died with Explorer, so the
+            // structure handler is re-registered on the new one (it rescans).
+            crate::anchor::rewatch();
+            LRESULT(0)
+        }
+        // §8: every physical rect changes with the DPI, so rescan and
+        // re-place. Returning without DefWindowProc is deliberate: the
+        // default would resize this swapchain window, which cannot resize.
+        WM_DPICHANGED => {
+            // SAFETY: this window owns the timer.
+            unsafe {
+                SetTimer(
+                    Some(hwnd),
+                    SPACE_DEBOUNCE_TIMER_ID,
+                    design::SPACE_DEBOUNCE_MS,
+                    None,
+                );
+            }
+            LRESULT(0)
+        }
         WM_SETTINGCHANGE | WM_THEMECHANGED => {
             // A taskbar appearance change (e.g. toggling translucency) is a
             // likely moment for Explorer to raise the taskbar above us.
             reassert_topmost(hwnd);
             sync_anchor(hwnd);
+            // §7 Stage A: same moment to notice a dead or buried pill child.
+            guard_pill(hwnd);
             crate::theme::flush_native_menus();
             with_surface(|surface| {
                 if surface.refresh_theme() {
@@ -2117,6 +2654,28 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             LRESULT(0)
         }
         WM_DESTROY => {
+            // §7 Stage A: the pill child shares this window class, so its
+            // death must never quit the app — only the card window's does.
+            if hwnd.0 as isize != CARD_HWND.load(Ordering::Relaxed) {
+                if hwnd.0 as isize == PILL_HWND.load(Ordering::Relaxed) {
+                    // Clear the static *before* detaching so a nested
+                    // destroy (card teardown below) cannot double-detach.
+                    PILL_HWND.store(0, Ordering::Relaxed);
+                    with_surface(|surface| surface.detach_pill(hwnd));
+                }
+                return LRESULT(0);
+            }
+            // Card teardown: take the child down with us. The swap runs
+            // first, so the nested `WM_DESTROY` from `DestroyWindow(pill)`
+            // finds no static and falls through harmlessly.
+            let pill_raw = PILL_HWND.swap(0, Ordering::Relaxed);
+            if pill_raw != 0 {
+                let pill = HWND(pill_raw as *mut core::ffi::c_void);
+                with_surface(|surface| surface.detach_pill(pill));
+                // SAFETY: our own child window on this thread; a handle
+                // already dead with Explorer fails harmlessly.
+                let _ = unsafe { DestroyWindow(pill) };
+            }
             // Unhook outside-click detection and rail keys if the window dies
             // with the flyout still open.
             with_surface(|surface| {
@@ -2143,6 +2702,8 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let _ = KillTimer(Some(hwnd), CLIP_CONFIRM_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), CLIP_PREVIEW_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), HOLD_PROBE_TIMER_ID);
+                let _ = KillTimer(Some(hwnd), SPACE_DEBOUNCE_TIMER_ID);
+                let _ = KillTimer(Some(hwnd), SLIDE_TIMER_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_FALLBACK_HOTKEY_ID);
             }
@@ -2179,11 +2740,14 @@ impl Surface {
     #[allow(clippy::too_many_arguments)]
     fn new(
         hwnd: HWND,
+        // §7 Stage A: the embedded pill child, `None` when the embed was
+        // refused and this window draws the pill itself.
+        pill: Option<HWND>,
         width: u32,
         height: u32,
         scale: f32,
         origin: (i32, i32),
-        pill: RectD,
+        pill_rect: RectD,
         flyout: RectD,
         slot_offset_dip: i32,
         timer_minutes: u32,
@@ -2229,6 +2793,28 @@ impl Surface {
             stack.comp.Commit()?;
             (swapchain, context, comp_target, visual)
         };
+        // §7 Stage A: the pill child's own composition stack over the same
+        // frame — `draw` renders once into the card swapchain and mirrors it
+        // across, so both windows show one image and each DWM region selects
+        // its part. No stack while the embed was refused: this window then
+        // draws the pill itself, exactly as before.
+        let (pill_swapchain, pill_comp_target, pill_visual) = match pill {
+            Some(pill_hwnd) => {
+                let (swapchain, comp_target, visual) = build_pill_stack(pill_hwnd, &desc)?;
+                (Some(swapchain), Some(comp_target), Some(visual))
+            }
+            None => (None, None, None),
+        };
+        // The pill child takes drops too (a drag can land on either window).
+        let pill_drop = match pill {
+            Some(pill_hwnd) => Some(unsafe {
+                shelf::register_drop_target(pill_hwnd, shelf_slot.clone(), convert_accepts.clone())?
+            }),
+            None => None,
+        };
+        // SAFETY: the shared device outlives this surface; the context is
+        // owned by this call and used for the per-frame pill mirror.
+        let d3d_ctx = unsafe { stack.d3d.GetImmediateContext()? };
         let engine_snapshot = engines::snapshot();
         Ok(Self {
             hwnd,
@@ -2238,8 +2824,14 @@ impl Surface {
             context,
             _comp_target: comp_target,
             _visual: visual,
-            pill,
+            pill: pill_rect,
             flyout,
+            pill_hwnd: pill.unwrap_or_default(),
+            pill_swapchain,
+            pill_comp_target,
+            pill_visual,
+            _pill_drop: pill_drop,
+            d3d_ctx,
             flyout_open: false,
             flyout_owner: None,
             flyout_phase: FlyoutPhase::Closed,
@@ -2323,6 +2915,7 @@ impl Surface {
             timer_flat_at: None,
             timer_hold: None,
             timer_finished_at: None,
+            call_incoming_at: None,
             pin: None,
             last_auto: None,
             wheel_accum: 0,
@@ -2330,7 +2923,7 @@ impl Surface {
             pressed: None,
             hover_mix: 0.0,
             hover_tween: None,
-            mouse_tracking: false,
+            mouse_tracking: None,
             slot_offset_dip,
             clip,
             clip_filter: crate::view::ClipFilter::All,
@@ -2970,7 +3563,6 @@ impl Surface {
                     subtitle: Subtitle::default(),
                     status: String::new(),
                     status_accent: false,
-                    trailing: Trailing::Close,
                     body: Body::Convert(ConvertBody {
                         title: "Drop to convert".into(),
                         badge: String::new(),
@@ -3211,11 +3803,6 @@ impl Surface {
                 subtitle: Subtitle::default(),
                 status: String::new(),
                 status_accent: false,
-                trailing: if session.pins_card_open() {
-                    Trailing::None
-                } else {
-                    Trailing::Close
-                },
                 body: Body::Convert(ConvertBody {
                     title,
                     badge: primary.badge().into(),
@@ -3455,13 +4042,21 @@ impl Surface {
             icon: IconId::Phone,
             tile: TileView::colored(design::CALL_GREEN),
             label: call_label(state),
+            // §4: a ringing call words its phase in the value, and the pill
+            // pulses green under it (design §7).
             value: if state.phase == CallPhase::Active {
                 crate::view::fmt_clock(state.elapsed(now))
+            } else if state.phase == CallPhase::Incoming {
+                "Incoming".to_string()
             } else {
                 String::new()
             },
             progress: None,
-            kind: PillKind::Normal,
+            kind: if state.phase == CallPhase::Incoming {
+                PillKind::Incoming
+            } else {
+                PillKind::Normal
+            },
             art: None,
         })
     }
@@ -3949,7 +4544,6 @@ impl Surface {
                 },
                 status: String::new(),
                 status_accent: false,
-                trailing: Trailing::None,
                 body: Body::Shelf(crate::view::ShelfBody {
                     files,
                     total: count,
@@ -4060,7 +4654,6 @@ impl Surface {
                 subtitle: Subtitle::default(),
                 status: String::new(),
                 status_accent: false,
-                trailing: Trailing::None,
                 body: Body::Clipboard(body),
             },
         });
@@ -4252,7 +4845,6 @@ impl Surface {
             },
             status: note.clone().unwrap_or_default(),
             status_accent: note.is_some(),
-            trailing: Trailing::None,
             body: Body::Music(MusicBody {
                 title: snapshot.title.clone(),
                 artist: snapshot.artist.clone(),
@@ -4265,6 +4857,9 @@ impl Surface {
                 shuffle: snapshot.shuffle,
                 repeat: snapshot.repeat,
                 controls,
+                // A real session published this snapshot, so the card is
+                // live: glow, art and full-strength controls (v0.11 §2).
+                live: true,
                 sheet,
             }),
         };
@@ -4359,6 +4954,7 @@ impl Surface {
             crate::view::SheetView {
                 title: "Call audio".into(),
                 rows,
+                visible: design::SHEET_VISIBLE_CALL,
             }
         } else {
             crate::view::SheetView::default()
@@ -4367,13 +4963,21 @@ impl Surface {
             icon: IconId::Phone,
             tile: TileView::colored(accent),
             label,
-            value: if live {
+            // §4: the open card's pill words (and pulses) a ringing call
+            // exactly like the resting one.
+            value: if state.phase == CallPhase::Incoming {
+                "Incoming".to_string()
+            } else if live {
                 crate::view::fmt_clock(elapsed)
             } else {
                 String::new()
             },
             progress: None,
-            kind: PillKind::Normal,
+            kind: if state.phase == CallPhase::Incoming {
+                PillKind::Incoming
+            } else {
+                PillKind::Normal
+            },
             art: None,
         };
         let flyout = {
@@ -4391,10 +4995,22 @@ impl Surface {
             };
             FlyoutView {
                 kind: ActivityKind::Call,
-                leading: Leading::Glyph {
+                // §4 artboards: the tile only stays bright while the phone
+                // rings (a-07: green fill, dark glyph); Dialing/Active/
+                // Ended dim to a dark tile with a green glyph (a-06/a-08)
+                // so color alone carries the state.
+                leading: Leading::Flat {
                     icon: IconId::Phone,
-                    bg: accent,
-                    fg: design::DARK_GLYPH,
+                    bg: if state.phase == CallPhase::Incoming {
+                        accent
+                    } else {
+                        design::CALL_TILE_DIM
+                    },
+                    fg: if state.phase == CallPhase::Incoming {
+                        design::DARK_GLYPH
+                    } else {
+                        design::CALL_GREEN
+                    },
                 },
                 title: "Call".into(),
                 subtitle: Subtitle::default(),
@@ -4402,7 +5018,6 @@ impl Surface {
                 // No call) in row 1, so the shared header draws nothing here.
                 status: String::new(),
                 status_accent: false,
-                trailing: Trailing::None,
                 body: Body::Call(crate::view::CallBody {
                     device: runtime.device.clone(),
                     device_line2,
@@ -4418,7 +5033,6 @@ impl Surface {
                     },
                     live,
                     mic_muted: runtime.mic_muted,
-                    output_muted: runtime.output_muted,
                     hold_available: runtime.hold_available,
                     held: runtime.held,
                     sheet,
@@ -4477,27 +5091,39 @@ impl Surface {
             },
             flyout: FlyoutView {
                 kind: ActivityKind::Timer,
-                leading: Leading::Glyph {
+                // §3 artboards: running dims the tile and keeps the glyph
+                // amber (a-05); set/paused/finished keep the bright amber
+                // tile with a dark glyph (a-04) — color alone carries the
+                // state, so the layout never moves.
+                leading: Leading::Flat {
                     icon: IconId::Clock,
-                    bg: accent,
-                    fg: design::DARK_GLYPH,
+                    bg: if self.timer.running() {
+                        design::TIMER_TILE_DIM
+                    } else {
+                        accent
+                    },
+                    fg: if self.timer.running() {
+                        design::TIMER_AMBER
+                    } else {
+                        design::DARK_GLYPH
+                    },
                 },
                 title: "Timer".into(),
                 subtitle: Subtitle::default(),
                 status: status.into(),
                 status_accent: true,
-                trailing: Trailing::None,
                 body: Body::Timer(crate::view::TimerBody {
                     remaining: crate::view::fmt_mmss(remaining),
                     fraction: self.timer.fraction(now),
                     running: self.timer.running(),
                     armed: self.timer.armed(),
+                    finished: self.timer.finished,
                     caption: crate::view::timer_caption(design::clamp_minutes(
                         self.timer_minutes as i64,
                     )),
+                    minutes: design::clamp_minutes(self.timer_minutes as i64),
                     name: self.timer.name.clone(),
                     status: status.to_string(),
-                    elapsed: crate::view::fmt_mmss(self.timer.elapsed(now).as_secs_f64()),
                     total: crate::view::fmt_mmss(self.timer.total.as_secs_f64()),
                 }),
             },
@@ -4529,11 +5155,13 @@ impl Surface {
                     subtitle: Subtitle::default(),
                     status: String::new(),
                     status_accent: false,
-                    trailing: Trailing::None,
                     body: Body::Music(MusicBody {
-                        title: "Nothing playing right now".into(),
+                        // v0.11 §2 empty state: same grid, honest copy —
+                        // the artboard's "Nothing playing" / "Start music
+                        // in any app" pair.
+                        title: "Nothing playing".into(),
                         artist: String::new(),
-                        source: String::new(),
+                        source: "Start music in any app".into(),
                         art: None,
                         elapsed: "--:--".into(),
                         remaining: "--:--".into(),
@@ -4542,7 +5170,12 @@ impl Surface {
                         shuffle: false,
                         repeat: crate::view::RepeatMode::None,
                         controls: crate::view::MediaControls::default(),
-                        // Nothing is playing, but the output chip still works:
+                        // Nothing is playing, but the output icon still
+                        // works: choosing where the next track goes is not
+                        // a playback action, and §2 keeps it the one active
+                        // control on an idle card.
+                        live: false,
+                        // Nothing is playing, but the output icon still works:
                         // choosing where the next track goes is not a
                         // playback action.
                         sheet: self.music_sheet(),
@@ -4550,8 +5183,9 @@ impl Surface {
                 },
             },
             ActivityKind::Call => {
-                // A prompt §5: with no usable phone the card is an empty
-                // state whose icon tooltip says which condition is missing.
+                // §4: with no call up the card is the same three rows,
+                // dimmed; the box carries the honest wording and the Open
+                // button, whose tooltip names any missing condition.
                 let link = crate::activities::call::phone_link_state();
                 ActivityView {
                     kind,
@@ -4567,16 +5201,17 @@ impl Surface {
                     },
                     flyout: FlyoutView {
                         kind: ActivityKind::Call,
-                        leading: Leading::Glyph {
+                        // No call is a resting state (artboard a-06): the
+                        // tile is always the dimmed one here.
+                        leading: Leading::Flat {
                             icon: IconId::Phone,
-                            bg: design::CALL_GREEN,
-                            fg: design::DARK_GLYPH,
+                            bg: design::CALL_TILE_DIM,
+                            fg: design::CALL_GREEN,
                         },
                         title: "Call".into(),
                         subtitle: Subtitle::default(),
                         status: "No call".into(),
                         status_accent: true,
-                        trailing: Trailing::None,
                         body: Body::Call(crate::view::CallBody {
                             device: "No active call".into(),
                             device_line2: String::new(),
@@ -4586,7 +5221,6 @@ impl Surface {
                             elapsed: String::new(),
                             live: false,
                             mic_muted: false,
-                            output_muted: false,
                             // No call is up, so there is no route to offer.
                             hold_available: false,
                             held: false,
@@ -4612,7 +5246,9 @@ impl Surface {
                 },
                 flyout: FlyoutView {
                     kind: ActivityKind::Timer,
-                    leading: Leading::Glyph {
+                    // No timer is the a-04 "set" state: bright tile, dark
+                    // glyph.
+                    leading: Leading::Flat {
                         icon: IconId::Clock,
                         bg: design::TIMER_AMBER,
                         fg: design::DARK_GLYPH,
@@ -4621,20 +5257,20 @@ impl Surface {
                     subtitle: Subtitle::default(),
                     status: "No timer".into(),
                     status_accent: true,
-                    trailing: Trailing::None,
                     body: Body::Timer(crate::view::TimerBody {
                         // The empty card is the set view: pick a duration
-                        // with the stepper and press Start.
+                        // with the stepper or a preset, then Start.
                         remaining: crate::view::fmt_mmss(f64::from(self.timer_minutes) * 60.0),
                         fraction: 0.0,
                         running: false,
                         armed: true,
+                        finished: false,
                         caption: crate::view::timer_caption(design::clamp_minutes(
                             self.timer_minutes as i64,
                         )),
+                        minutes: design::clamp_minutes(self.timer_minutes as i64),
                         name: self.timer.name.clone(),
                         status: "No timer".into(),
-                        elapsed: "0:00".into(),
                         total: crate::view::fmt_mmss(f64::from(self.timer_minutes) * 60.0),
                     }),
                 },
@@ -4697,8 +5333,13 @@ impl Surface {
     /// True while the on-screen pill (or its card) carries a travelling wave:
     /// music that is playing, or a countdown that is running. The timer also
     /// animates while it flattens after a pause and while the finished pill
-    /// pulses amber, so those tweens get their frames without polling.
+    /// pulses amber, so those tweens get their frames without polling. An
+    /// incoming call breathes its pill green regardless of which card is
+    /// open (§4), so it is checked first.
     fn wave_animating(&self) -> bool {
+        if self.call_machine.state.phase == CallPhase::Incoming {
+            return true;
+        }
         match self.view.main.as_ref().map(|view| view.kind) {
             Some(ActivityKind::Music) => self
                 .media_snapshot
@@ -5160,7 +5801,6 @@ impl Surface {
                 | Element::MusicRepeat
                 | Element::MusicOutput
                 | Element::CallMic
-                | Element::CallSpeaker
                 | Element::CallOutput
                 | Element::CallHold
                 | Element::CallSheetClose
@@ -5168,10 +5808,11 @@ impl Surface {
                 | Element::CallAnswer
                 | Element::CallDecline
                 | Element::CallEnd
-                | Element::CallIdle
+                | Element::CallOpen
                 | Element::TimerToggle
                 | Element::TimerMinus
                 | Element::TimerPlus
+                | Element::TimerPreset(_)
                 | Element::TimerStop
                 | Element::ClipFilter(_)
                 | Element::ClipPause
@@ -5355,13 +5996,24 @@ impl Surface {
                 Some(crate::view::RepeatMode::Track) => "Repeat track",
                 _ => "Repeat off",
             }),
-            // v0.9 §4: the two output chips and everything on their sheet.
-            // Every sheet control also carries its UIA name through this
-            // function (see `a11y_nodes`).
-            Element::MusicOutput => Some((
-                "Play on".to_string(),
-                Some("Choose where music plays".to_string()),
-            )),
+            // v0.11 §2: the output *icon* (36 x 36, top right of the text
+            // block) names the device it would hand the track to — the sheet's
+            // own current row — so the control says where the music goes
+            // before it is pressed. Every sheet control also carries its UIA
+            // name through this function (see `a11y_nodes`).
+            Element::MusicOutput => {
+                let device = self
+                    .view_sheet()
+                    .and_then(|sheet| sheet.rows.iter().find(|row| row.current))
+                    .map(|row| row.name.clone());
+                Some((
+                    "Play on".to_string(),
+                    Some(match device {
+                        Some(name) => format!("Currently on {name}"),
+                        None => "Choose where music plays".to_string(),
+                    }),
+                ))
+            }
             Element::CallSheetClose => text("Close"),
             Element::CallSheetRow(index) => {
                 let row = self.view_sheet()?.rows.get(index)?;
@@ -5374,28 +6026,29 @@ impl Surface {
                 };
                 Some((row.name.clone(), detail))
             }
-            Element::CallIdle => {
-                // Only drawn for an unavailable phone, so the line always
-                // says which of the conditions from A prompt §5 applies.
-                let link = self
+            // §4: the Open button's title is always what pressing it does;
+            // its detail is the condition Phone Link reported, when there is
+            // one to report.
+            Element::CallOpen => {
+                let detail = self
                     .view
                     .main
                     .as_ref()
                     .and_then(|view| match &view.flyout.body {
-                        Body::Call(call) => Some(call.link),
+                        Body::Call(call) => call.link.idle_tip(),
                         _ => None,
-                    })?;
-                text(link.idle_tip()?)
+                    })
+                    .map(str::to_string);
+                Some(("Open Phone Link".to_string(), detail))
             }
+            // With no call up the three row-3 buttons draw dimmed and inert;
+            // the tooltip says so instead of naming an action that cannot
+            // work.
+            Element::CallMic if !self.call_live() => text("No active call"),
             Element::CallMic => text(if self.call_mic_muted() {
                 "Unmute microphone"
             } else {
                 "Mute microphone"
-            }),
-            Element::CallSpeaker => text(if self.call_output_muted() {
-                "Unmute speaker"
-            } else {
-                "Mute speaker"
             }),
             // The chip opens the output sheet; its detail names the route the
             // sheet will start on.
@@ -5415,7 +6068,9 @@ impl Surface {
                 ),
             )),
             // Honesty first: while the probe has not found Phone Link's own
-            // button, the tooltip says exactly why the control is inert.
+            // button, the tooltip says exactly why the control is inert —
+            // and with no call at all it says that instead.
+            Element::CallHold if !self.call_live() => text("No active call"),
             Element::CallHold => {
                 let runtime = self.call_runtime.lock();
                 match runtime {
@@ -5428,6 +6083,7 @@ impl Surface {
             }
             Element::CallAnswer => text("Answer"),
             Element::CallDecline => text("Decline"),
+            Element::CallEnd if !self.call_live() => text("No active call"),
             Element::CallEnd => text("End call"),
             // Design §6: every icon control carries a tooltip whose text is
             // also its UIA name. The timer toggle follows the countdown state
@@ -5443,7 +6099,13 @@ impl Surface {
                 "Start"
             }),
             Element::TimerStop => text("Stop timer"),
-            // §6: the stepper's own tooltip says what holding it does.
+            // §3: the chip's own label is its UIA name; the detail says what
+            // pressing it does.
+            Element::TimerPreset(minutes) => Some((
+                format!("{minutes} min"),
+                Some("Set this duration".to_string()),
+            )),
+            // §3: the stepper's own tooltip says what holding it does.
             Element::TimerMinus => Some((
                 "One minute less".to_string(),
                 Some("Hold to repeat".to_string()),
@@ -5460,13 +6122,6 @@ impl Surface {
         self.call_runtime
             .lock()
             .map(|runtime| runtime.mic_muted)
-            .unwrap_or(false)
-    }
-
-    fn call_output_muted(&self) -> bool {
-        self.call_runtime
-            .lock()
-            .map(|runtime| runtime.output_muted)
             .unwrap_or(false)
     }
 
@@ -5717,12 +6372,19 @@ impl Surface {
                 .shelf_convert_paths()
                 .iter()
                 .any(|path| crate::view::is_convertible(path)),
-            // Hold exists only when the probe found Phone Link's button.
-            Element::CallHold => self
-                .call_runtime
-                .lock()
-                .map(|runtime| runtime.hold_available)
-                .unwrap_or(false),
+            // §4: with no call up the three row-3 buttons are dimmed and
+            // inert — they exist only so the layout never changes.
+            Element::CallEnd | Element::CallMic => self.call_live(),
+            // Hold exists only on a live call where the probe found Phone
+            // Link's own button.
+            Element::CallHold => {
+                self.call_live()
+                    && self
+                        .call_runtime
+                        .lock()
+                        .map(|runtime| runtime.hold_available)
+                        .unwrap_or(false)
+            }
             _ => true,
         }
     }
@@ -6081,6 +6743,7 @@ impl Surface {
         crate::view::SheetView {
             title: "Play on".into(),
             rows,
+            visible: design::SHEET_VISIBLE_MUSIC,
         }
     }
 
@@ -6408,7 +7071,7 @@ impl Surface {
         self.refresh(now);
     }
 
-    // ------------------------------------------------------------ §6 stepper
+    // ------------------------------------------------------------ §3 stepper
 
     /// Press a stepper button: take the mouse and arm the 420 ms first
     /// repeat. The button-down has already stepped once.
@@ -6493,6 +7156,22 @@ impl Surface {
         }
     }
 
+    /// §3 preset chip (5 / 15 / 30 min): take the duration for the stepper
+    /// and, while a countdown is armed, re-arm it to that length. Persisted
+    /// at once — a chip click is one decision, not a held repeat.
+    fn set_timer_preset(&mut self, minutes: u32, now: Instant) {
+        let minutes = design::clamp_minutes(i64::from(minutes));
+        self.timer_minutes = minutes;
+        self.timer_minutes_dirty = true;
+        if self.timer.armed() {
+            self.timer.preset(minutes);
+        }
+        self.persist_timer_minutes();
+        crate::log::log(&format!("timer.minutes: {minutes}"));
+        self.apply_timer(now);
+        self.sync_tick_timer();
+    }
+
     /// §6: a pause eases the wave flat over 320 ms; running again restores
     /// it at full amplitude immediately.
     fn note_timer_wave(&mut self, was_running: bool, now: Instant) {
@@ -6528,6 +7207,15 @@ impl Surface {
         (elapsed < span).then_some(elapsed)
     }
 
+    /// Seconds since the current call started ringing, while it still rings
+    /// (§4: the pill border and the box's dot breathe green from it).
+    fn call_pulse_t(&self) -> Option<f32> {
+        if self.call_machine.state.phase != CallPhase::Incoming {
+            return None;
+        }
+        self.call_incoming_at.map(|at| at.elapsed().as_secs_f32())
+    }
+
     fn apply_media(&mut self, snapshot: MediaSnapshot) {
         self.media_snapshot = Some(snapshot);
         if let Some(missing) = self.media_missing_at.take() {
@@ -6559,6 +7247,10 @@ impl Surface {
         }
         if changed {
             self.call_note = None;
+            // §4: the ringing pulse is timed from the moment the call started
+            // coming in; it stops the moment the phase moves on.
+            self.call_incoming_at =
+                (self.call_machine.state.phase == CallPhase::Incoming).then_some(now);
             crate::log::log(&format!(
                 "call.state: {:?} caller={:?}",
                 self.call_machine.state.phase,
@@ -6790,6 +7482,8 @@ impl Surface {
                 sheen: None,
                 // §6: the finished pill pulses amber for `TIMER_FLASHES`.
                 flash_t: self.timer_flash_t(),
+                // §4: the ringing pill breathes green while a call comes in.
+                call_pulse_t: self.call_pulse_t(),
                 drag_bob: 0.0,
                 progress: match self.view.main.as_ref() {
                     Some(view) if view.kind == ActivityKind::Music => match &view.flyout.body {
@@ -6856,24 +7550,87 @@ impl Surface {
             let end = self.context.EndDraw(None, None);
             self.context.SetTarget(None::<&ID2D1Image>);
             end?;
+            // §7 Stage A: mirror the frame into the pill child's backbuffer
+            // *before* any Present — FLIP_SEQUENTIAL discards the buffer on
+            // Present, so the copy has to happen first. One frame, two
+            // windows; each DWM region then selects its part of it.
+            if let Some(pill_swapchain) = &self.pill_swapchain {
+                let pill_back: ID3D11Texture2D = pill_swapchain.GetBuffer(0)?;
+                self.d3d_ctx.CopyResource(&pill_back, &back_buffer);
+                self.d3d_ctx.Flush();
+            }
             // Present without waiting for vblank; the app is event driven and
             // composition will show the newest surface.
             self.swapchain.Present(0, Default::default()).ok()?;
+            if let Some(pill_swapchain) = &self.pill_swapchain {
+                pill_swapchain.Present(0, Default::default()).ok()?;
+            }
         }
         self.update_window_region();
         Ok(())
     }
 
+    /// §7 Stage A: give the pill child its composition stack and drop
+    /// target after a rebuild (Explorer restart re-embeds a fresh child).
+    fn attach_pill(&mut self, pill: HWND) -> Result<()> {
+        // SAFETY: the swapchain is this surface's own; the call only reads
+        // its descriptor back.
+        let desc = unsafe { self.swapchain.GetDesc1()? };
+        let (swapchain, comp_target, visual) = build_pill_stack(pill, &desc)?;
+        // SAFETY: OLE is initialized on this UI thread (create() ran first).
+        let drop = unsafe {
+            shelf::register_drop_target(
+                pill,
+                self.shelf_slot.clone(),
+                self.convert_accepts.clone(),
+            )?
+        };
+        self.pill_hwnd = pill;
+        self.pill_swapchain = Some(swapchain);
+        self.pill_comp_target = Some(comp_target);
+        self.pill_visual = Some(visual);
+        self._pill_drop = Some(drop);
+        // Refreshes both windows' regions (this fn cascades to the child).
+        self.update_window_region();
+        Ok(())
+    }
+
+    /// §7 Stage A: let go of a pill child that died with Explorer (or a
+    /// rebuild). Revokes its drop target first — OLE holds a reference that
+    /// would outlive the window — then clears the stack so `draw` stops
+    /// mirroring into a dead swapchain. The card window immediately draws
+    /// the pill itself again (the fallback), so nothing goes blank.
+    fn detach_pill(&mut self, pill: HWND) {
+        if self.pill_hwnd != pill {
+            return; // a stale handle; a newer child already owns the surface
+        }
+        // SAFETY: the window may already be dead; revoke fails harmlessly.
+        unsafe { shelf::revoke_drop_target(pill) };
+        self.pill_hwnd = HWND::default();
+        self.pill_swapchain = None;
+        self.pill_comp_target = None;
+        self.pill_visual = None;
+        self._pill_drop = None;
+        if self.mouse_tracking == Some(pill) {
+            self.mouse_tracking = None;
+        }
+        self.update_window_region();
+    }
+
     /// Restrict the HWND's hit-test and OLE-drop area to the visible rounded
     /// surfaces. The flyout's halo is included so its soft shadow is not
     /// clipped; `WM_NCHITTEST` still reports the halo as click-through.
+    ///
+    /// §7 Stage A: the pill band belongs to the embedded child, so the card
+    /// window only claims it in the fallback (`pill_hwnd` null), where this
+    /// window draws the pill itself.
     fn update_window_region(&self) {
         let scale = self.scale;
         // SAFETY: every GDI region is owned by this function; on success
         // `SetWindowRgn` takes ownership of `region`.
         unsafe {
             let region = CreateRectRgn(0, 0, 0, 0);
-            if self.view.pill().is_some() {
+            if self.pill_hwnd.0.is_null() && self.view.pill().is_some() {
                 let r = self.physical(self.pill);
                 let radius = (self.theme.pill_radius() * 2.0 * scale).round() as i32;
                 let pill =
@@ -6899,6 +7656,31 @@ impl Surface {
                 let _ = DeleteObject(fly.into());
             }
             let _ = SetWindowRgn(self.hwnd, Some(region), true);
+        }
+        self.update_pill_region();
+    }
+
+    /// §7 Stage A: the pill child's own region — the pill rounded rect when
+    /// there is one to show, empty otherwise ("nothing live means the pill is
+    /// hidden"). The physical numbers are the card's, valid in both windows
+    /// because the child's client origin *is* the card's window origin.
+    fn update_pill_region(&self) {
+        if self.pill_hwnd.0.is_null() {
+            return;
+        }
+        // SAFETY: every GDI region is owned by this function; on success
+        // `SetWindowRgn` takes ownership of `region`.
+        unsafe {
+            let region = CreateRectRgn(0, 0, 0, 0);
+            if self.view.pill().is_some() {
+                let r = self.physical(self.pill);
+                let radius = (self.theme.pill_radius() * 2.0 * self.scale).round() as i32;
+                let pill =
+                    CreateRoundRectRgn(r.left, r.top, r.right + 1, r.bottom + 1, radius, radius);
+                CombineRgn(Some(region), Some(region), Some(pill), RGN_OR);
+                let _ = DeleteObject(pill.into());
+            }
+            let _ = SetWindowRgn(self.pill_hwnd, Some(region), true);
         }
     }
 

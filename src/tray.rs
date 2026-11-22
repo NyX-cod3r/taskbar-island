@@ -46,6 +46,15 @@ static ISLAND_HWND: AtomicIsize = AtomicIsize::new(0);
 /// `TaskbarCreated` is a registered message, so it is only known at runtime.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
+/// True when `message` is the runtime-registered `TaskbarCreated` broadcast
+/// (Explorer restarted and a new taskbar exists). Registered message ids are
+/// only known after `install` has queried the system, so a stored id of 0
+/// means "not registered yet" and can never match a real message.
+pub fn is_taskbar_created(message: u32) -> bool {
+    let id = TASKBAR_CREATED.load(Ordering::Relaxed);
+    id != 0 && message == id
+}
+
 /// The icon compiled into the executable by `build.rs`.
 pub fn load_app_icon(
     instance: HINSTANCE,
@@ -167,6 +176,17 @@ fn notify(hwnd: HWND, title: &str, text: &str) {
     }
 }
 
+/// §8: the one-time "not enough room" balloon, raised by the island window
+/// from `sync_anchor` while the free band is narrower than the pill.
+pub(crate) fn notice(title: &str, text: &str) {
+    crate::log::log(&format!("tray.notice: {title} — {text}"));
+    let raw = TRAY_HWND.load(Ordering::Relaxed);
+    if raw == 0 {
+        return;
+    }
+    notify(HWND(raw as *mut core::ffi::c_void), title, text);
+}
+
 fn copy_wide(destination: &mut [u16], text: &str) {
     let units: Vec<u16> = text.encode_utf16().take(destination.len() - 1).collect();
     destination[..units.len()].copy_from_slice(&units);
@@ -174,6 +194,7 @@ fn copy_wide(destination: &mut [u16], text: &str) {
 }
 
 fn show_menu(hwnd: HWND) {
+    crate::log::log("tray.menu: open");
     // SAFETY: menu handles are created and destroyed in this function; the
     // calls run on the UI thread that owns the tray window.
     unsafe {
@@ -187,6 +208,8 @@ fn show_menu(hwnd: HWND) {
             MF_STRING
         };
         let _ = AppendMenuW(menu, startup_flags, ID_AUTOSTART, w!("Start with Windows"));
+        // v0.11 owner feedback: no `Island position` menu — placement is
+        // Auto-only and the app decides where the pill sits.
         if manage_engines_setup().is_some() {
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, ID_MANAGE_ENGINES, w!("Manage engines..."));
@@ -208,6 +231,7 @@ fn show_menu(hwnd: HWND) {
         );
         let _ = DestroyMenu(menu);
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        crate::log::log(&format!("tray.menu: cmd={}", command.0));
         match command.0 as usize {
             ID_AUTOSTART => toggle_startup(hwnd),
             ID_MANAGE_ENGINES => open_manage_engines(),

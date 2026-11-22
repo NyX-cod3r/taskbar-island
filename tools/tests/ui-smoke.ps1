@@ -67,6 +67,8 @@ public class TbiUi {
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr l);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern IntPtr FindWindowW(string cls, string title);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
@@ -104,6 +106,53 @@ public class TbiUi {
     public static IntPtr FindByClass(string cls) {
         IntPtr h = Match(cls, true);
         return h != IntPtr.Zero ? h : Match(cls, false);
+    }
+
+    // v0.11 Stage A: the pill is a WS_CHILD of Shell_TrayWnd while the
+    // top-level window of the same class is the card host - FindByClass
+    // returns the host (whose region is empty while the card is closed).
+    // Look for the pill under the taskbar first; fall back to FindByClass
+    // when the embed is refused and the pill is top-level again.
+    public static IntPtr FindPill(string cls) {
+        IntPtr tb = FindWindowW("Shell_TrayWnd", null);
+        if (tb != IntPtr.Zero) {
+            IntPtr found = IntPtr.Zero;
+            EnumProc probe = (h, l) => {
+                var sb = new StringBuilder(256);
+                GetClassNameW(h, sb, 256);
+                if (string.Equals(sb.ToString(), cls, StringComparison.OrdinalIgnoreCase)) {
+                    found = h; return false;
+                }
+                return true;
+            };
+            EnumChildWindows(tb, probe, IntPtr.Zero);
+            if (found != IntPtr.Zero) return found;
+        }
+        return FindByClass(cls);
+    }
+
+    // Region rects of both island windows in *screen* coordinates. Stage A
+    // split the surface in two: the pill child always carries the pill's
+    // rounded region (click-through), the top-level host carries the card +
+    // halo region only while the flyout is open (measured: NULLREGION when
+    // closed, 66 rects when open). Either window alone misses half the
+    // surface; each rect is shifted by its own window's origin, so the union
+    // is correct even if the two windows ever stop sharing one rect.
+    public static List<RECT> ScreenRects(IntPtr pill, IntPtr host) {
+        var outRects = new List<RECT>();
+        AddScreen(outRects, pill);
+        if (host != pill) AddScreen(outRects, host);
+        return outRects;
+    }
+    static void AddScreen(List<RECT> outRects, IntPtr hwnd) {
+        if (hwnd == IntPtr.Zero) return;
+        RECT wr; GetWindowRect(hwnd, out wr);
+        foreach (var r in RegionRects(hwnd)) {
+            outRects.Add(new RECT {
+                Left = wr.Left + r.Left, Top = wr.Top + r.Top,
+                Right = wr.Left + r.Right, Bottom = wr.Top + r.Bottom
+            });
+        }
     }
 
     public static RECT Rect(IntPtr h) { RECT r; GetWindowRect(h, out r); return r; }
@@ -215,12 +264,15 @@ $env:TBI_LOG = '1'
 Start-Process -FilePath $exe
 
 $h = [IntPtr]::Zero
-for ($i = 0; $i -lt 40 -and $h -eq [IntPtr]::Zero; $i++) {
+$script:pill = [IntPtr]::Zero
+for ($i = 0; $i -lt 40 -and ($h -eq [IntPtr]::Zero -or $script:pill -eq [IntPtr]::Zero); $i++) {
     Start-Sleep -Milliseconds 250
     $h = [TbiUi]::FindByClass('TaskbarIsland')
+    $script:pill = [TbiUi]::FindPill('TaskbarIsland')
 }
 if ($h -eq [IntPtr]::Zero) { throw 'pill window did not come up after relaunch' }
-Write-Host ("pill window {0}" -f $h)
+if ($script:pill -eq [IntPtr]::Zero) { $script:pill = $h }
+Write-Host ("island windows: host {0}, pill {1}" -f $h, $script:pill)
 
 # ---- pin state, read back from the app's own log --------------------------
 function Get-PinLines {
@@ -273,30 +325,31 @@ function Get-Origin([IntPtr]$hwnd) {
 
 # $script:pillBox is the region as it is *right now* (null while the pill is
 # hidden); $script:lastBox remembers the last non-empty one so a hidden state
-# can still be photographed at the right place.
+# can still be photographed at the right place. Boxes are screen coordinates:
+# v0.11 Stage A split the surface across the pill child (its own rounded
+# region) and the top-level host (the card + halo region while open), so the
+# two windows' regions are unioned by ScreenRects. This refresh only ever
+# runs with the card closed, so the box is exactly the pill.
 function Refresh-Geometry {
-    $o = Get-Origin $h
-    $script:origin = $o
-    $rects = [TbiUi]::RegionRects($h)
+    $rects = [TbiUi]::ScreenRects($script:pill, $h)
     if ($rects.Count -eq 0) { $script:pillBox = $null; return }
     $b = [TbiUi]::BBox($rects)
     $script:pillBox = $b
     $script:lastBox = $b
-    $script:cx = [int]($o[0] + ($b.Left + $b.Right) / 2)
-    $script:cy = [int]($o[1] + ($b.Top + $b.Bottom) / 2)
+    $script:cx = [int](($b.Left + $b.Right) / 2)
+    $script:cy = [int](($b.Top + $b.Bottom) / 2)
 }
 
 $shots = New-Object System.Collections.Generic.List[string]
 
 function Shot([string]$Name, [int]$Pad) {
-    $o = Get-Origin $h
-    $rects = [TbiUi]::RegionRects($h)
+    $rects = [TbiUi]::ScreenRects($script:pill, $h)
     if ($rects.Count -eq 0) { Write-Warning "  skip $Name (empty region)"; return }
     $b = [TbiUi]::BBox($rects)
-    $x = [Math]::Max(0, $o[0] + $b.Left - $Pad)
-    $y = [Math]::Max(0, $o[1] + $b.Top - $Pad)
-    $w = ($o[0] + $b.Right + $Pad) - $x
-    $hh = ($o[1] + $b.Bottom + $Pad) - $y
+    $x = [Math]::Max(0, $b.Left - $Pad)
+    $y = [Math]::Max(0, $b.Top - $Pad)
+    $w = ($b.Right + $Pad) - $x
+    $hh = ($b.Bottom + $Pad) - $y
     $path = Join-Path $Out "$Name.png"
     Save-Screen $path $x $y $w $hh
     $shots.Add($path)
@@ -363,8 +416,8 @@ try {
     Start-Sleep -Milliseconds 300
     Refresh-Geometry
     if (-not $script:pillBox) { throw 'pill region is empty after bootstrap' }
-    Write-Host ("window origin ({0},{1}); pill local ({2},{3})-({4},{5}) -> screen centre {6},{7}" -f `
-            $script:origin[0], $script:origin[1], $script:pillBox.Left, $script:pillBox.Top, `
+    Write-Host ("pill box screen ({0},{1})-({2},{3}) -> centre {4},{5}" -f `
+            $script:pillBox.Left, $script:pillBox.Top, `
             $script:pillBox.Right, $script:pillBox.Bottom, $script:cx, $script:cy)
 
     # ---- spec 7: catch the card mid-morph, half-way out of the pill --------

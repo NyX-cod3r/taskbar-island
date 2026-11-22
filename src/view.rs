@@ -115,9 +115,6 @@ pub enum Element {
     /// The music card's output chip: opens the "Play on" sheet (v0.9 §4).
     MusicOutput,
     CallMic,
-    /// Mute the speaker endpoint (idle card only; live calls route audio
-    /// through the Output sheet instead).
-    CallSpeaker,
     /// The Output button inside the connected box: opens the v0.9 §4 audio
     /// sheet.
     CallOutput,
@@ -135,13 +132,13 @@ pub enum Element {
     CallDecline,
     /// Hang up a dialing/active call (UIA Invoke on End call / Hang up).
     CallEnd,
-    /// The muted phone icon of an unavailable Call idle card (spec §8).
-    CallIdle,
     TimerToggle,
-    /// §6 stepper: one minute less (set view) or −1 min (running view).
+    /// §3 stepper: one minute less (set view) or −1 min (running view).
     TimerMinus,
-    /// §6 stepper: one minute more (set view) or +1 min (running view).
+    /// §3 stepper: one minute more (set view) or +1 min (running view).
     TimerPlus,
+    /// §3 preset chip in the set view: 5 / 15 / 30 minutes.
+    TimerPreset(u32),
     TimerStop,
     ClipFilter(ClipFilter),
     ClipPause,
@@ -203,6 +200,8 @@ pub enum PillKind {
     Normal,
     DragOver,
     Finished,
+    /// Incoming call: the border breathes green while it rings (§4).
+    Incoming,
     /// Clipboard pill; `paused` marks capture suspended with a small dot.
     Clipboard {
         paused: bool,
@@ -232,13 +231,15 @@ pub enum Leading {
         bg: Color,
         fg: Color,
     },
-}
-
-#[derive(Debug, Clone)]
-pub enum Trailing {
-    None,
-    /// Convert card: the only header affordance is a close glyph.
-    Close,
+    /// Flat tinted tile: fill `bg`, draw `icon` in `fg` — no app-icon
+    /// gradient. The call card uses it so a resting phase dims to a dark
+    /// tile with a bright glyph (artboards a-06 / a-08) while an incoming
+    /// call stays bright (a-07); the gradient `Glyph` has no dim state.
+    Flat {
+        icon: IconId,
+        bg: Color,
+        fg: Color,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -286,13 +287,16 @@ pub struct SheetView {
     /// Header title: `Play on` for music, `Call audio` for calls.
     pub title: String,
     pub rows: Vec<SheetRowView>,
+    /// Rows the fixed flyout shows at once (v0.11 §6: four on the music
+    /// sheet's 44 px rows, three on the call sheet's 52 px rows).
+    pub visible: usize,
 }
 
 impl SheetView {
     /// How many rows the fixed flyout can show without scrolling; the rest
     /// are reached with the wheel while the sheet is open.
     pub fn max_scroll(&self) -> usize {
-        self.rows.len().saturating_sub(design::SHEET_VISIBLE)
+        self.rows.len().saturating_sub(self.visible.max(1))
     }
 }
 
@@ -339,7 +343,12 @@ pub struct MusicBody {
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub controls: MediaControls,
-    /// The "Play on" sheet (v0.9 §4): empty until the chip is pressed.
+    /// v0.11 §2: a track is actually loaded. The empty state keeps the
+    /// identical grid (§1) but drops the glow, swaps the art tile for the
+    /// neutral one and dims every control but the output icon — so this flag
+    /// keys *style*, never layout.
+    pub live: bool,
+    /// The "Play on" sheet (v0.9 §4): empty until the output icon is pressed.
     pub sheet: SheetView,
 }
 
@@ -360,7 +369,6 @@ pub struct CallBody {
     pub elapsed: String,
     pub live: bool,
     pub mic_muted: bool,
-    pub output_muted: bool,
     /// The "Call audio" sheet (v0.9 §4): rows only exist for a live call,
     /// so an idle card can never offer routes for a call that is not up.
     pub sheet: SheetView,
@@ -479,6 +487,49 @@ impl CallBody {
             "Resume"
         } else {
             "Hold"
+        }
+    }
+
+    /// Line 1 of the box (design §4): every phase draws the same box, so
+    /// this words its phase — a fresh action note first, then the condition
+    /// Phone Link reported (no call), the state line, and on a live call the
+    /// endpoint Windows routes audio to. A live card already carries its
+    /// note in the header sub-line, so only an idle box repeats it here.
+    pub fn box_line1(&self) -> String {
+        use crate::activities::call_state::CallPhase;
+        if let Some(note) = self.note.as_ref().filter(|_| !self.live) {
+            return note.clone();
+        }
+        match self.phase {
+            CallPhase::None | CallPhase::Ended => self
+                .link
+                .idle_tip()
+                .map(str::to_string)
+                .unwrap_or_else(|| self.status_text()),
+            CallPhase::Incoming => "Incoming call".to_string(),
+            CallPhase::Dialing | CallPhase::Active => {
+                let device = self.device.trim();
+                if device.is_empty() {
+                    "Call audio".to_string()
+                } else {
+                    device.to_string()
+                }
+            }
+        }
+    }
+
+    /// Line 2 of the box: what the phase really promises — ringing wording,
+    /// the connected endpoint's own proof, or (only while there is no call
+    /// and Phone Link is really there) the line that says what will appear.
+    pub fn box_line2(&self) -> String {
+        use crate::activities::call_state::CallPhase;
+        match self.phase {
+            CallPhase::None if self.link.is_available() => {
+                "Phone Link calls show up here".to_string()
+            }
+            CallPhase::None | CallPhase::Ended => String::new(),
+            CallPhase::Incoming => "Ringing on your phone".to_string(),
+            CallPhase::Dialing | CallPhase::Active => self.device_line2.clone(),
         }
     }
 }
@@ -658,17 +709,21 @@ pub struct TimerBody {
     pub running: bool,
     /// A duration is set but the countdown has not started.
     pub armed: bool,
-    /// §6 set view caption: `15 minutes · hold to repeat`.
+    /// The countdown reached zero (the running view's Start button says so).
+    pub finished: bool,
+    /// §3 set view caption: `15 minutes · hold to repeat`.
     pub caption: String,
-    /// §6 running view: countdown name and status line.
+    /// Duration the stepper and the preset chips sit on (1..=180): the chip
+    /// that matches it turns amber.
+    pub minutes: u32,
+    /// §3 running view: countdown name over the status line in the header.
     pub name: String,
     pub status: String,
-    /// §6 running view: elapsed / total clocks flanking the wave.
-    pub elapsed: String,
+    /// §3 running view: what the header's right side shows (`20:00 total`).
     pub total: String,
 }
 
-/// §6 set-view caption under the big readout.
+/// §3 set-view caption under the big readout.
 pub fn timer_caption(minutes: u32) -> String {
     let unit = if minutes == 1 { "minute" } else { "minutes" };
     format!("{minutes} {unit} · hold to repeat")
@@ -858,7 +913,7 @@ pub struct ClipPreviewView {
     pub body: String,
     /// `from Snipping Tool`; `None` when the source app is unknown.
     pub source: Option<String>,
-    /// Image rows draw the 192 × 118 picture above the caption.
+    /// Image rows draw the 192 × 116 picture above the caption.
     pub image: bool,
     /// Code-like body copy is set in the mono family (spec 3.2).
     pub mono: bool,
@@ -887,7 +942,6 @@ pub struct FlyoutView {
     pub status: String,
     /// Draw the status in the activity accent (otherwise secondary text).
     pub status_accent: bool,
-    pub trailing: Trailing,
     pub body: Body,
 }
 
@@ -962,7 +1016,6 @@ impl ViewModel {
                 subtitle: Subtitle::default(),
                 status: String::new(),
                 status_accent: false,
-                trailing: Trailing::None,
                 body: Body::Shelf(ShelfBody {
                     files: Vec::new(),
                     total: 0,
@@ -1904,7 +1957,6 @@ mod tests {
                 CallPhase::Incoming | CallPhase::Dialing | CallPhase::Active
             ),
             mic_muted: false,
-            output_muted: false,
             sheet: SheetView::default(),
             hold_available: false,
             held: false,
@@ -1954,6 +2006,95 @@ mod tests {
             .status_text(),
             "Open Phone Link to do this"
         );
+    }
+
+    /// §4: one box words every phase through the same two lines — the
+    /// connected endpoint while a call is up, the ringing wording while a
+    /// call comes in, and the honest idle pair (or only the missing-
+    /// condition tip) when there is no call at all.
+    #[test]
+    fn call_box_lines_word_every_phase() {
+        use crate::activities::call::PhoneLinkState;
+        use crate::activities::call_state::CallPhase;
+
+        let body =
+            |phase: CallPhase, device: &str, line2: &str, link: PhoneLinkState, note| CallBody {
+                device: device.into(),
+                device_line2: line2.into(),
+                app_name: "Phone Link".into(),
+                caller: String::new(),
+                elapsed: String::new(),
+                live: matches!(
+                    phase,
+                    CallPhase::Incoming | CallPhase::Dialing | CallPhase::Active
+                ),
+                mic_muted: false,
+                sheet: SheetView::default(),
+                hold_available: false,
+                held: false,
+                link,
+                phase,
+                note,
+            };
+
+        // No call with Phone Link present: the design's own two lines.
+        let idle = body(CallPhase::None, "", "", PhoneLinkState::Available, None);
+        assert_eq!(idle.box_line1(), "No active call");
+        assert_eq!(idle.box_line2(), "Phone Link calls show up here");
+        // Without a usable phone the box only says which condition is
+        // missing, and promises no content that cannot arrive.
+        let missing = body(CallPhase::None, "", "", PhoneLinkState::NotInstalled, None);
+        assert_eq!(
+            missing.box_line1(),
+            PhoneLinkState::NotInstalled.idle_tip().unwrap_or_default()
+        );
+        assert_eq!(missing.box_line2(), "");
+        // Ended keeps the wording honest without re-pitching the app.
+        let ended = body(CallPhase::Ended, "", "", PhoneLinkState::Available, None);
+        assert_eq!(ended.box_line1(), "Call ended");
+        assert_eq!(ended.box_line2(), "");
+        // Incoming words the ring, not an endpoint.
+        let incoming = body(CallPhase::Incoming, "", "", PhoneLinkState::Available, None);
+        assert_eq!(incoming.box_line1(), "Incoming call");
+        assert_eq!(incoming.box_line2(), "Ringing on your phone");
+        // A live call shows what Windows proved: route over its proof.
+        let active = body(
+            CallPhase::Active,
+            "Galaxy Buds2 Pro",
+            "Bluetooth hands-free \u{b7} Connected",
+            PhoneLinkState::Available,
+            None,
+        );
+        assert_eq!(active.box_line1(), "Galaxy Buds2 Pro");
+        assert_eq!(active.box_line2(), "Bluetooth hands-free \u{b7} Connected");
+        // Dialing with no route name still names the box honestly.
+        let dialing = body(
+            CallPhase::Dialing,
+            "  ",
+            "Connecting\u{2026}",
+            PhoneLinkState::Available,
+            None,
+        );
+        assert_eq!(dialing.box_line1(), "Call audio");
+        assert_eq!(dialing.box_line2(), "Connecting\u{2026}");
+        // A fresh action note stands in for the idle line while it lasts,
+        // and never claims anything a live header does not already carry.
+        let noted = body(
+            CallPhase::None,
+            "",
+            "",
+            PhoneLinkState::Available,
+            Some("Open Phone Link to do this".into()),
+        );
+        assert_eq!(noted.box_line1(), "Open Phone Link to do this");
+        let live_note = body(
+            CallPhase::Active,
+            "Galaxy Buds2 Pro",
+            "Connected",
+            PhoneLinkState::Available,
+            Some("Route refused".into()),
+        );
+        assert_eq!(live_note.box_line1(), "Galaxy Buds2 Pro");
     }
 
     #[test]
@@ -2393,7 +2534,7 @@ mod tests {
     }
 
     /// The 450 ms hover-preview overlay geometry stays inside the card (spec
-    /// 7): 206 × 150 popup, 192 × 118 image area.
+    /// 7): 206 × 148 popup, 192 × 116 image area.
     #[test]
     fn preview_overlay_geometry_stays_inside_the_card() {
         assert_eq!(design::CLIP_PREVIEW_MS, 450);
@@ -2405,9 +2546,9 @@ mod tests {
         // toolbar gap and the list and never a toolbar control (spec 7).
         let x = (design::CLIP_INNER_W - design::CLIP_PREVIEW_W) * 0.5;
         let y = design::CLIP_INNER_H - design::CLIP_PREVIEW_H;
-        // 70.3 DIP after v0.10 widened the content column to 346.6 (was 61.5
-        // at 329); f32 keeps the derived value within 0.01 of it.
-        assert!((x - 70.3).abs() <= 0.01, "centered preview x, got {x}");
+        // 69.3 DIP after v0.11 took the shared padding to 8 (70.3 at 7 DIP,
+        // 61.5 at the old 329 column); f32 keeps it within 0.01.
+        assert!((x - 69.3).abs() <= 0.01, "centered preview x, got {x}");
         assert_eq!(y, design::CLIP_TOOLBAR_H);
         assert_eq!(
             design::CLIP_PREVIEW_H,

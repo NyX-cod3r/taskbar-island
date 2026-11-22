@@ -2,6 +2,7 @@
 /target
 /dist
 /tools/generated
+/tools/spike-embed/target/
 
 # Engines are downloaded at install time, never committed
 /engines/

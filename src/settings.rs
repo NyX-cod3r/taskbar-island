@@ -99,6 +99,8 @@ impl Settings {
         if let Some(v) = json.get("timerMinutes").and_then(Json::as_i32) {
             settings.timer_minutes = design::clamp_minutes(v as i64);
         }
+        // A legacy `islandPosition` key is ignored: v0.11 placement is
+        // Auto-only (owner feedback), so there is no choice to restore.
         if let Some(enabled) = json.get("enabled") {
             settings.enabled = Enabled {
                 music: enabled

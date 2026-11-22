@@ -1,0 +1,78 @@
+[+0ms][epoch=1794863183176] event spike-start pid=18224
+[+0ms][epoch=1794863183176] info Shell_TrayWnd=0x70398 screenRect=0,1140,1920,1200
+[+0ms][epoch=1794863183177] info TaskbarCreated message id=0xc0c8
+[+1ms][epoch=1794863183178] trace hwnd=0x7054c msg=0x0024 w=0x0 l=0x31485fe7b0
+[+1ms][epoch=1794863183178] trace hwnd=0x7054c msg=0x0081 w=0x0 l=0x31485fe760
+[+2ms][epoch=1794863183179] trace hwnd=0x7054c msg=0x0083 w=0x0 l=0x31485fe7d0
+[+3ms][epoch=1794863183179] trace hwnd=0x7054c msg=0x0001 w=0x0 l=0x31485fe730
+[+3ms][epoch=1794863183179] event relay-created hwnd=0x7054c
+[+3ms][epoch=1794863183180] trace hwnd=0x60576 msg=0x0081 w=0x0 l=0x31485fe120
+[+3ms][epoch=1794863183180] trace hwnd=0x60576 msg=0x0083 w=0x0 l=0x31485fe190
+[+6ms][epoch=1794863183182] trace hwnd=0x60576 msg=0x0001 w=0x0 l=0x31485fe0f0
+[+6ms][epoch=1794863183183] trace hwnd=0x60576 msg=0x0005 w=0x0 l=0x2200f0
+[+6ms][epoch=1794863183183] trace hwnd=0x60576 msg=0x0003 w=0x0 l=0x0
+[+6ms][epoch=1794863183183] event created hwnd=0x60576
+[+6ms][epoch=1794863183183] trace hwnd=0x60576 msg=0x0046 w=0x0 l=0x31485fe6f0
+[+6ms][epoch=1794863183183] trace hwnd=0x60576 msg=0x0083 w=0x1 l=0x31485fe6c0
+[+6ms][epoch=1794863183183] trace hwnd=0x60576 msg=0x0046 w=0x0 l=0x31485fe6f0
+[+6ms][epoch=1794863183183] trace hwnd=0x7054c msg=0x001c w=0x1 l=0x0
+[+6ms][epoch=1794863183183] trace hwnd=0x60576 msg=0x0086 w=0x0 l=0x0
+[+6ms][epoch=1794863183183] trace hwnd=0x60576 msg=0x0006 w=0x1 l=0x0
+[+9ms][epoch=1794863183186] trace hwnd=0x60576 msg=0x0281 w=0x1 l=0xc000000f
+[+10ms][epoch=1794863183186] trace hwnd=0x60576 msg=0x0282 w=0x2 l=0x0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x0007 w=0x0 l=0x0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x0047 w=0x0 l=0x31485fe6f0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x0003 w=0x0 l=0x0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x007c w=0xfffffffffffffff0 l=0x31485fe6d0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x007d w=0xfffffffffffffff0 l=0x31485fe6d0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x007c w=0xffffffffffffffec l=0x31485fe6d0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x007d w=0xffffffffffffffec l=0x31485fe6d0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x0046 w=0x0 l=0x31485fe6f0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x0083 w=0x1 l=0x31485fe6c0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x0047 w=0x0 l=0x31485fe6f0
+[+10ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x0003 w=0x0 l=0xd0008
+[+11ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x000f w=0x0 l=0x0
+[+11ms][epoch=1794863183187] trace hwnd=0x60576 msg=0x0014 w=0xffffffffee01090f l=0x0
+[+11ms][epoch=1794863183187] event first-paint hwnd=0x60576 count=1
+[+11ms][epoch=1794863183187] event parented hwnd=0x60576 taskbar=0x70398 pos=(8, 13) size=240x34 taskbarH=60 z='HWND_TOP (above bridge first try)' aboveTl=0 visibleAfter=1 bridge=0xb0128
+[+11ms][epoch=1794863183188] event ready z='HWND_TOP (above bridge first try)' poll=100ms kill=120000ms
+[+11ms][epoch=1794863183188] trace hwnd=0x7054c msg=0x031f w=0x1 l=0x0
+[+126ms][epoch=1794863183302] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+126ms][epoch=1794863183303] info taskbar-children[7]: TbiSpikeClass,Windows.UI.Composition.DesktopWindowContentBridge,Windows.UI.Core.CoreWindow,Start,TrayDummySearchControl,TrayNotifyWnd,ReBarWindow32
+[+5144ms][epoch=1794863188321] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+10167ms][epoch=1794863193344] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+15206ms][epoch=1794863198383] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+20228ms][epoch=1794863203405] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+25282ms][epoch=1794863208459] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+30399ms][epoch=1794863213575] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+35427ms][epoch=1794863218603] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+40468ms][epoch=1794863223644] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+45505ms][epoch=1794863228682] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+50565ms][epoch=1794863233742] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+55568ms][epoch=1794863238745] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+60587ms][epoch=1794863243764] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+65622ms][epoch=1794863248799] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+70639ms][epoch=1794863253815] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+75673ms][epoch=1794863258849] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+80707ms][epoch=1794863263883] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+85739ms][epoch=1794863268916] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+90740ms][epoch=1794863273916] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+95749ms][epoch=1794863278926] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+100782ms][epoch=1794863283959] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+105884ms][epoch=1794863289061] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+110886ms][epoch=1794863294063] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+115922ms][epoch=1794863299098] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+120019ms][epoch=1794863303196] event self-terminate reason=timeout-120s
+[+120019ms][epoch=1794863303196] trace hwnd=0x60576 msg=0x0090 w=0x0 l=0x0
+[+120020ms][epoch=1794863303197] trace hwnd=0x60576 msg=0x0018 w=0x0 l=0x0
+[+120020ms][epoch=1794863303197] trace hwnd=0x60576 msg=0x0046 w=0x0 l=0x31485fe670
+[+120021ms][epoch=1794863303197] trace hwnd=0x60576 msg=0x0047 w=0x0 l=0x31485fe670
+[+120021ms][epoch=1794863303198] trace hwnd=0x60576 msg=0x0281 w=0x0 l=0xc000000f
+[+120022ms][epoch=1794863303199] trace hwnd=0x60576 msg=0x0282 w=0x1 l=0x0
+[+120023ms][epoch=1794863303199] trace hwnd=0x60576 msg=0x0002 w=0x0 l=0x0
+[+120023ms][epoch=1794863303200] trace hwnd=0x60576 msg=0x0082 w=0x0 l=0x0
+[+120023ms][epoch=1794863303200] event destroyed hwnd=0x60576 (own teardown or parent died)
+[+120024ms][epoch=1794863303201] trace hwnd=0x7054c msg=0x0090 w=0x0 l=0x0
+[+120025ms][epoch=1794863303201] trace hwnd=0x7054c msg=0x0002 w=0x0 l=0x0
+[+120033ms][epoch=1794863303209] trace hwnd=0x7054c msg=0x0082 w=0x0 l=0x0
+[+120033ms][epoch=1794863303210] event spike-exit code=0 paints=1

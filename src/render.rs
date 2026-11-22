@@ -14,11 +14,13 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     ID2D1Bitmap, ID2D1Geometry, ID2D1Layer, ID2D1LinearGradientBrush, ID2D1PathGeometry,
-    ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
-    D2D1_BITMAP_PROPERTIES, D2D1_CAP_STYLE_FLAT, D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM,
-    D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_EXTEND_MODE_CLAMP, D2D1_GAMMA_2_2, D2D1_LAYER_OPTIONS_NONE,
-    D2D1_LAYER_PARAMETERS, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_LINE_JOIN_ROUND,
-    D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+    ID2D1RadialGradientBrush, ID2D1RenderTarget, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_PROPERTIES, D2D1_CAP_STYLE_FLAT,
+    D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_CUSTOM, D2D1_DRAW_TEXT_OPTIONS_NONE,
+    D2D1_EXTEND_MODE_CLAMP, D2D1_GAMMA_2_2, D2D1_LAYER_OPTIONS_NONE, D2D1_LAYER_PARAMETERS,
+    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_LINE_JOIN_ROUND,
+    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
 };
 use windows::Win32::Graphics::DirectWrite::{
     IDWriteInlineObject, IDWriteTextFormat, IDWriteTextLayout, DWRITE_FONT_STRETCH_NORMAL,
@@ -36,12 +38,18 @@ use crate::icons;
 use crate::theme::Theme;
 use crate::view::{
     AlbumArt, Body, ConvertBody, ConvertState, Element, FlyoutView, IconId, Leading, MusicBody,
-    PillKind, PillView, RepeatMode, Trailing, ViewModel,
+    PillKind, PillView, RepeatMode, ViewModel,
 };
 
 /// What a masked secret row reads as while it is neither hovered nor focused
 /// (spec 3.6): eight bullets, never the stored text.
 const MASKED_PREVIEW: &str = "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}";
+
+/// v0.11 §1 `--debug-layout`: stroke the shared card grid over the open card
+/// so a card that paints outside `design::card_content_rect()` is visible at a
+/// glance. Set once from `main` when the flag is present; never read on the
+/// hot path besides this one paint.
+pub static DEBUG_LAYOUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // --------------------------------------------------------------- draw input
 
@@ -100,6 +108,9 @@ pub struct RenderInput<'a> {
     pub hover_mix: f32,
     pub sheen: Option<f32>,
     pub flash_t: Option<f32>,
+    /// §4: seconds since the incoming call started ringing (pill border and
+    /// box dot breathe green from the same clock); `None` while not ringing.
+    pub call_pulse_t: Option<f32>,
     pub drag_bob: f32,
     pub progress: Option<ProgressVisual>,
     /// Wave state of the compact pill's progress line (music/timer).
@@ -249,7 +260,11 @@ pub struct Painter {
     /// Album art and shelf thumbnails share one cache, keyed by `AlbumArt::id`
     /// (a track id or a path/mtime hash).
     art: HashMap<u64, ID2D1Bitmap>,
-    placeholder: Option<ID2D1LinearGradientBrush>,
+    /// v0.11 §2 fallback cover (`155deg #FF9DB2 -> #E0476C`).
+    art_fallback: Option<ID2D1LinearGradientBrush>,
+    /// v0.11 §2 album-colour glow, one brush per colour (re-centred per
+    /// frame, so a single entry serves both radial gradients).
+    glow: Option<((u32, u32, u32), ID2D1RadialGradientBrush)>,
 }
 
 impl Painter {
@@ -264,7 +279,8 @@ impl Painter {
             self.brushes.clear();
             self.app_fills.clear();
             self.app_shines.clear();
-            self.placeholder = None;
+            self.art_fallback = None;
+            self.glow = None;
         }
         if self.art_target != key {
             self.art_target = key;
@@ -882,25 +898,29 @@ impl Painter {
         Some(brush)
     }
 
-    /// Album-art placeholder gradient (`135deg #2B4A52 -> #101C20`), defined
-    /// in unit space so callers can stretch it across any rect.
-    fn placeholder_gradient(&mut self, rt: &ID2D1RenderTarget) -> Option<ID2D1LinearGradientBrush> {
-        if let Some(brush) = &self.placeholder {
+    /// Album-art fallback gradient (v0.11 §2: `155deg #FF9DB2 -> #E0476C`),
+    /// defined in unit space so callers can stretch it across any rect.
+    fn art_fallback_gradient(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+    ) -> Option<ID2D1LinearGradientBrush> {
+        if let Some(brush) = &self.art_fallback {
             return Some(brush.clone());
         }
         let stops = [
             D2D1_GRADIENT_STOP {
                 position: 0.0,
-                color: color_f(design::rgb(0x2B, 0x4A, 0x52)),
+                color: color_f(design::rgb(0xFF, 0x9D, 0xB2)),
             },
             D2D1_GRADIENT_STOP {
                 position: 1.0,
-                color: color_f(design::rgb(0x10, 0x1C, 0x20)),
+                color: color_f(design::rgb(0xE0, 0x47, 0x6C)),
             },
         ];
+        // 155deg (CSS convention: 0 = up, clockwise) in unit space.
         let props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES {
-            startPoint: Vector2::new(0.0, 0.0),
-            endPoint: Vector2::new(1.0, 1.0),
+            startPoint: Vector2::new(0.289, 0.047),
+            endPoint: Vector2::new(0.711, 0.953),
         };
         // SAFETY: stops and properties are local and valid for the call.
         let brush = unsafe {
@@ -910,8 +930,87 @@ impl Painter {
             rt.CreateLinearGradientBrush(&props, None, &collection)
                 .ok()?
         };
-        self.placeholder = Some(brush.clone());
+        self.art_fallback = Some(brush.clone());
         Some(brush)
+    }
+
+    /// The v0.11 §2 album-colour glow: one radial brush per colour, defined
+    /// in unit space (centre 0,0, radius 1) so callers can place and stretch
+    /// it per frame by setting the centre and radii.
+    fn glow_brush(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        color: Color,
+    ) -> Option<ID2D1RadialGradientBrush> {
+        let key = (color.r.to_bits(), color.g.to_bits(), color.b.to_bits());
+        if let Some((cached, brush)) = &self.glow {
+            if *cached == key {
+                return Some(brush.clone());
+            }
+        }
+        // Fast falloff: full at the centre, most of the energy in the first
+        // third, gone by the edge — the artboard's "soft" glow.
+        let stops = [
+            D2D1_GRADIENT_STOP {
+                position: 0.0,
+                color: color_f(color.set_alpha(1.0)),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 0.35,
+                color: color_f(color.set_alpha(0.35)),
+            },
+            D2D1_GRADIENT_STOP {
+                position: 1.0,
+                color: color_f(color.set_alpha(0.0)),
+            },
+        ];
+        let props = D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES {
+            center: Vector2::new(0.0, 0.0),
+            gradientOriginOffset: Vector2::new(0.0, 0.0),
+            radiusX: 1.0,
+            radiusY: 1.0,
+        };
+        // SAFETY: stops and properties are local and valid for the call.
+        let brush = unsafe {
+            let collection = rt
+                .CreateGradientStopCollection(&stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)
+                .ok()?;
+            rt.CreateRadialGradientBrush(&props, None, &collection)
+                .ok()?
+        };
+        self.glow = Some((key, brush.clone()));
+        Some(brush)
+    }
+
+    /// v0.11 §2: the song colour's soft radial glow over the content column
+    /// — 30 % at the top-left, 10 % at the bottom-right — drawn under the
+    /// card while a track is live. The empty state draws none (§2), and the
+    /// glow is bounded by the rail's divider, exactly as the artboard shows.
+    fn draw_music_glow(&mut self, rt: &ID2D1RenderTarget, color: Color, fly: RectD, alpha: f32) {
+        if alpha <= 0.002 {
+            return;
+        }
+        let col = RectD::new(
+            fly.x + design::CARD_CONTENT_X,
+            fly.y,
+            fly.w - design::CARD_CONTENT_X,
+            fly.h,
+        );
+        let Some(brush) = self.glow_brush(rt, color) else {
+            return;
+        };
+        // Two lobes of one brush: the same colour, re-centred and re-sized,
+        // at the two strengths the spec names.
+        for (cx, cy, strength) in [(col.x, col.y, 0.30), (col.right(), col.bottom(), 0.10)] {
+            // SAFETY: the brush is owned by the painter and valid here.
+            unsafe {
+                brush.SetCenter(Vector2::new(cx, cy));
+                brush.SetRadiusX(col.w);
+                brush.SetRadiusY(col.h);
+                brush.SetOpacity(strength * alpha);
+                rt.FillRectangle(&d2d_rect(col), &brush);
+            }
+        }
     }
 
     /// Draws one of the four activity identity tiles (call/music/shelf/timer
@@ -1042,6 +1141,18 @@ impl Painter {
                         design::PILL_BORDER_ACTIVE_A + (1.0 - design::PILL_BORDER_ACTIVE_A) * k,
                     );
                 }
+            }
+        }
+        // §4: an incoming call breathes the border green once per
+        // `CALL_PULSE_MS` (design §7: "Pill pulses green").
+        if pill.kind == PillKind::Incoming {
+            if let Some(t) = input.call_pulse_t {
+                let period = design::CALL_PULSE_MS as f32 / 1000.0;
+                let p = (t % period) / period;
+                let k = 1.0 - (2.0 * p - 1.0).abs();
+                border = accent.with_alpha(
+                    design::PILL_BORDER_ACTIVE_A + (1.0 - design::PILL_BORDER_ACTIVE_A) * k,
+                );
             }
         }
         fill.a *= alpha;
@@ -1363,6 +1474,14 @@ impl Painter {
         self.fill_round(rt, fly, design::R_SURFACE, fill);
 
         let clip = rounded_layer(rt, fly, design::R_SURFACE);
+        // v0.11 §2: the song colour's glow sits under everything else in the
+        // content column, and only while a track is actually live — the
+        // empty state (§1 keeps its layout) draws no glow at all.
+        if let Body::Music(m) = &view.body {
+            if m.live {
+                self.draw_music_glow(rt, accent_of(input.view), fly, alpha);
+            }
+        }
         self.draw_rail(
             rt,
             input,
@@ -1372,6 +1491,11 @@ impl Painter {
             hits,
         );
         self.draw_card(rt, input, view, fly, hits);
+        // v0.11 §1: `--debug-layout` strokes the shared grid over whatever the
+        // card just painted, so the root rect every card must own is visible.
+        if DEBUG_LAYOUT.load(std::sync::atomic::Ordering::Relaxed) {
+            self.draw_layout_debug(rt, input, fly, alpha);
+        }
         // v0.9 §4: the output sheet lives inside the same rounded clip, so
         // it can never paint past the card's corners while it slides up.
         self.draw_output_sheet(rt, input, view, fly, alpha, hits);
@@ -1388,14 +1512,41 @@ impl Painter {
         );
     }
 
+    // ------------------------------------------------------------- debug grid
+
+    /// v0.11 §1 `--debug-layout`: the shared grid, stroked over whatever the
+    /// card just painted. One cyan root rect (`view::content_rect`) that
+    /// every card — music included — must fill; anything painted past it is
+    /// off the shared grid.
+    fn draw_layout_debug(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        fly: RectD,
+        alpha: f32,
+    ) {
+        let px = 1.0 / input.scale;
+        let root = crate::view::content_rect(fly);
+        self.stroke_round(
+            rt,
+            root,
+            0.0,
+            px,
+            design::rgb(0x00, 0xE5, 0xFF).with_alpha(alpha),
+            false,
+        );
+    }
+
     // -------------------------------------------------------- output sheet
 
     /// The output sheet (v0.9 §4): a full-flyout panel that slides up over
     /// the open card — same window, same size, its own rgb(38,38,38)
-    /// surface, a header (14 px semibold title + 32 × 32 close) and 44 DIP
-    /// rows (28 × 28 tile, 13 px name, 11.5 px sub) with a check on the
-    /// route Windows uses right now. Nothing here can resize the card: the
-    /// panel is painted over it, inside the card's own rounded clip.
+    /// surface over the *content column* (the rail and its divider stay
+    /// visible, v0.11 §6), a header (design 14 px semibold title + 36 × 36
+    /// close) and rows (design 44 px music / 52 px call, 32 px tile,
+    /// 13 px name, 11.5 px sub) with an accent check on the route Windows
+    /// uses right now. Nothing here can resize the card: the panel is
+    /// painted over it, inside the card's own rounded clip.
     fn draw_output_sheet(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -1418,7 +1569,15 @@ impl Painter {
             return;
         }
         // Slide up from under the card's bottom edge (240 ms, EASE_CONTENT).
-        let panel = fly.offset(0.0, (1.0 - t) * fly.h);
+        // The panel is the content column only: the rail and its divider
+        // stay visible to the left, and the card never resizes.
+        let content = RectD::new(
+            fly.x + design::CARD_CONTENT_X,
+            fly.y,
+            fly.w - design::CARD_CONTENT_X,
+            fly.h,
+        );
+        let panel = content.offset(0.0, (1.0 - t) * content.h);
         let alpha = alpha * t;
         // The sheet is always rgb(38,38,38), so it paints with its own
         // white ramps instead of the theme's text colours.
@@ -1427,6 +1586,14 @@ impl Painter {
             rt,
             panel,
             design::R_SURFACE,
+            design::SHEET_BG.with_alpha(alpha),
+        );
+        // Square off the left edge: the rounded corners belong to the card's
+        // outer silhouette on the right; on the left the sheet meets the
+        // divider in one straight line (the artboard shows no notch there).
+        self.fill_rect(
+            rt,
+            RectD::new(panel.x, panel.y, design::R_SURFACE + 1.0, panel.h),
             design::SHEET_BG.with_alpha(alpha),
         );
 
@@ -1438,7 +1605,7 @@ impl Painter {
             design::SHEET_CLOSE,
             design::SHEET_CLOSE,
         );
-        let title_x = panel.x + pad_x;
+        let title_x = panel.x + pad_x + design::SHEET_ROW_INNER;
         self.text(
             rt,
             &sheet.title,
@@ -1446,13 +1613,13 @@ impl Painter {
                 title_x,
                 head_y,
                 (close.x - 8.0 - title_x).max(0.0),
-                design::SHEET_CLOSE,
+                design::SHEET_HEADER_H,
             ),
             design::SHEET_TITLE,
             600,
             0,
-            design::SHEET_CLOSE,
-            white(0.94).with_alpha(alpha),
+            design::SHEET_HEADER_H,
+            white(0.99).with_alpha(alpha),
             true,
         );
         let pressed = input.pressed_amount(Element::CallSheetClose);
@@ -1469,8 +1636,8 @@ impl Painter {
             rt,
             IconId::Close,
             draw,
-            16.0,
-            white(0.72).with_alpha(alpha),
+            design::SHEET_CLOSE_GLYPH,
+            white(0.99).with_alpha(alpha),
             input.scale,
             0.0,
         );
@@ -1478,22 +1645,29 @@ impl Painter {
             hits.add(Element::CallSheetClose, close, design::R_CONTROL);
         }
 
-        // Rows: three fit the fixed flyout exactly, the rest are scrolled in
-        // by `input.sheet_scroll` (the wheel, while the sheet owns the card).
+        // Rows: each sheet shows its own slice — four 44 px music rows or
+        // three 52 px call rows fit the fixed flyout; the rest are scrolled
+        // in by `input.sheet_scroll` (the wheel, while the sheet owns the
+        // card). The current route's tile glyph and check carry the context
+        // accent: the song colour on music, call green on calls (a-03/a-09).
+        let row_h = match &view.body {
+            Body::Music(_) => design::SHEET_ROW_H,
+            _ => design::SHEET_ROW_H_CALL,
+        };
+        let visible = sheet.visible.max(1);
+        let accent = match &view.body {
+            Body::Music(_) => accent_of(input.view),
+            _ => design::CALL_GREEN,
+        };
         let row_x = panel.x + pad_x;
         let row_w = panel.w - pad_x * 2.0;
-        let rows_y = head_y + design::SHEET_CLOSE + design::SHEET_HEADER_GAP;
-        let stride = design::SHEET_ROW_H + design::SHEET_ROW_GAP;
+        let rows_y = head_y + design::SHEET_HEADER_H + design::SHEET_HEADER_GAP;
+        let stride = row_h + design::SHEET_ROW_GAP;
         let first = input.sheet_scroll.min(sheet.rows.len() - 1);
-        let last = (first + design::SHEET_VISIBLE).min(sheet.rows.len());
+        let last = (first + visible).min(sheet.rows.len());
         for (slot, index) in (first..last).enumerate() {
             let row = &sheet.rows[index];
-            let rect = RectD::new(
-                row_x,
-                rows_y + slot as f32 * stride,
-                row_w,
-                design::SHEET_ROW_H,
-            );
+            let rect = RectD::new(row_x, rows_y + slot as f32 * stride, row_w, row_h);
             let element = Element::CallSheetRow(index);
             let pressed = input.pressed_amount(element);
             let draw = pressed_rect(rect, pressed);
@@ -1501,13 +1675,17 @@ impl Painter {
                 white(0.12)
             } else if input.hovered(element) {
                 white(0.07)
+            } else if row.current {
+                // The route Windows uses right now: white 8 % over the
+                // sheet (rgb 55,55,55), exactly as the artboards show.
+                white(0.08)
             } else {
                 Color::TRANSPARENT
             };
             self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
 
             let tile = RectD::new(
-                rect.x,
+                rect.x + design::SHEET_ROW_INNER,
                 rect.center_y() - design::SHEET_TILE * 0.5,
                 design::SHEET_TILE,
                 design::SHEET_TILE,
@@ -1517,14 +1695,22 @@ impl Painter {
                 rt,
                 row.icon,
                 tile,
-                16.0,
-                white(0.82).with_alpha(alpha),
+                design::SHEET_TILE_GLYPH,
+                if row.current {
+                    accent.with_alpha(alpha)
+                } else {
+                    white(0.82).with_alpha(alpha)
+                },
                 input.scale,
                 0.0,
             );
 
-            let text_x = tile.right() + 12.0;
-            let check_w = if row.current { 26.0 } else { 0.0 };
+            let text_x = tile.right() + design::SHEET_TEXT_GAP;
+            let check_w = if row.current {
+                design::SHEET_CHECK_INSET + design::SHEET_CHECK + 6.0
+            } else {
+                0.0
+            };
             let text_w = (rect.right() - check_w - text_x).max(0.0);
             let stack = design::LINE_SHEET_NAME + design::LINE_SHEET_SUB;
             let top = rect.y + (rect.h - stack) * 0.5;
@@ -1536,7 +1722,7 @@ impl Painter {
                 500,
                 0,
                 design::LINE_SHEET_NAME,
-                white(0.95).with_alpha(alpha),
+                white(0.99).with_alpha(alpha),
                 true,
             );
             if !row.sub.is_empty() {
@@ -1558,13 +1744,18 @@ impl Painter {
                 );
             }
             if row.current {
-                let check = RectD::new(rect.right() - 20.0, rect.center_y() - 9.0, 18.0, 18.0);
+                let check = RectD::new(
+                    rect.right() - design::SHEET_CHECK_INSET - design::SHEET_CHECK,
+                    rect.center_y() - design::SHEET_CHECK * 0.5,
+                    design::SHEET_CHECK,
+                    design::SHEET_CHECK,
+                );
                 self.icon_center(
                     rt,
                     IconId::Check,
                     check,
-                    18.0,
-                    design::CALL_GREEN.with_alpha(alpha),
+                    design::SHEET_CHECK,
+                    accent.with_alpha(alpha),
                     input.scale,
                     0.0,
                 );
@@ -1662,6 +1853,16 @@ impl Painter {
 
     // ------------------------------------------------------------------ card
 
+    /// v0.11 §1 "one shared grid": the root rect of *every* card. It is the
+    /// single content rect from `design::card_content_rect()`, slid only by
+    /// the card-open tween — never padded per card, music included, so
+    /// `draw_card` stays the only place that derives it.
+    fn card_root(fly: RectD, top_dy: f32) -> RectD {
+        let mut area = crate::view::content_rect(fly);
+        area.y += top_dy;
+        area
+    }
+
     fn draw_card(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -1685,8 +1886,7 @@ impl Painter {
             if alpha > 0.002 {
                 // The card owns the shared content column from
                 // `card_content_rect()` and lays out inside it.
-                let mut area = content;
-                area.y += input.top_dy;
+                let area = Self::card_root(fly, input.top_dy);
                 self.draw_convert_card(rt, input, convert, area, alpha, hits);
             }
             return;
@@ -1696,7 +1896,8 @@ impl Painter {
         if let Body::Shelf(shelf) = &view.body {
             let alpha = top_alpha.min(body_alpha);
             if alpha > 0.002 {
-                self.draw_shelf_card(rt, input, shelf, fly, alpha, hits);
+                let area = Self::card_root(fly, input.top_dy);
+                self.draw_shelf_card(rt, input, shelf, area, alpha, hits);
             }
             return;
         }
@@ -1705,8 +1906,7 @@ impl Painter {
         if let Body::Clipboard(clip) = &view.body {
             let alpha = top_alpha.min(body_alpha);
             if alpha > 0.002 {
-                let mut area = content;
-                area.y += input.top_dy;
+                let area = Self::card_root(fly, input.top_dy);
                 self.draw_clipboard_card(rt, input, clip, area, alpha, hits);
             }
             return;
@@ -1717,51 +1917,24 @@ impl Painter {
         if let Body::Call(call) = &view.body {
             let alpha = top_alpha.min(body_alpha);
             if alpha > 0.002 {
-                let mut area = content;
-                area.y += input.top_dy;
+                let area = Self::card_root(fly, input.top_dy);
                 self.draw_call_card(rt, input, view, call, area, alpha, hits);
             }
             return;
         }
-        let (gap, body_h) = match &view.body {
-            // §6: one shell height for the set view and the running view, so
-            // starting the countdown never resizes the card.
-            Body::Timer(_) => (design::CARD_GAP, design::TIMER_BODY_H),
-            // `draw_card` returns into `draw_call_card` above, so the call
-            // shell never reaches this match; one arm keeps it exhaustive.
-            Body::Call(_)
-            | Body::Shelf(_)
-            | Body::Music(_)
-            | Body::Clipboard(_)
-            | Body::Convert(_) => {
-                unreachable!()
-            }
-        };
-        let total = design::HEADER_H + gap + body_h;
-        let start_y = content.y + (content.h - total) * 0.5 + input.top_dy;
-        let header = RectD::new(content.x, start_y, content.w, design::HEADER_H);
-        if top_alpha > 0.002 {
-            self.draw_card_header(rt, input, view, header, top_alpha, hits);
-        }
-        if body_alpha <= 0.002 {
-            return;
-        }
-        let body = RectD::new(
-            content.x,
-            start_y + design::HEADER_H + gap,
-            content.w,
-            body_h,
-        );
-        match &view.body {
-            Body::Timer(t) => self.draw_timer_card(rt, input, t, body, body_alpha, hits),
-            Body::Shelf(_)
-            | Body::Music(_)
-            | Body::Clipboard(_)
-            | Body::Convert(_)
-            | Body::Call(_) => {
-                unreachable!()
+        // v0.11 §3 timer: no standard header either — the card owns the
+        // shared content column and lays out both views (set / running) as
+        // rows of that one grid, so the shell never resizes between them.
+        if let Body::Timer(timer) = &view.body {
+            let alpha = top_alpha.min(body_alpha);
+            if alpha > 0.002 {
+                let area = Self::card_root(fly, input.top_dy);
+                self.draw_timer_card(rt, input, view, timer, area, alpha, hits);
             }
         }
+        // Every body has its own branch above — v0.11 §1 gave each card the
+        // shared `card_root()` and §3 the timer the last reason to share the
+        // old header + gap + body shell, so there is no generic shell left.
     }
 
     /// Clipboard history card.  This deliberately mirrors the shelf's
@@ -2421,7 +2594,7 @@ impl Painter {
         }
     }
 
-    /// Contents of the hover-preview panel: the 192 × 118 picture over its
+    /// Contents of the hover-preview panel: the 192 × 116 picture over its
     /// caption for image rows, the full (≤ 200 character) text for everything
     /// else, then the `from <app>` line (spec 7).
     fn draw_clipboard_preview(
@@ -2541,86 +2714,82 @@ impl Painter {
         }
     }
 
-    fn draw_card_header(
+    /// The header shape shared by the cards that own their own root (v0.10
+    /// call row 1, v0.11 §3 timer): the leading tile, an optional
+    /// right-aligned status, then the title over its sub-line centred in the
+    /// row. §1 gave every card `card_root()`, so the old generic header +
+    /// body shell is gone with it.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_sub_header(
         &mut self,
         rt: &ID2D1RenderTarget,
         input: &RenderInput<'_>,
         view: &FlyoutView,
-        rect: RectD,
+        lead: f32,
+        row: RectD,
+        title: &str,
+        sub: &str,
+        status: Option<&str>,
+        status_accent: bool,
         alpha: f32,
-        hits: &mut HitMap,
     ) {
         let theme = input.theme;
-        let tile = RectD::new(
-            rect.x,
-            rect.y + (rect.h - design::HEADER_TILE) * 0.5,
-            design::HEADER_TILE,
-            design::HEADER_TILE,
-        );
+        let tile = RectD::new(row.x, row.y + (row.h - lead) * 0.5, lead, lead);
         self.draw_leading(rt, input, &view.leading, tile, alpha);
 
-        let mut right = rect.right();
-        match &view.trailing {
-            Trailing::Close => {
-                let side = 28.0;
-                let r = RectD::new(right - side, rect.y + (rect.h - side) * 0.5, side, side);
-                if input.hovered(Element::ConvertClose) {
-                    self.fill_round(
-                        rt,
-                        r,
-                        design::R_CONTROL,
-                        theme.surface_button_hover().with_alpha(alpha),
-                    );
-                }
-                self.icon_center(
-                    rt,
-                    IconId::Close,
-                    r,
-                    design::CONVERT_CLOSE,
-                    theme.text_secondary().with_alpha(alpha),
-                    input.scale,
-                    0.0,
-                );
-                hits.add(Element::ConvertClose, r, design::R_CONTROL);
-                right = r.x - 8.0;
-            }
-            Trailing::None => {}
-        }
-        let title_x = tile.right() + design::HEADER_GAP;
-        if !view.status.is_empty() && right - title_x > 12.0 {
+        let mut right = row.right();
+        let text_x = tile.right() + design::HEADER_GAP;
+        if let Some(status) = status.filter(|s| !s.is_empty()) {
             let width = self
                 .measure(
                     rt,
-                    &view.status,
+                    status,
                     design::FONT_FLY_SUBTITLE,
                     500,
                     design::LINE_CARD_STATUS,
                 )
-                .min(right - title_x - 8.0);
+                .min((right - text_x - 8.0).max(0.0));
             self.text(
                 rt,
-                &view.status,
-                RectD::new(right - width, rect.y, width, rect.h),
+                status,
+                RectD::new(right - width, row.y, width, row.h),
                 design::FONT_FLY_SUBTITLE,
                 500,
                 2,
                 design::LINE_CARD_STATUS,
                 theme
-                    .card_status(design::rail_accent(view.kind), view.status_accent)
+                    .card_status(design::rail_accent(view.kind), status_accent)
                     .with_alpha(alpha),
                 true,
             );
             right -= width + 8.0;
         }
+        // Title over sub-line, the pair centred in the row (design: `Priya` /
+        // `Phone Link · 02:14`, `Timer` / `Set how long, then start`).
+        let title_line = design::LINE_FLY_TITLE;
+        let sub_line = design::LINE_CARD_STATUS;
+        let top = row.y + (row.h - (title_line + sub_line)) * 0.5;
+        let width = (right - text_x).max(0.0);
         self.text(
             rt,
-            &view.title,
-            RectD::new(title_x, rect.y, (right - title_x).max(0.0), rect.h),
+            title,
+            RectD::new(text_x, top, width, title_line),
             design::FONT_FLY_TITLE,
             600,
             0,
-            design::LINE_FLY_TITLE,
+            title_line,
             theme.text_primary().with_alpha(alpha),
+            true,
+        );
+        self.text(
+            rt,
+            sub,
+            RectD::new(text_x, top + title_line, width, sub_line),
+            design::FONT_FLY_SUBTITLE,
+            400,
+            0,
+            sub_line,
+            theme.text_secondary().with_alpha(alpha),
             true,
         );
     }
@@ -2672,7 +2841,23 @@ impl Painter {
                     .map(|art| self.draw_art_tile(rt, art, r, design::R_TILE_LEAD, *accent, alpha))
                     .unwrap_or(false);
                 if !drew_art {
-                    self.draw_app_icon(rt, icons::AppIcon::Music, r, input.scale, alpha);
+                    // v0.11 §2 artboard a-02: no art is a flat neutral tile
+                    // with a gray music glyph — not the gradient app icon.
+                    self.fill_round(
+                        rt,
+                        r,
+                        design::R_TILE_LEAD,
+                        design::MUSIC_TILE_EMPTY.with_alpha(alpha),
+                    );
+                    self.icon_center(
+                        rt,
+                        IconId::Music,
+                        r,
+                        design::LEAD_GLYPH,
+                        design::MUSIC_GLYPH_EMPTY.with_alpha(alpha),
+                        input.scale,
+                        design::ICON_STROKE,
+                    );
                 }
             }
             Leading::Glyph { icon, bg, fg } => {
@@ -2690,6 +2875,20 @@ impl Painter {
                         design::ICON_STROKE,
                     );
                 }
+            }
+            // Flat tinted tile (v0.11 §4 call card): no app-icon gradient,
+            // so a resting phase can dim to a dark tile with a bright glyph.
+            Leading::Flat { icon, bg, fg } => {
+                self.fill_round(rt, r, design::R_TILE_LEAD, bg.with_alpha(alpha));
+                self.icon_center(
+                    rt,
+                    *icon,
+                    r,
+                    design::LEAD_GLYPH,
+                    fg.with_alpha(alpha),
+                    input.scale,
+                    design::ICON_STROKE,
+                );
             }
         }
     }
@@ -2786,29 +2985,44 @@ impl Painter {
     ) {
         let theme = input.theme;
         let accent = accent_of(input.view);
-        let content = content.offset(0.0, dy);
-        let gap = design::CARD_GAP;
-        let total = design::MUSIC_ART + gap + design::MUSIC_PROGRESS_H + gap + design::MUSIC_PLAY_H;
-        let y0 = content.y + (content.h - total) * 0.5;
+        // §1: the caller hands in the shared root rect and music lays out in
+        // it directly — no card may add its own outer margin, so the three
+        // rows fill the same 344.6 x 176 root every other card owns.
+        let inner = content.offset(0.0, dy);
+        let y0 = inner.y;
 
-        // Info row: 64 DIP art, title, `Artist · App`.
-        let art = RectD::new(content.x, y0, design::MUSIC_ART, design::MUSIC_ART);
-        let drew = m
-            .art
-            .as_ref()
-            .map(|a| self.draw_art_tile(rt, a, art, design::R_ART, accent, alpha))
-            .unwrap_or(false);
-        if !drew {
-            self.draw_art_placeholder(rt, input, art, alpha);
+        // Row 1 (design 96): art tile + text block, output icon top right.
+        let art = RectD::new(inner.x, y0, design::MUSIC_ART, design::MUSIC_ART);
+        if m.live {
+            let drew = m
+                .art
+                .as_ref()
+                .map(|a| self.draw_art_tile(rt, a, art, design::R_ART, accent, alpha))
+                .unwrap_or(false);
+            if !drew {
+                self.draw_art_fallback(rt, input, art, alpha);
+            }
+        } else {
+            self.draw_art_empty(rt, input, art, alpha);
         }
+
         let tx = art.right() + design::MUSIC_INFO_GAP;
-        let tw = (content.right() - tx).max(0.0);
+        let tw = (inner.right() - tx).max(0.0);
+        let out = RectD::new(
+            inner.right() - design::MUSIC_OUTPUT,
+            y0,
+            design::MUSIC_OUTPUT,
+            design::MUSIC_OUTPUT,
+        );
+        // The title stops short of the output icon; the meta line sits below
+        // it, so only the title needs the shortened measure.
+        let title_w = (out.x - design::MUSIC_BTN_GAP - tx).max(0.0);
         let block = design::LINE_MUSIC_TITLE + design::MUSIC_LINE_GAP + design::LINE_MUSIC_META;
-        let ty = art.center_y() - block * 0.5;
+        let ty = y0 + (design::MUSIC_ART - block) * 0.5;
         self.text(
             rt,
             &m.title,
-            RectD::new(tx, ty, tw, design::LINE_MUSIC_TITLE),
+            RectD::new(tx, ty, title_w, design::LINE_MUSIC_TITLE),
             design::FONT_MUSIC_TITLE,
             600,
             0,
@@ -2817,9 +3031,9 @@ impl Painter {
             true,
         );
         let meta_y = ty + design::LINE_MUSIC_TITLE + design::MUSIC_LINE_GAP;
-        // v0.9 §5: line 2 is `artist <12 px gap> app`, one line, ellipsized.
-        // The artist gets at most 60 % of the line so the app name always
-        // keeps a visible tail instead of being pushed off the card.
+        // v0.9 §5: line 2 is `artist <gap> app`, one line, ellipsized. The
+        // artist gets at most 60 % of the line so the app name always keeps
+        // a visible tail instead of being pushed off the card.
         if m.artist.is_empty() {
             self.text(
                 rt,
@@ -2853,14 +3067,14 @@ impl Painter {
                 theme.music_artist().with_alpha(alpha),
                 true,
             );
-            let sx = (tx + artist_w + design::MUSIC_META_GAP).min(content.right());
+            let sx = (tx + artist_w + design::MUSIC_META_GAP).min(inner.right());
             self.text(
                 rt,
                 &m.source,
                 RectD::new(
                     sx,
                     meta_y,
-                    (content.right() - sx).max(0.0),
+                    (inner.right() - sx).max(0.0),
                     design::LINE_MUSIC_META,
                 ),
                 design::FONT_MUSIC_META,
@@ -2872,33 +3086,36 @@ impl Painter {
             );
         }
 
-        // Progress row: 30 elapsed | wave | 34 remaining.
-        let py = y0 + design::MUSIC_ART + gap;
-        self.text(
+        // v0.11 §2: the output icon button (36 x 36 design px) at the top
+        // right of the text block — the one control an idle card keeps, and
+        // the only one whose tooltip names the device the sheet would pick.
+        let pressed = input.pressed_amount(Element::MusicOutput);
+        let draw = pressed_rect(out, pressed);
+        let out_fill = if pressed.is_some() {
+            theme.card_button_press()
+        } else if input.hovered(Element::MusicOutput) {
+            theme.card_button_hover()
+        } else {
+            theme.card_button()
+        };
+        self.fill_round(rt, draw, design::R_CONTROL, out_fill.with_alpha(alpha));
+        self.icon_center(
             rt,
-            &m.elapsed,
-            RectD::new(
-                content.x,
-                py,
-                design::MUSIC_TIME_W,
-                design::MUSIC_PROGRESS_H,
-            ),
-            design::FONT_TIME_LABEL,
-            400,
-            0,
-            design::LINE_TIME,
-            theme.music_meta().with_alpha(alpha),
-            false,
+            IconId::Headphones,
+            draw,
+            design::MUSIC_GLYPH,
+            theme.card_button_text().with_alpha(alpha),
+            input.scale,
+            0.0,
         );
-        let wave_x = content.x + design::MUSIC_TIME_W + design::MUSIC_TIME_GAP;
-        let wave_w =
-            (content.right() - design::MUSIC_REMAIN_W - design::MUSIC_TIME_GAP - wave_x).max(160.0);
-        let wave = RectD::new(
-            wave_x,
-            py,
-            wave_w.min(content.right() - wave_x),
-            design::MUSIC_PROGRESS_H,
-        );
+        if alpha > 0.15 {
+            hits.add(Element::MusicOutput, out, design::R_CONTROL);
+        }
+
+        // Row 2 (design 34): the wave fills the interior width, with the
+        // elapsed / remaining line under it (v0.11 §2).
+        let py = y0 + design::MUSIC_ART + design::MUSIC_ROW_GAP;
+        let wave = RectD::new(inner.x, py, inner.w, design::MUSIC_PROGRESS_H);
         self.draw_music_wave(
             rt,
             input,
@@ -2911,14 +3128,26 @@ impl Painter {
             },
             alpha,
         );
+        let times_y = py + design::MUSIC_PROGRESS_H;
+        self.text(
+            rt,
+            &m.elapsed,
+            RectD::new(inner.x, times_y, design::MUSIC_TIME_W, design::LINE_TIME),
+            design::FONT_TIME_LABEL,
+            400,
+            0,
+            design::LINE_TIME,
+            theme.music_meta().with_alpha(alpha),
+            false,
+        );
         self.text(
             rt,
             &m.remaining,
             RectD::new(
-                content.right() - design::MUSIC_REMAIN_W,
-                py,
+                inner.right() - design::MUSIC_REMAIN_W,
+                times_y,
                 design::MUSIC_REMAIN_W,
-                design::MUSIC_PROGRESS_H,
+                design::LINE_TIME,
             ),
             design::FONT_TIME_LABEL,
             400,
@@ -2931,17 +3160,20 @@ impl Painter {
             hits.add(Element::ProgressRow, wave, 4.0);
         }
 
-        // Controls row (v0.9 §4): the transport starts at the left edge of
-        // the content column and the output chip owns the right end, so the
-        // row spans exactly the column's width.
-        let cy = py + design::MUSIC_PROGRESS_H + gap;
-        let step = design::MUSIC_BTN + design::MUSIC_BTN_GAP;
-        let mut x = content.x;
-        let small_y = cy + (design::MUSIC_PLAY_H - design::MUSIC_BTN) * 0.5;
+        // Row 3 (design 56): five centred controls spanning the interior —
+        // shuffle, previous, play, next, repeat — with equal gaps, and the
+        // white play button in the middle (v0.11 §2). The empty state keeps
+        // the identical grid and only dims the ink (§1), so the output icon
+        // stays the one active control.
+        let cy = py + design::MUSIC_PROGRESS_BLOCK + design::MUSIC_ROW_GAP;
+        let row_h = design::MUSIC_CONTROLS_H;
+        let ctrl_alpha = if m.live { alpha } else { alpha * 0.45 };
+        let mut x = inner.x;
+        let gap = design::MUSIC_CTRL_GAP;
 
         let idle = theme.music_meta();
         let active_fill = accent.with_alpha(0.14);
-        let r = RectD::new(x, small_y, design::MUSIC_BTN, design::MUSIC_BTN);
+        let r = RectD::new(x, cy, design::MUSIC_SHUFFLE_W, row_h);
         self.flat_icon_button(
             rt,
             input,
@@ -2950,12 +3182,12 @@ impl Painter {
             IconId::Shuffle,
             if m.shuffle { accent } else { idle },
             if m.shuffle { Some(active_fill) } else { None },
-            alpha,
-            m.controls.shuffle,
+            ctrl_alpha,
+            m.live && m.controls.shuffle,
             hits,
         );
-        x += step;
-        let r = RectD::new(x, small_y, design::MUSIC_BTN, design::MUSIC_BTN);
+        x += design::MUSIC_SHUFFLE_W + gap;
+        let r = RectD::new(x, cy, design::MUSIC_SKIP_W, row_h);
         self.flat_icon_button(
             rt,
             input,
@@ -2964,19 +3196,21 @@ impl Painter {
             IconId::Previous,
             theme.text_primary(),
             None,
-            alpha,
-            m.controls.previous,
+            ctrl_alpha,
+            m.live && m.controls.previous,
             hits,
         );
-        x += step;
-        let r = RectD::new(x, cy, design::MUSIC_PLAY_W, design::MUSIC_PLAY_H);
+        x += design::MUSIC_SKIP_W + gap;
+        let r = RectD::new(x, cy, design::MUSIC_PLAY_W, row_h);
         let draw = pressed_rect(r, input.pressed_amount(Element::MusicPlay));
-        let fill = if input.hovered(Element::MusicPlay) {
-            darken(accent, 0.92)
+        let fill = if !m.live {
+            design::white(0.16)
+        } else if input.hovered(Element::MusicPlay) {
+            darken(design::white(1.0), 0.92)
         } else {
-            accent
+            design::white(1.0)
         };
-        self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
+        self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
         let icon = if m.playing {
             IconId::Pause
         } else {
@@ -2987,15 +3221,15 @@ impl Painter {
             icon,
             draw,
             design::MUSIC_GLYPH,
-            design::DARK_GLYPH.with_alpha(alpha),
+            design::DARK_GLYPH.with_alpha(if m.live { alpha } else { 0.6 * alpha }),
             input.scale,
             0.0,
         );
-        if alpha > 0.15 && m.controls.toggle {
-            hits.add(Element::MusicPlay, r, design::R_SURFACE);
+        if alpha > 0.15 && m.live && m.controls.toggle {
+            hits.add(Element::MusicPlay, r, design::R_CONTROL);
         }
-        x += design::MUSIC_PLAY_W + design::MUSIC_BTN_GAP;
-        let r = RectD::new(x, small_y, design::MUSIC_BTN, design::MUSIC_BTN);
+        x += design::MUSIC_PLAY_W + gap;
+        let r = RectD::new(x, cy, design::MUSIC_SKIP_W, row_h);
         self.flat_icon_button(
             rt,
             input,
@@ -3004,12 +3238,12 @@ impl Painter {
             IconId::Next,
             theme.text_primary(),
             None,
-            alpha,
-            m.controls.next,
+            ctrl_alpha,
+            m.live && m.controls.next,
             hits,
         );
-        x += step;
-        let r = RectD::new(x, small_y, design::MUSIC_BTN, design::MUSIC_BTN);
+        x += design::MUSIC_SKIP_W + gap;
+        let r = RectD::new(x, cy, design::MUSIC_SHUFFLE_W, row_h);
         self.flat_icon_button(
             rt,
             input,
@@ -3026,137 +3260,26 @@ impl Painter {
             } else {
                 None
             },
-            alpha,
-            m.controls.repeat,
+            ctrl_alpha,
+            m.live && m.controls.repeat,
             hits,
         );
-
-        // v0.9 §4: the output chip fills the rest of the row. Its text is
-        // the default device's own name (empty when the audio query came
-        // back with nothing to claim), ellipsized to the room it has.
-        let chip_label = m
-            .sheet
-            .rows
-            .iter()
-            .find(|row| row.current)
-            .map(|row| row.name.clone())
-            .unwrap_or_default();
-        let chip = RectD::new(
-            x + design::MUSIC_BTN + design::MUSIC_BTN_GAP,
-            cy,
-            design::MUSIC_CHIP_W,
-            design::MUSIC_CHIP_H,
-        );
-        self.output_chip(
-            rt,
-            input,
-            Element::MusicOutput,
-            chip,
-            IconId::Headphones,
-            &chip_label,
-            alpha,
-            hits,
+        debug_assert!(
+            (x + design::MUSIC_SHUFFLE_W - inner.right()).abs() < 0.01,
+            "the five controls must end on the interior's right edge"
         );
     }
 
-    /// The output chip (v0.9 §4): device glyph, device name, chevron. Used
-    /// at both ends of a card's controls row; the name ellipsizes to whatever
-    /// room the row leaves, so a long endpoint name can never push the chip
-    /// out of the card.
-    #[allow(clippy::too_many_arguments)]
-    fn output_chip(
-        &mut self,
-        rt: &ID2D1RenderTarget,
-        input: &RenderInput<'_>,
-        element: Element,
-        rect: RectD,
-        icon: IconId,
-        label: &str,
-        alpha: f32,
-        hits: &mut HitMap,
-    ) {
-        if rect.w <= 1.0 || rect.h <= 1.0 {
-            return;
-        }
-        let theme = input.theme;
-        let pressed = input.pressed_amount(element);
-        let draw = pressed_rect(rect, pressed);
-        let fill = if pressed.is_some() {
-            theme.card_button_press()
-        } else if input.hovered(element) {
-            theme.card_button_hover()
-        } else {
-            theme.card_button()
-        };
-        self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
-        self.stroke_round(
-            rt,
-            draw,
-            design::R_CONTROL,
-            1.0,
-            theme.card_divider().with_alpha(alpha),
-            false,
-        );
-        // pad | glyph | gap | name (flex) | gap | chevron | pad.
-        let pad = 8.0;
-        let glyph = 16.0;
-        let chev = 14.0;
-        let icon_r = RectD::new(draw.x + pad, draw.center_y() - glyph * 0.5, glyph, glyph);
-        self.icon_center(
-            rt,
-            icon,
-            icon_r,
-            glyph,
-            theme.card_button_text().with_alpha(alpha),
-            input.scale,
-            0.0,
-        );
-        let chev_r = RectD::new(
-            draw.right() - pad - chev,
-            draw.center_y() - chev * 0.5,
-            chev,
-            chev,
-        );
-        let text_x = icon_r.right() + 6.0;
-        self.text(
-            rt,
-            label,
-            RectD::new(text_x, draw.y, (chev_r.x - 6.0 - text_x).max(0.0), draw.h),
-            design::FONT_CHIP,
-            500,
-            0,
-            draw.h,
-            theme.text_primary().with_alpha(alpha),
-            true,
-        );
-        self.icon_center(
-            rt,
-            IconId::ChevronUp,
-            chev_r,
-            chev,
-            theme.card_button_text().with_alpha(alpha),
-            input.scale,
-            0.0,
-        );
-        if alpha > 0.15 {
-            hits.add(element, rect, design::R_CONTROL);
-        }
-    }
-
-    fn draw_art_placeholder(
+    /// v0.11 §2 art tile, live session with no cover: the pink fallback
+    /// gradient (`155deg #FF9DB2 -> #E0476C`) with the white music note.
+    fn draw_art_fallback(
         &mut self,
         rt: &ID2D1RenderTarget,
         input: &RenderInput<'_>,
         rect: RectD,
         alpha: f32,
     ) {
-        self.fill_round(
-            rt,
-            rect,
-            design::R_ART,
-            design::rgb(0x10, 0x1C, 0x20).with_alpha(alpha),
-        );
-        if let Some(brush) = self.placeholder_gradient(rt) {
+        if let Some(brush) = self.art_fallback_gradient(rt) {
             let clip = rounded_layer(rt, rect, design::R_ART);
             // SAFETY: the cached brush and local transform are valid.
             unsafe {
@@ -3183,9 +3306,39 @@ impl Painter {
             IconId::Music,
             rect,
             26.0,
-            design::rgb(0x8F, 0xC3, 0xCF).with_alpha(alpha),
+            design::white(1.0).with_alpha(alpha),
             input.scale,
             1.6 * 24.0 / 26.0,
+        );
+    }
+
+    /// v0.11 §2 art tile, nothing playing (artboard a-02): a flat neutral
+    /// `#2D2D2D` tile with a `#8C8C8C` music note — same rect, same radius,
+    /// no glow (§1 keeps the layout identical to the album-art state).
+    fn draw_art_empty(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        rect: RectD,
+        alpha: f32,
+    ) {
+        self.fill_round(
+            rt,
+            rect,
+            design::R_ART,
+            design::MUSIC_TILE_EMPTY.with_alpha(alpha),
+        );
+        self.icon_center(
+            rt,
+            IconId::Music,
+            rect,
+            // a-02: the note box measures 33 x 34 artboard px in a 107 px
+            // tile (23.3 x 24 DIP) — 0.75/0.792 of the 24-unit viewBox.
+            31.0,
+            design::MUSIC_GLYPH_EMPTY.with_alpha(alpha),
+            input.scale,
+            // a-02 stroke ~3.5 artboard px (2.5 DIP), in 24-unit space.
+            2.5 * 24.0 / 31.0,
         );
     }
 
@@ -3312,123 +3465,79 @@ impl Painter {
         let theme = input.theme;
         let accent = design::rail_accent(ActivityKind::Call);
 
-        // A prompt §5 + spec §8: while Phone Link cannot show a phone the card
-        // is an empty state — one large muted icon, no sentences, no controls.
-        // The icon owns the hit that `window::tip_text` explains with which
-        // condition is missing.
-        if !c.live && !c.link.is_available() {
-            let icon = RectD::new(
-                content.x + (content.w - design::EMPTY_ICON_DIP) * 0.5,
-                content.y + (content.h - design::EMPTY_ICON_DIP) * 0.5,
-                design::EMPTY_ICON_DIP,
-                design::EMPTY_ICON_DIP,
-            );
-            self.icon_center(
-                rt,
-                IconId::Phone,
-                icon,
-                design::EMPTY_ICON_DIP,
-                design::EMPTY_ICON.with_alpha(alpha),
-                input.scale,
-                0.0,
-            );
-            if alpha > 0.15 {
-                hits.add(Element::CallIdle, icon, design::R_SURFACE);
-            }
-            return;
-        }
-
-        // v0.10 §2: three equal rows fill the content column — header,
-        // connected box, action row — with 20 design px (16 DIP) between
-        // them, so every §7 phase keeps one fixed shell.
-        let stride = design::CALL_ROW_H + design::CALL_ROW_GAP;
-        let row1 = RectD::new(content.x, content.y, content.w, design::CALL_ROW_H);
-        let row2 = RectD::new(content.x, content.y + stride, content.w, design::CALL_ROW_H);
+        // §4: three fixed rows sized from the design's own px (60 / 60 / 66
+        // x 0.8); the two gaps share the column's leftover, so every phase
+        // keeps this one shell (design §7: "Same three rows … No wasted
+        // space").
+        let row1 = RectD::new(content.x, content.y, content.w, design::CALL_HEADER_H);
+        let row2 = RectD::new(
+            content.x,
+            row1.bottom() + design::CALL_ROW_GAP,
+            content.w,
+            design::CALL_BOX_H,
+        );
         let row3 = RectD::new(
             content.x,
-            content.y + stride * 2.0,
+            row2.bottom() + design::CALL_ROW_GAP,
             content.w,
-            design::CALL_ROW_H,
+            design::CALL_BTN_ROW_H,
         );
 
         self.draw_call_header(rt, input, view, c, row1, alpha);
+        // Every phase draws the box: connected (bars + Output), ringing
+        // (wording + dot), no call (wording + Open Phone Link).
+        self.draw_call_box(rt, input, c, row2, accent, alpha, hits);
 
         match c.phase {
-            // Dialing and Active share the connected box; the Output button
-            // lives inside it (design §5).
-            CallPhase::Dialing | CallPhase::Active => {
-                self.draw_call_box(rt, input, c, row2, accent, alpha, hits);
-            }
-            // The idle/ended card words its state as one line ("No active
-            // call"); a fresh action note stands in while it is honest to
-            // show one.
-            CallPhase::None | CallPhase::Ended => {
-                let text = c.status_text();
-                self.text(
-                    rt,
-                    &text,
-                    row2,
-                    design::FONT_CALL_TITLE,
-                    600,
-                    0,
-                    design::LINE_CALL_TITLE,
-                    theme.call_status_text().with_alpha(alpha),
-                    true,
-                );
-            }
-            // Incoming: the design leaves this band empty between the header
-            // and the Decline / Answer pair.
-            CallPhase::Incoming => {}
-        }
-
-        match c.phase {
-            // Incoming: Decline (red) and Answer (green), each half the row
-            // at the design's 52 px height, centred in the action row.
+            // Incoming: Decline (red) and Answer (green) fill the whole
+            // action row (design §7: "A big Decline and Answer pair"), drawn
+            // as the same icon-over-label stack as Hold / End call / Mute.
             CallPhase::Incoming => {
                 let w = (row3.w - design::CALL_ANSWER_GAP) * 0.5;
-                let y = row3.y + (row3.h - design::CALL_INCOMING_H) * 0.5;
-                self.call_text_button(
+                self.call_stack_button(
                     rt,
                     input,
-                    CallButton {
+                    CallStack {
                         element: Element::CallDecline,
-                        rect: RectD::new(row3.x, y, w, design::CALL_INCOMING_H),
+                        rect: RectD::new(row3.x, row3.y, w, row3.h),
+                        icon: IconId::PhoneEnd,
                         label: "Decline",
                         fill: design::CALL_RED,
                         hover: darken(design::CALL_RED, 0.92),
                         text: design::white(1.0),
+                        disabled: false,
                     },
                     alpha,
                     hits,
                 );
-                self.call_text_button(
+                self.call_stack_button(
                     rt,
                     input,
-                    CallButton {
+                    CallStack {
                         element: Element::CallAnswer,
-                        rect: RectD::new(
-                            row3.x + w + design::CALL_ANSWER_GAP,
-                            y,
-                            w,
-                            design::CALL_INCOMING_H,
-                        ),
+                        rect: RectD::new(row3.x + w + design::CALL_ANSWER_GAP, row3.y, w, row3.h),
+                        icon: IconId::Phone,
                         label: "Answer",
                         fill: design::CALL_GREEN,
                         hover: darken(design::CALL_GREEN, 0.92),
                         text: design::DARK_GLYPH,
+                        disabled: false,
                     },
                     alpha,
                     hits,
                 );
             }
-            // Dialing / Active: Hold | End call | Mute — three equal
-            // icon-over-label buttons filling the row (design §5). Hold
-            // turns amber only after Phone Link confirmed the hold, and its
-            // label always reads what the next press does.
-            CallPhase::Dialing | CallPhase::Active => {
+            // Every other phase: Hold | End call | Mute — three equal
+            // icon-over-label buttons filling the row. Hold turns amber only
+            // after Phone Link confirmed the hold, and its label always
+            // reads what the next press does. With no call up the same three
+            // buttons draw dimmed and inert (design §7), so the layout never
+            // changes between an idle card and a live one.
+            _ => {
                 let each = (row3.w - design::CALL_BTN_GAP * 2.0) / 3.0;
                 let step = each + design::CALL_BTN_GAP;
                 let held = c.held;
+                let idle = !c.live;
                 self.call_stack_button(
                     rt,
                     input,
@@ -3452,9 +3561,9 @@ impl Painter {
                         } else {
                             theme.card_button_text()
                         },
-                        // Never claim Hold works: only a probe that found
-                        // Phone Link's own button enables it.
-                        disabled: !c.hold_available,
+                        // Never claim Hold works: no call, or no probe that
+                        // found Phone Link's own button.
+                        disabled: idle || !c.hold_available,
                     },
                     alpha,
                     hits,
@@ -3470,7 +3579,7 @@ impl Painter {
                         fill: design::CALL_RED,
                         hover: darken(design::CALL_RED, 0.92),
                         text: design::white(1.0),
-                        disabled: false,
+                        disabled: idle,
                     },
                     alpha,
                     hits,
@@ -3499,93 +3608,7 @@ impl Painter {
                         } else {
                             theme.card_button_text()
                         },
-                        disabled: false,
-                    },
-                    alpha,
-                    hits,
-                );
-            }
-            // None / Ended: mute mic, mute speaker, then the real launch
-            // button at the design's 44 px height (35.2 DIP).
-            CallPhase::None | CallPhase::Ended => {
-                let y = row3.y + (row3.h - design::CALL_BTN_H) * 0.5;
-                let mut x = row3.x;
-                for (element, icon, active) in [
-                    (
-                        Element::CallMic,
-                        if c.mic_muted {
-                            IconId::MicMuted
-                        } else {
-                            IconId::Mic
-                        },
-                        c.mic_muted,
-                    ),
-                    (
-                        Element::CallSpeaker,
-                        if c.output_muted {
-                            IconId::SpeakerMuted
-                        } else {
-                            IconId::Speaker
-                        },
-                        c.output_muted,
-                    ),
-                ] {
-                    let r = RectD::new(x, y, design::CALL_BTN_W, design::CALL_BTN_H);
-                    let pressed = input.pressed_amount(element);
-                    let draw = pressed_rect(r, pressed);
-                    let fill = if active {
-                        theme.text_primary()
-                    } else if pressed.is_some() {
-                        theme.card_button_press()
-                    } else if input.hovered(element) {
-                        theme.card_button_hover()
-                    } else {
-                        theme.card_button()
-                    };
-                    self.fill_round(rt, draw, design::R_CONTROL, fill.with_alpha(alpha));
-                    let glyph = if active {
-                        design::DARK_GLYPH
-                    } else {
-                        theme.card_button_text()
-                    };
-                    self.icon_center(
-                        rt,
-                        icon,
-                        draw,
-                        18.0,
-                        glyph.with_alpha(alpha),
-                        input.scale,
-                        0.0,
-                    );
-                    if alpha > 0.15 {
-                        hits.add(element, r, design::R_CONTROL);
-                    }
-                    x += design::CALL_BTN_W + design::CALL_BTN_GAP;
-                }
-                // §7: green 16 % fill with green text, hover lifts the tint.
-                // High contrast keeps the opaque theme fill so the button
-                // still reads as a button against any background.
-                let (fill, hover) = if theme.high_contrast {
-                    let base = theme.open_call_fill();
-                    (base, darken(base, 0.92))
-                } else {
-                    (
-                        design::CALL_GREEN.with_alpha(0.16),
-                        design::CALL_GREEN.with_alpha(0.24),
-                    )
-                };
-                // `label` lives as long as this frame's format cache.
-                let label = format!("Open {}", c.app_name);
-                self.call_text_button(
-                    rt,
-                    input,
-                    CallButton {
-                        element: Element::CallOpen,
-                        rect: RectD::new(x, y, (row3.right() - x).max(0.0), design::CALL_BTN_H),
-                        label: &label,
-                        fill,
-                        hover,
-                        text: theme.open_call_text(accent),
+                        disabled: idle,
                     },
                     alpha,
                     hits,
@@ -3606,75 +3629,25 @@ impl Painter {
         row: RectD,
         alpha: f32,
     ) {
-        let theme = input.theme;
-        let tile = RectD::new(
-            row.x,
-            row.y + (row.h - design::CALL_LEAD) * 0.5,
-            design::CALL_LEAD,
-            design::CALL_LEAD,
-        );
-        self.draw_leading(rt, input, &view.leading, tile, alpha);
-
-        let mut right = row.right();
-        let text_x = tile.right() + design::HEADER_GAP;
-        if let Some(status) = c.header_status() {
-            let width = self
-                .measure(
-                    rt,
-                    status,
-                    design::FONT_FLY_SUBTITLE,
-                    500,
-                    design::LINE_CARD_STATUS,
-                )
-                .min((right - text_x - 8.0).max(0.0));
-            self.text(
-                rt,
-                status,
-                RectD::new(right - width, row.y, width, row.h),
-                design::FONT_FLY_SUBTITLE,
-                500,
-                2,
-                design::LINE_CARD_STATUS,
-                theme
-                    .card_status(design::rail_accent(view.kind), true)
-                    .with_alpha(alpha),
-                true,
-            );
-            right -= width + 8.0;
-        }
-        // Title over sub-line, the pair centred in the row (design:
-        // `Priya` / `Phone Link · 02:14`).
-        let title_line = design::LINE_FLY_TITLE;
-        let sub_line = design::LINE_CARD_STATUS;
-        let top = row.y + (row.h - (title_line + sub_line)) * 0.5;
-        let width = (right - text_x).max(0.0);
-        self.text(
+        self.draw_sub_header(
             rt,
+            input,
+            view,
+            design::CALL_LEAD,
+            row,
             &c.header_title(),
-            RectD::new(text_x, top, width, title_line),
-            design::FONT_FLY_TITLE,
-            600,
-            0,
-            title_line,
-            theme.text_primary().with_alpha(alpha),
-            true,
-        );
-        self.text(
-            rt,
             &c.header_sub(),
-            RectD::new(text_x, top + title_line, width, sub_line),
-            design::FONT_FLY_SUBTITLE,
-            400,
-            0,
-            sub_line,
-            theme.text_secondary().with_alpha(alpha),
+            c.header_status(),
             true,
+            alpha,
         );
     }
 
-    /// Row 2 of a live card: the connected box — signal glyph, the endpoint
-    /// Windows routes call audio to, what that endpoint really is, and the
-    /// Output button inside it (design §5).
+    /// Row 2 of the card: the connected box, drawn by every phase — signal
+    /// glyph, endpoint lines and the Output chip while a call is up
+    /// (design §5); the ringing wording and its dot while a call comes in;
+    /// and the wording plus the green `Open Phone Link` button when there is
+    /// no call (design §4).
     #[allow(clippy::too_many_arguments)]
     fn draw_call_box(
         &mut self,
@@ -3694,45 +3667,116 @@ impl Painter {
             theme.card_button().with_alpha(alpha),
         );
 
-        // Signal glyph (design 18 x 16 -> 14.4 x 12.8): four bars, the last
-        // one still ahead of us while dialing.
-        let bars_x = row.x + 10.0;
-        let bars_bottom = row.center_y() + design::SIGNAL_H * 0.5;
-        for (i, h) in [4.8_f32, 7.6, 10.4, 12.8].iter().enumerate() {
-            let a = if i == 3 { 0.35 } else { 1.0 };
-            self.fill_round(
-                rt,
-                RectD::new(bars_x + i as f32 * 4.0, bars_bottom - h, 2.4, *h),
-                1.0,
-                accent.with_alpha(a * alpha),
-            );
-        }
+        // The live box leads with the signal glyph (design 18 x 16 -> 14.4 x
+        // 12.8): four bars, the last one still ahead of us while dialing.
+        // Word-only boxes start at the box's own 10 DIP inset.
+        let connected = matches!(c.phase, CallPhase::Dialing | CallPhase::Active);
+        let text_x = if connected {
+            let bars_x = row.x + 10.0;
+            let bars_bottom = row.center_y() + design::SIGNAL_H * 0.5;
+            for (i, h) in [4.8_f32, 7.6, 10.4, 12.8].iter().enumerate() {
+                let a = if i == 3 { 0.35 } else { 1.0 };
+                self.fill_round(
+                    rt,
+                    RectD::new(bars_x + i as f32 * 4.0, bars_bottom - h, 2.4, *h),
+                    1.0,
+                    accent.with_alpha(a * alpha),
+                );
+            }
+            bars_x + design::SIGNAL_W + 10.0
+        } else {
+            row.x + 10.0
+        };
 
-        // Output chip: opens the audio sheet over the same flyout (the card
-        // never resizes). The device name on its left is box line 1, so the
-        // chip never repeats it.
-        let chip = RectD::new(
-            row.right() - 10.0 - design::CALL_OUTPUT_W,
+        // Right-side control of this phase: the Output chip on a live call,
+        // the green Open button with no call, nothing while ringing.
+        let control_w = match c.phase {
+            CallPhase::Dialing | CallPhase::Active => design::CALL_OUTPUT_W,
+            CallPhase::None | CallPhase::Ended => design::CALL_OPEN_W,
+            CallPhase::Incoming => 0.0,
+        };
+        let control = RectD::new(
+            row.right() - 10.0 - control_w,
             row.y + (row.h - design::CALL_OUTPUT_H) * 0.5,
-            design::CALL_OUTPUT_W,
+            control_w,
             design::CALL_OUTPUT_H,
         );
-        self.draw_call_output(rt, input, chip, alpha, hits);
+        match c.phase {
+            // Output chip: opens the audio sheet over the same flyout (the
+            // card never resizes). The device name on its left is box line
+            // 1, so the chip never repeats it.
+            CallPhase::Dialing | CallPhase::Active => {
+                self.draw_call_output(rt, input, control, alpha, hits);
+            }
+            // §7: green 16 % fill with green text, hover lifts the tint.
+            // High contrast keeps the opaque theme fill so the button still
+            // reads as a button against any background.
+            CallPhase::None | CallPhase::Ended => {
+                let (fill, hover) = if theme.high_contrast {
+                    let base = theme.open_call_fill();
+                    (base, darken(base, 0.92))
+                } else {
+                    (
+                        design::CALL_GREEN.with_alpha(0.16),
+                        design::CALL_GREEN.with_alpha(0.24),
+                    )
+                };
+                // `label` lives as long as this frame's format cache.
+                let label = format!("Open {}", c.app_name);
+                self.call_text_button(
+                    rt,
+                    input,
+                    CallButton {
+                        element: Element::CallOpen,
+                        rect: control,
+                        label: &label,
+                        fill,
+                        hover,
+                        text: theme.open_call_text(accent),
+                    },
+                    alpha,
+                    hits,
+                );
+            }
+            // Ringing dot (design 17 px), breathing with the pill border.
+            CallPhase::Incoming => {
+                let dot = RectD::new(
+                    row.right() - design::CALL_DOT_INSET - design::CALL_DOT,
+                    row.center_y() - design::CALL_DOT * 0.5,
+                    design::CALL_DOT,
+                    design::CALL_DOT,
+                );
+                let pulse = input
+                    .call_pulse_t
+                    .map(|t| {
+                        let period = design::CALL_PULSE_MS as f32 / 1000.0;
+                        let p = (t % period) / period;
+                        0.45 + 0.55 * (1.0 - (2.0 * p - 1.0).abs())
+                    })
+                    .unwrap_or(1.0);
+                self.fill_round(
+                    rt,
+                    dot,
+                    design::CALL_DOT * 0.5,
+                    accent.with_alpha(pulse * alpha),
+                );
+            }
+        }
 
-        let text_x = bars_x + design::SIGNAL_W + 10.0;
-        let width = (chip.x - 8.0 - text_x).max(0.0);
-        let device = c.device.trim();
-        // An endpoint query can fail without proving there is none; name the
-        // route instead of inventing a device.
-        let line1 = if device.is_empty() {
-            "Call audio"
-        } else {
-            device
+        // Two lines of wording, left of whatever sits on the right.
+        let right_edge = match c.phase {
+            CallPhase::Incoming => row.right() - design::CALL_DOT_INSET - design::CALL_DOT - 8.0,
+            CallPhase::Dialing | CallPhase::Active | CallPhase::None | CallPhase::Ended => {
+                control.x - 8.0
+            }
         };
+        let width = (right_edge - text_x).max(0.0);
+        let line1 = c.box_line1();
+        let line2 = c.box_line2();
         let top = row.y + (row.h - (design::LINE_CALL_DEVICE + design::LINE_CALL_META)) * 0.5;
         self.text(
             rt,
-            line1,
+            &line1,
             RectD::new(text_x, top, width, design::LINE_CALL_DEVICE),
             design::FONT_CALL_DEVICE,
             600,
@@ -3743,7 +3787,7 @@ impl Painter {
         );
         self.text(
             rt,
-            &c.device_line2,
+            &line2,
             RectD::new(
                 text_x,
                 top + design::LINE_CALL_DEVICE,
@@ -3951,23 +3995,21 @@ impl Painter {
         }
     }
 
-    /// v0.6 shelf: full content column, 12 DIP padding, a 28 DIP toolbar and a
-    /// 4-column scrolling grid (virtualized upstream).
+    /// v0.6 shelf: full content column, a 28 DIP toolbar and a 4-column
+    /// scrolling grid (virtualized upstream). v0.11 §1: the caller hands in
+    /// the shared root rect from `card_root()` — the shelf never derives a
+    /// padded root of its own.
     fn draw_shelf_card(
         &mut self,
         rt: &ID2D1RenderTarget,
         input: &RenderInput<'_>,
         s: &crate::view::ShelfBody,
-        fly: RectD,
+        inner: RectD,
         alpha: f32,
         hits: &mut HitMap,
     ) {
         let theme = input.theme;
         let accent = design::rail_accent(ActivityKind::Shelf);
-        // Shared content column from `card_content_rect()`, animated by the
-        // card-open tween.
-        let mut inner = crate::view::content_rect(fly);
-        inner.y += input.top_dy;
         let toolbar = RectD::new(inner.x, inner.y, inner.w, design::SHELF_TOOLBAR_H);
         let disabled = s.converting;
 
@@ -5283,58 +5325,96 @@ impl Painter {
         hits.add(element, rect, design::CONVERT_DONE_BTN_R);
     }
 
+    /// §3: one card, two views, both laid out as rows of the shared content
+    /// grid. The header row (tile, title over sub-line, status at the right)
+    /// is common: the set view introduces the card, the running view carries
+    /// the countdown's name over its state and `20:00 total` on the right.
+    #[allow(clippy::too_many_arguments)]
     fn draw_timer_card(
         &mut self,
         rt: &ID2D1RenderTarget,
         input: &RenderInput<'_>,
+        view: &FlyoutView,
         t: &crate::view::TimerBody,
-        body: RectD,
+        root: RectD,
         alpha: f32,
         hits: &mut HitMap,
     ) {
-        // §6: armed = the set view (stepper + Start), everything else the
-        // running view. Both share `TIMER_BODY_H`, so the shell never moves.
-        if t.armed {
-            self.draw_timer_set(rt, input, t, body, alpha, hits);
+        let header = RectD::new(root.x, root.y, root.w, design::TIMER_HEADER_H);
+        let (title, sub, status) = if t.armed {
+            // The set view: the card's own name over what it is for, plus
+            // the empty state's status (`No timer`, `Ready` once armed).
+            (
+                view.title.as_str(),
+                "Set how long, then start".to_string(),
+                view.status.clone(),
+            )
         } else {
-            self.draw_timer_running(rt, input, t, body, alpha, hits);
+            // The running view: the countdown's name over its state word.
+            (
+                t.name.as_str(),
+                t.status.clone(),
+                format!("{} total", t.total),
+            )
+        };
+        self.draw_sub_header(
+            rt,
+            input,
+            view,
+            design::TIMER_LEAD,
+            header,
+            title,
+            &sub,
+            Some(&status),
+            view.status_accent,
+            alpha,
+        );
+        if t.armed {
+            self.draw_timer_set(rt, input, t, root, alpha, hits);
+        } else {
+            self.draw_timer_running(rt, input, t, root, alpha, hits);
         }
     }
 
-    /// §6 set view: − / + stepper around the big MM:SS readout with its
-    /// hold-to-repeat caption, then a full-width amber Start button. The
-    /// content is centred inside the shared body height.
+    /// §3 set view: the rows below the header — − / readout + caption / +,
+    /// the three preset chips (the armed duration's chip is amber), then the
+    /// full-width Start. Every row is placed from the shared root with
+    /// `TIMER_SET_GAP` between them, so the running view can swap in
+    /// underneath the same header without the card ever resizing.
     fn draw_timer_set(
         &mut self,
         rt: &ID2D1RenderTarget,
         input: &RenderInput<'_>,
         t: &crate::view::TimerBody,
-        body: RectD,
+        root: RectD,
         alpha: f32,
         hits: &mut HitMap,
     ) {
         let theme = input.theme;
         let accent = design::rail_accent(ActivityKind::Timer);
-        let total = design::TIMER_STEP_H + design::CARD_GAP + design::TIMER_START_H;
-        let y0 = body.y + (body.h - total) * 0.5;
+        let mut y = root.y + design::TIMER_HEADER_H + design::TIMER_SET_GAP;
 
-        let minus = RectD::new(body.x, y0, design::TIMER_STEP_W, design::TIMER_STEP_H);
+        // Stepper row (design 64): − / big MM:SS over its caption / +.
+        let minus = RectD::new(root.x, y, design::TIMER_STEP, design::TIMER_STEP);
         self.timer_step_button(rt, input, Element::TimerMinus, minus, alpha, hits);
         let plus = RectD::new(
-            body.right() - design::TIMER_STEP_W,
-            y0,
-            design::TIMER_STEP_W,
-            design::TIMER_STEP_H,
+            root.right() - design::TIMER_STEP,
+            y,
+            design::TIMER_STEP,
+            design::TIMER_STEP,
         );
         self.timer_step_button(rt, input, Element::TimerPlus, plus, alpha, hits);
 
-        // Big readout and caption between the two stepper buttons.
-        let cx = body.x + design::TIMER_STEP_W;
-        let cw = (body.right() - design::TIMER_STEP_W - cx).max(0.0);
+        // The readout and its hold-to-repeat caption, centred in the column
+        // between the two buttons.
+        let cx = minus.right();
+        let cw = (plus.x - cx).max(0.0);
+        let text_h = design::LINE_TIMER_SET + design::LINE_MUSIC_META;
+        let ty = y + (design::TIMER_STEP - text_h) * 0.5;
         self.text(
             rt,
             &t.remaining,
-            RectD::new(cx, y0, cw, design::LINE_TIMER_SET),
+            RectD::new(cx, ty, cw, design::LINE_TIMER_SET),
             design::FONT_TIMER_SET,
             600,
             1,
@@ -5345,7 +5425,7 @@ impl Painter {
         self.text(
             rt,
             &t.caption,
-            RectD::new(cx, y0 + design::LINE_TIMER_SET, cw, design::LINE_MUSIC_META),
+            RectD::new(cx, ty + design::LINE_TIMER_SET, cw, design::LINE_MUSIC_META),
             design::FONT_MUSIC_META,
             400,
             1,
@@ -5354,13 +5434,64 @@ impl Painter {
             true,
         );
 
-        // Full-width Start (44 px, amber, dark text).
-        let start = RectD::new(
-            body.x,
-            y0 + design::TIMER_STEP_H + design::CARD_GAP,
-            body.w,
-            design::TIMER_START_H,
-        );
+        // Preset row (design 36): three equal chips; the one matching the
+        // duration the stepper sits on turns amber.
+        y += design::TIMER_STEP + design::TIMER_SET_GAP;
+        let gaps = (design::TIMER_PRESETS.len() - 1) as f32;
+        let chip_w = (root.w - design::CARD_GAP * gaps) / design::TIMER_PRESETS.len() as f32;
+        for (i, minutes) in design::TIMER_PRESETS.iter().copied().enumerate() {
+            let rect = RectD::new(
+                root.x + i as f32 * (chip_w + design::CARD_GAP),
+                y,
+                chip_w,
+                design::TIMER_PRESET_H,
+            );
+            let element = Element::TimerPreset(minutes);
+            let selected = t.minutes == minutes;
+            let pressed = input.pressed_amount(element);
+            let draw = pressed_rect(rect, pressed);
+            let fill = if pressed.is_some() {
+                if selected {
+                    darken(accent, 0.84)
+                } else {
+                    theme.card_button_press()
+                }
+            } else if input.hovered(element) {
+                if selected {
+                    darken(accent, 0.92)
+                } else {
+                    theme.card_button_hover()
+                }
+            } else if selected {
+                accent
+            } else {
+                theme.card_button()
+            };
+            self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
+            let ink = if selected {
+                design::DARK_GLYPH
+            } else {
+                theme.card_button_text()
+            };
+            self.text(
+                rt,
+                &format!("{minutes} min"),
+                draw,
+                design::FONT_BUTTON,
+                600,
+                1,
+                design::TIMER_PRESET_H,
+                ink.with_alpha(alpha),
+                false,
+            );
+            if alpha > 0.15 {
+                hits.add(element, rect, design::R_SURFACE);
+            }
+        }
+
+        // Start (design 52): amber, dark, a play glyph before the word.
+        y += design::TIMER_PRESET_H + design::TIMER_SET_GAP;
+        let start = RectD::new(root.x, y, root.w, design::TIMER_START_H);
         let pressed = input.pressed_amount(Element::TimerToggle);
         let draw = pressed_rect(start, pressed);
         let fill = if pressed.is_some() {
@@ -5371,183 +5502,77 @@ impl Painter {
             accent
         };
         self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
-        self.text(
+        self.icon_label_center(
             rt,
-            "Start",
+            input,
             draw,
-            design::FONT_BUTTON,
-            600,
-            1,
-            design::LINE_CALL_TITLE,
+            IconId::Play,
+            "Start",
             design::DARK_GLYPH.with_alpha(alpha),
-            false,
         );
         if alpha > 0.15 {
             hits.add(Element::TimerToggle, start, design::R_SURFACE);
         }
     }
 
-    /// §6 running view: ring tile with progress, name over status, the time
-    /// left at 22 px on the right, the wave with elapsed/total, then
-    /// pause / −1 min / +1 min / stop.
+    /// §3 running view: the rows below the header — the big centred time
+    /// over the full-width wavy bar, then four equal buttons (Pause,
+    /// −1 min, +1 min, Stop). It is the same shared grid as the set view,
+    /// so starting the countdown never resizes the card.
     fn draw_timer_running(
         &mut self,
         rt: &ID2D1RenderTarget,
         input: &RenderInput<'_>,
         t: &crate::view::TimerBody,
-        body: RectD,
+        root: RectD,
         alpha: f32,
         hits: &mut HitMap,
     ) {
         let theme = input.theme;
         let accent = design::rail_accent(ActivityKind::Timer);
-        let y0 = body.y + (body.h - design::TIMER_BODY_H) * 0.5;
 
-        // Ring tile: track, elapsed arc, clock glyph.
-        let tile = RectD::new(body.x, y0, design::TIMER_TILE, design::TIMER_TILE);
-        self.fill_round(
-            rt,
-            tile,
-            design::R_SURFACE,
-            theme.card_button().with_alpha(alpha),
-        );
-        let f = t.fraction.clamp(0.0, 1.0);
-        if let Ok(style) = self.solid_style(rt) {
-            if let Ok(track) = self.brush(rt, theme.card_track().with_alpha(alpha)) {
-                if let Some(ring) = ring_geometry(
-                    rt,
-                    tile.center_x(),
-                    tile.center_y(),
-                    design::TIMER_RING_R,
-                    1.0,
-                ) {
-                    // SAFETY: geometry, brush and style are alive for the call.
-                    unsafe {
-                        rt.DrawGeometry(&ring, &track, design::TIMER_RING_STROKE, Some(&style));
-                    }
-                }
-            }
-            if f > 0.001 {
-                if let Ok(brush) = self.brush(rt, accent.with_alpha(alpha)) {
-                    if let Some(ring) = ring_geometry(
-                        rt,
-                        tile.center_x(),
-                        tile.center_y(),
-                        design::TIMER_RING_R,
-                        f,
-                    ) {
-                        // SAFETY: geometry, brush and style are alive for the call.
-                        unsafe {
-                            rt.DrawGeometry(&ring, &brush, design::TIMER_RING_STROKE, Some(&style));
-                        }
-                    }
-                }
-            }
-        }
-        self.icon_center(
-            rt,
-            IconId::Clock,
-            tile,
-            18.0,
-            theme.text_secondary().with_alpha(alpha),
-            input.scale,
-            0.0,
-        );
-
-        // Name over status in the middle; time left at the right (22 px).
-        let tx = tile.right() + design::TIMER_TEXT_GAP;
-        let time_w = 96.0;
-        let mw = (body.right() - time_w - design::TIMER_TEXT_GAP - tx).max(0.0);
-        let block = design::LINE_TIMER_NAME + design::LINE_MUSIC_META;
-        let ty = y0 + (design::TIMER_TILE - block) * 0.5;
-        self.text(
-            rt,
-            &t.name,
-            RectD::new(tx, ty, mw, design::LINE_TIMER_NAME),
-            design::FONT_TIMER_NAME,
-            600,
-            0,
-            design::LINE_TIMER_NAME,
-            theme.text_primary().with_alpha(alpha),
-            true,
-        );
-        self.text(
-            rt,
-            &t.status,
-            RectD::new(
-                tx,
-                ty + design::LINE_TIMER_NAME,
-                mw,
-                design::LINE_MUSIC_META,
-            ),
-            design::FONT_MUSIC_META,
-            400,
-            0,
-            design::LINE_MUSIC_META,
-            accent.with_alpha(alpha),
-            true,
-        );
+        // Time over wavy bar (design 100): the 56 px readout at the top of
+        // the block, the wave along its bottom edge. Same §7 wave + thumb
+        // as the music card; the window tweens the amplitude down over
+        // 320 ms when the timer pauses.
+        let block_y = root.y + design::TIMER_HEADER_H + design::TIMER_RUN_GAP;
+        let block = RectD::new(root.x, block_y, root.w, design::TIMER_RUN_BLOCK_H);
         self.text(
             rt,
             &t.remaining,
-            RectD::new(body.right() - time_w, y0, time_w, design::TIMER_TILE),
+            RectD::new(block.x, block.y, block.w, design::LINE_TIMER_RUN),
             design::FONT_TIMER_RUN,
             600,
-            2,
+            1,
             design::LINE_TIMER_RUN,
             theme.text_primary().with_alpha(alpha),
             false,
         );
-
-        // Wave row: elapsed ... wave ... total.
-        let wy = y0 + design::TIMER_TILE + design::CARD_GAP;
-        let row = RectD::new(body.x, wy, body.w, design::TIMER_PROGRESS_H);
-        self.text(
-            rt,
-            &t.elapsed,
-            RectD::new(row.x, row.y, design::MUSIC_TIME_W, row.h),
-            design::FONT_TIME_LABEL,
-            400,
-            0,
-            design::LINE_TIME,
-            theme.music_meta().with_alpha(alpha),
-            false,
-        );
-        let wave_x = row.x + design::MUSIC_TIME_W + design::MUSIC_TIME_GAP;
-        let wave_w =
-            (row.right() - design::MUSIC_REMAIN_W - design::MUSIC_TIME_GAP - wave_x).max(40.0);
         self.draw_music_wave(
             rt,
             input,
-            RectD::new(wave_x, row.y, wave_w, row.h),
+            RectD::new(
+                block.x,
+                block.bottom() - design::TIMER_WAVE_H,
+                block.w,
+                design::TIMER_WAVE_H,
+            ),
             t.fraction,
-            // The window tweens this down over 320 ms when the timer pauses.
             input.progress.map(|p| p.amplitude).unwrap_or(0.0),
             alpha,
         );
-        self.text(
-            rt,
-            &t.total,
-            RectD::new(
-                row.right() - design::MUSIC_REMAIN_W,
-                row.y,
-                design::MUSIC_REMAIN_W,
-                row.h,
-            ),
-            design::FONT_TIME_LABEL,
-            400,
-            2,
-            design::LINE_TIME,
-            theme.music_meta().with_alpha(alpha),
-            false,
-        );
 
-        // Controls: pause/resume (48 x 40, amber), −1 min, +1 min, stop.
-        let by = wy + design::TIMER_PROGRESS_H + design::CARD_GAP;
-        let h = design::TIMER_PAUSE_H;
-        let pause = RectD::new(body.x, by, design::TIMER_PAUSE_W, h);
+        // Four equal buttons (design 52) across the content width.
+        let by = block.bottom() + design::TIMER_RUN_GAP;
+        let h = design::TIMER_RUN_BTN_H;
+        let gap = design::CARD_GAP;
+        let w = (root.w - gap * 3.0) / 4.0;
+        let at = |i: usize| RectD::new(root.x + i as f32 * (w + gap), by, w, h);
+
+        // Pause / Resume / Start: the primary control, always amber.
+        let toggle = at(0);
         let pressed = input.pressed_amount(Element::TimerToggle);
-        let draw = pressed_rect(pause, pressed);
+        let draw = pressed_rect(toggle, pressed);
         let fill = if pressed.is_some() {
             darken(accent, 0.84)
         } else if input.hovered(Element::TimerToggle) {
@@ -5556,63 +5581,126 @@ impl Painter {
             accent
         };
         self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
-        self.icon_center(
+        let (label, icon) = if t.running {
+            ("Pause", IconId::Pause)
+        } else if t.finished {
+            ("Start", IconId::Play)
+        } else {
+            ("Resume", IconId::Play)
+        };
+        self.icon_label_center(
             rt,
-            if t.running {
-                IconId::Pause
-            } else {
-                IconId::Play
-            },
+            input,
             draw,
-            16.0,
+            icon,
+            label,
             design::DARK_GLYPH.with_alpha(alpha),
-            input.scale,
-            0.0,
         );
         if alpha > 0.15 {
-            hits.add(Element::TimerToggle, pause, design::R_SURFACE);
+            hits.add(Element::TimerToggle, toggle, design::R_SURFACE);
         }
 
-        let mut x = body.x + design::TIMER_PAUSE_W + design::CARD_GAP;
-        for element in [Element::TimerMinus, Element::TimerPlus] {
-            let r = RectD::new(x, by, design::TIMER_STOP_W, h);
-            self.timer_step_button(rt, input, element, r, alpha, hits);
-            x += design::TIMER_STOP_W + design::CARD_GAP;
-        }
-
-        // Stop sits at the far right, away from the −/+ pair.
-        let stop = RectD::new(
-            body.right() - design::TIMER_STOP_W,
-            by,
-            design::TIMER_STOP_W,
-            h,
-        );
-        let pressed = input.pressed_amount(Element::TimerStop);
-        let draw = pressed_rect(stop, pressed);
-        if pressed.is_some() || input.hovered(Element::TimerStop) {
+        // −1 min / +1 min: the set view's stepper, relabelled. Pressing
+        // either still arms the 420 ms / 110 ms hold-to-repeat (window.rs).
+        for (i, element, label) in [
+            (1, Element::TimerMinus, "−1 min"),
+            (2, Element::TimerPlus, "+1 min"),
+        ] {
+            let r = at(i);
+            let pressed = input.pressed_amount(element);
+            let draw = pressed_rect(r, pressed);
             let fill = if pressed.is_some() {
-                theme.rail_press_fill()
+                theme.card_button_press()
+            } else if input.hovered(element) {
+                theme.card_button_hover()
             } else {
-                theme.rail_hover_fill()
+                theme.card_button()
             };
             self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
+            self.text(
+                rt,
+                label,
+                draw,
+                design::FONT_BUTTON,
+                600,
+                1,
+                design::LINE_CALL_TITLE,
+                theme.card_button_text().with_alpha(alpha),
+                false,
+            );
+            if alpha > 0.15 {
+                hits.add(element, r, design::R_SURFACE);
+            }
         }
-        self.icon_center(
+
+        // Stop sits at the far right, deliberately not amber.
+        let stop = at(3);
+        let pressed = input.pressed_amount(Element::TimerStop);
+        let draw = pressed_rect(stop, pressed);
+        let fill = if pressed.is_some() {
+            theme.card_button_press()
+        } else if input.hovered(Element::TimerStop) {
+            theme.card_button_hover()
+        } else {
+            theme.card_button()
+        };
+        self.fill_round(rt, draw, design::R_SURFACE, fill.with_alpha(alpha));
+        self.icon_label_center(
             rt,
-            IconId::Close,
+            input,
             draw,
-            16.0,
-            theme.text_secondary().with_alpha(alpha),
-            input.scale,
-            2.0 * 24.0 / 16.0,
+            IconId::Close,
+            "Stop",
+            theme.card_button_text().with_alpha(alpha),
         );
         if alpha > 0.15 {
             hits.add(Element::TimerStop, stop, design::R_SURFACE);
         }
     }
 
-    /// Shared stepper button (§6): 56 x 56 in the set view, 40 x 40 for the
-    /// running view's ±1 min. Hold-to-repeat lives in `window.rs`.
+    /// Icon + label centred as one group inside a §3 button (Start, Pause,
+    /// Resume, Stop): the glyph sits a fixed gap left of the word and the
+    /// pair is centred in the rect. The stroke is pinned to 2 DIP so the
+    /// ✕ keeps its weight at button size; filled glyphs ignore it.
+    fn icon_label_center(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        rect: RectD,
+        icon: IconId,
+        label: &str,
+        color: Color,
+    ) {
+        const GLYPH: f32 = 16.0;
+        const GAP: f32 = 6.0;
+        let line = design::LINE_CALL_TITLE;
+        let text_w = self.measure(rt, label, design::FONT_BUTTON, 600, line);
+        let total = GLYPH + GAP + text_w;
+        let x = rect.x + (rect.w - total).max(0.0) * 0.5;
+        self.icon_center(
+            rt,
+            icon,
+            RectD::new(x, rect.y, GLYPH, rect.h),
+            GLYPH,
+            color,
+            input.scale,
+            2.0 * 24.0 / GLYPH,
+        );
+        self.text(
+            rt,
+            label,
+            RectD::new(x + GLYPH + GAP, rect.y, text_w + 2.0, rect.h),
+            design::FONT_BUTTON,
+            600,
+            0,
+            line,
+            color,
+            false,
+        );
+    }
+
+    /// Shared stepper button (§3 set view): 64 x 64 around the readout.
+    /// Hold-to-repeat lives in `window.rs`.
     fn timer_step_button(
         &mut self,
         rt: &ID2D1RenderTarget,
@@ -5866,41 +5954,6 @@ fn rail_label(kind: ActivityKind) -> &'static str {
     }
 }
 
-/// Clockwise progress ring from 12 o'clock (§6 timer tile). Drawn as a
-/// polyline of at most 360 segments: `fraction` 1.0 closes the circle.
-fn ring_geometry(
-    rt: &ID2D1RenderTarget,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    fraction: f32,
-) -> Option<ID2D1PathGeometry> {
-    let f = fraction.clamp(0.0, 1.0);
-    if radius <= 0.5 || f <= 0.002 {
-        return None;
-    }
-    let factory = unsafe { rt.GetFactory().ok()? };
-    let path = unsafe { factory.CreatePathGeometry().ok()? };
-    let sink = unsafe { path.Open().ok()? };
-    let steps = ((f * 360.0).ceil() as usize).clamp(2, 360);
-    let start = -std::f32::consts::FRAC_PI_2;
-    let point = |angle: f32| Vector2::new(cx + radius * angle.cos(), cy + radius * angle.sin());
-    // SAFETY: sink belongs to the path and is closed below.
-    unsafe {
-        sink.BeginFigure(point(start), D2D1_FIGURE_BEGIN_HOLLOW);
-        for i in 1..=steps {
-            sink.AddLine(point(
-                start + std::f32::consts::TAU * f * (i as f32 / steps as f32),
-            ));
-        }
-        sink.EndFigure(D2D1_FIGURE_END_OPEN);
-        if sink.Close().is_err() {
-            return None;
-        }
-    }
-    Some(path)
-}
-
 fn wave_geometry(
     rt: &ID2D1RenderTarget,
     x: f32,
@@ -5950,7 +6003,7 @@ fn wave_geometry_len(
 }
 
 // Working and done layouts fit the inner card: tiles 18..74, bar 96..104,
-// stage dots 116..142 of the 178 DIP content column, and the done state's
+// stage dots 116..142 of the 176 DIP content column, and the done state's
 // check row, buttons and countdown line. Checked at compile time in every
 // build, not just under `cargo test`.
 const _: () = assert!(18.0 + design::CONVERT_STAGE_TILE < 96.0);
@@ -5963,8 +6016,99 @@ const _: () = assert!((design::CONVERT_INNER_W - 12.0) / 3.0 > design::CONVERT_D
 mod tests {
     use super::*;
 
+    /// v0.11 §1 "one shared grid": every card's root rect is exactly the one
+    /// `design::card_content_rect(fly)` — only the card-open tween may slide
+    /// it vertically — and no `draw_*_card` derives a root of its own, so no
+    /// card can quietly grow a private outer margin again.
+    #[test]
+    fn every_card_root_is_the_shared_content_rect() {
+        let fly = RectD::new(24.0, 40.0, design::FLY_W, design::FLY_H);
+        let shared = design::card_content_rect(fly);
+        for dy in [0.0, 6.0, -3.5] {
+            let root = Painter::card_root(fly, dy);
+            assert_eq!(
+                (root.x, root.y, root.w, root.h),
+                (shared.x, shared.y + dy, shared.w, shared.h),
+                "card_root must be the shared rect slid by the open tween (dy {dy})"
+            );
+        }
+        // Every card body takes its rect from `card_root()`; a `content_rect`
+        // call inside one means it padded the shared grid itself again.
+        let source = include_str!("render.rs");
+        for func in [
+            "draw_music_card",
+            "draw_timer_card",
+            "draw_call_card",
+            "draw_shelf_card",
+            "draw_clipboard_card",
+            "draw_convert_card",
+        ] {
+            let needle = format!("fn {func}");
+            let body = source
+                .split(needle.as_str())
+                .nth(1)
+                .unwrap_or_else(|| panic!("{func} must exist"))
+                .split("\n    fn ")
+                .next()
+                .expect("function body");
+            assert!(
+                !body.contains("content_rect("),
+                "{func} derives its own root rect; take it from card_root() instead"
+            );
+        }
+    }
+
     /// Clear stays in the toolbar for every shelf state: the empty state only
     /// returns after the toolbar and its buttons were drawn.
+    /// v0.11 §2: the music card's three rows are laid out once, from the
+    /// shared root rect, *before* any `live`/empty state branch —
+    /// so the idle card occupies the identical grid as a playing one (§1)
+    /// and only style (glow, art, ink strength) may differ afterwards.
+    #[test]
+    fn music_rows_are_laid_out_before_the_state_branch() {
+        let source = include_str!("render.rs");
+        let card = source
+            .split("fn draw_music_card")
+            .nth(1)
+            .expect("draw_music_card exists")
+            .split("fn draw_art_fallback")
+            .next()
+            .expect("art helpers follow");
+        let grid = card
+            .find("let inner = content.offset(0.0, dy);")
+            .expect("the interior is the shared root rect itself");
+        let branch = card
+            .find("if m.live {")
+            .expect("the live/empty branch exists");
+        assert!(
+            grid < branch,
+            "the row grid must be computed before the state branch, not inside it"
+        );
+        // Every row is measured from `inner`, never re-derived per state.
+        for row in [
+            "let y0 = inner.y;",
+            "let art = RectD::new(inner.x, y0, design::MUSIC_ART, design::MUSIC_ART);",
+            "let py = y0 + design::MUSIC_ART + design::MUSIC_ROW_GAP;",
+            "let cy = py + design::MUSIC_PROGRESS_BLOCK + design::MUSIC_ROW_GAP;",
+        ] {
+            assert!(card.contains(row), "missing row anchor: {row}");
+        }
+        // The live flag may only change ink (alpha, glow, art variant): it
+        // is read a handful of times as a *style* switch, and never inside a
+        // rect — so it can never move a row.
+        assert!(
+            !card
+                .lines()
+                .any(|line| line.contains("RectD::new") && line.contains("m.live")),
+            "the live flag must never take part in geometry"
+        );
+        assert!(
+            card.matches("m.live").count() <= 12,
+            "the live flag is a style key ({} reads)",
+            card.matches("m.live").count()
+        );
+    }
+
     #[test]
     fn clear_is_present_in_empty_populated_and_converting_shelves() {
         let source = include_str!("render.rs");

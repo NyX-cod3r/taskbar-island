@@ -31,7 +31,7 @@ pub const WM_APP_THUMB: u32 = WM_APP + 33;
 /// Longest side of a cached row/tile thumbnail, in pixels.
 pub const MAX_THUMB: u32 = 128;
 /// Longest side of a clipboard hover-preview decode (spec 7). The overlay
-/// picture is 192 × 118 DIP, so a 384 px source stays sharp at 2× DPI while
+/// picture is 192 × 116 DIP, so a 384 px source stays sharp at 2× DPI while
 /// still being far smaller than the row thumbnail's source file.
 pub const PREVIEW_PX: u32 = 384;
 /// Refuse to decode anything larger than this before allocating pixels.

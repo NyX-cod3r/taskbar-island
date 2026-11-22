@@ -468,9 +468,21 @@ fn read_window(sender: &IUIAutomationElement) -> Snapshot {
                 let (width, height) = unsafe { element.CurrentBoundingRectangle() }
                     .map(|rect| (rect.right - rect.left, rect.bottom - rect.top))
                     .unwrap_or((0, 0));
-                let nodes = match uiakit::automation() {
-                    Ok(automation) => uiakit::dump_nodes(&automation, element),
-                    Err(_) => Vec::new(),
+                // Walk the subtree only for toast-shaped windows. This hook
+                // fires for *every* top-level window that opens in the
+                // system, and the bounded dump (up to 400 nodes, each a
+                // cross-process read) was what made `toast.read` blow its
+                // 500 ms budget on ordinary windows — an abandoned helper
+                // thread per opened window, burning CPU after the timeout.
+                // Classification only ever runs on windows that pass this
+                // same check, so its result is unchanged.
+                let nodes = if looks_like_toast(&class, width, height) {
+                    match uiakit::automation() {
+                        Ok(automation) => uiakit::dump_nodes(&automation, element),
+                        Err(_) => Vec::new(),
+                    }
+                } else {
+                    Vec::new()
                 };
                 Snapshot {
                     hwnd,

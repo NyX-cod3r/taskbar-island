@@ -1,0 +1,243 @@
+[epoch=1794859790060] DRIVER driver-start scenarios=1,2,3,4,5,6 exe=D:\dynamic\taskbar-island\tools\spike-embed\target\debug\spike-embed.exe
+[epoch=1794859790095] DRIVER explorer-windows-before count=0 titles=
+[+0ms][epoch=1794859790155] event spike-start pid=14472
+[+0ms][epoch=1794859790155] info Shell_TrayWnd=0xb0292 screenRect=0,1140,1920,1200
+[+0ms][epoch=1794859790155] info TaskbarCreated message id=0xc0c5
+[+1ms][epoch=1794859790156] trace hwnd=0x90222 msg=0x0024 w=0x0 l=0xf9cdffec40
+[+2ms][epoch=1794859790156] trace hwnd=0x90222 msg=0x0081 w=0x0 l=0xf9cdffebf0
+[+3ms][epoch=1794859790158] trace hwnd=0x90222 msg=0x0083 w=0x0 l=0xf9cdffec60
+[+3ms][epoch=1794859790158] trace hwnd=0x90222 msg=0x0001 w=0x0 l=0xf9cdffebc0
+[+3ms][epoch=1794859790158] event relay-created hwnd=0x90222
+[+4ms][epoch=1794859790158] trace hwnd=0x90264 msg=0x0081 w=0x0 l=0xf9cdffe5b0
+[+4ms][epoch=1794859790159] trace hwnd=0x90264 msg=0x0083 w=0x0 l=0xf9cdffe620
+[+4ms][epoch=1794859790159] trace hwnd=0x90264 msg=0x0001 w=0x0 l=0xf9cdffe580
+[+4ms][epoch=1794859790159] trace hwnd=0x90264 msg=0x0005 w=0x0 l=0x2200f0
+[+4ms][epoch=1794859790159] trace hwnd=0x90264 msg=0x0003 w=0x0 l=0x0
+[+4ms][epoch=1794859790159] event created hwnd=0x90264
+[+4ms][epoch=1794859790159] trace hwnd=0x90264 msg=0x0046 w=0x0 l=0xf9cdffeb80
+[+4ms][epoch=1794859790159] trace hwnd=0x90264 msg=0x0083 w=0x1 l=0xf9cdffeb50
+[+5ms][epoch=1794859790159] trace hwnd=0x90264 msg=0x0046 w=0x0 l=0xf9cdffeb80
+[+5ms][epoch=1794859790160] trace hwnd=0x90222 msg=0x001c w=0x1 l=0x0
+[+5ms][epoch=1794859790160] trace hwnd=0x90264 msg=0x0086 w=0x0 l=0x0
+[+5ms][epoch=1794859790160] trace hwnd=0x90264 msg=0x0006 w=0x1 l=0x0
+[+10ms][epoch=1794859790164] trace hwnd=0x90264 msg=0x0281 w=0x1 l=0xc000000f
+[+11ms][epoch=1794859790165] trace hwnd=0x90264 msg=0x0282 w=0x2 l=0x0
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x0007 w=0x0 l=0x0
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x0047 w=0x0 l=0xf9cdffeb80
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x0003 w=0x0 l=0x0
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x007c w=0xfffffffffffffff0 l=0xf9cdffeb60
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x007d w=0xfffffffffffffff0 l=0xf9cdffeb60
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x007c w=0xffffffffffffffec l=0xf9cdffeb60
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x007d w=0xffffffffffffffec l=0xf9cdffeb60
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x0046 w=0x0 l=0xf9cdffeb80
+[+11ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x0083 w=0x1 l=0xf9cdffeb50
+[+12ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x0047 w=0x0 l=0xf9cdffeb80
+[+12ms][epoch=1794859790166] trace hwnd=0x90264 msg=0x0003 w=0x0 l=0xd0008
+[+12ms][epoch=1794859790167] trace hwnd=0x90264 msg=0x000f w=0x0 l=0x0
+[+12ms][epoch=1794859790167] trace hwnd=0x90264 msg=0x0014 w=0xffffffffbe01095d l=0x0
+[+12ms][epoch=1794859790167] event first-paint hwnd=0x90264 count=1
+[+12ms][epoch=1794859790167] event parented hwnd=0x90264 taskbar=0xb0292 pos=(8, 13) size=240x34 taskbarH=60 z='HWND_TOP (above bridge first try)' aboveTl=0 visibleAfter=1 bridge=0x4406e0
+[+13ms][epoch=1794859790167] event ready z='HWND_TOP (above bridge first try)' poll=100ms kill=120000ms
+[+13ms][epoch=1794859790168] trace hwnd=0x90222 msg=0x031f w=0x1 l=0x0
+[+125ms][epoch=1794859790280] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+125ms][epoch=1794859790280] info taskbar-children[7]: TbiSpikeClass,Windows.UI.Composition.DesktopWindowContentBridge,Windows.UI.Core.CoreWindow,Start,TrayDummySearchControl,TrayNotifyWnd,ReBarWindow32
+[epoch=1794859790369] DRIVER driver spike-up
+[epoch=1794859790369] DRIVER scenario1 baseline begin (5 s)
+[+5174ms][epoch=1794859795329] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794859795391] DRIVER scenario1 baseline vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794859795407] DRIVER scenario1 baseline RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859795410] DRIVER scenario2 start-open x5 begin
+[epoch=1794859796830] DRIVER scenario2 open#1 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+6717ms][epoch=1794859796872] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+6827ms][epoch=1794859796982] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859797736] DRIVER scenario2 close#1 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859797737] DRIVER scenario2 injection=fg-changed-only openFg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c… closeFg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859797738] DRIVER scenario2 close#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859799151] DRIVER scenario2 open#2 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+9117ms][epoch=1794859799272] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+9441ms][epoch=1794859799596] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[+9666ms][epoch=1794859799821] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=ApplicationManager_DesktopShellWindow|
+[epoch=1794859800053] DRIVER scenario2 close#2 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=ApplicationManager_DesktopShellWindow|
+[epoch=1794859800054] DRIVER scenario2 close#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859801470] DRIVER scenario2 open#3 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=ApplicationManager_DesktopShellWindow|
+[+11326ms][epoch=1794859801481] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+11443ms][epoch=1794859801598] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859802386] DRIVER scenario2 close#3 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859802387] DRIVER scenario2 close#3 RESULT=PASS vis=1 zok=1 green=True
+[+13203ms][epoch=1794859803357] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859803803] DRIVER scenario2 open#4 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Chrome_WidgetWin_1|Claude
+[+13743ms][epoch=1794859803898] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+14302ms][epoch=1794859804457] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859804716] DRIVER scenario2 close#4 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859804716] DRIVER scenario2 close#4 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859806119] DRIVER scenario2 open#5 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Chrome_WidgetWin_1|Claude
+[+16067ms][epoch=1794859806222] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859807036] DRIVER scenario2 close#5 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859807037] DRIVER scenario2 close#5 RESULT=PASS vis=1 zok=1 green=True
+[+17158ms][epoch=1794859807313] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859807714] DRIVER scenario3 begin x3 each
+[epoch=1794859807716] DRIVER scenario3 clock#1 open
+[epoch=1794859807763] DRIVER clock click pos=1376,936 trayNotify=(1215,912,1536,960) setcursor=True
+[+17723ms][epoch=1794859807878] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=ControlCenterWindow|Quick settings
+[epoch=1794859809045] DRIVER scenario3 clock#1 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=ControlCenterWindow|Quick settings
+[+19140ms][epoch=1794859809294] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[+19356ms][epoch=1794859809510] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859809709] DRIVER scenario3 clock#1 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859809710] DRIVER scenario3 clock#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859809711] DRIVER scenario3 winA#1 open
+[+19691ms][epoch=1794859809846] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859810983] DRIVER scenario3 winA#1 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+21107ms][epoch=1794859811262] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859811655] DRIVER scenario3 winA#1 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859811656] DRIVER scenario3 winA#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859811657] DRIVER scenario3 winB#1 open
+[+21664ms][epoch=1794859811818] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859812985] DRIVER scenario3 winB#1 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859813651] DRIVER scenario3 winB#1 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859813652] DRIVER scenario3 winB#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859813652] DRIVER scenario3 ctrlEsc#1 open
+[+23641ms][epoch=1794859813796] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859815055] DRIVER scenario3 ctrlEsc#1 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+25097ms][epoch=1794859815252] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Shell_TrayWnd|
+[+25214ms][epoch=1794859815369] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859815724] DRIVER scenario3 ctrlEsc#1 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859815724] DRIVER scenario3 ctrlEsc#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859815725] DRIVER scenario3 clock#2 open
+[epoch=1794859815726] DRIVER clock click pos=1376,936 trayNotify=(1215,912,1536,960) setcursor=True
+[+25748ms][epoch=1794859815903] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=ControlCenterWindow|Quick settings
+[epoch=1794859817014] DRIVER scenario3 clock#2 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=ControlCenterWindow|Quick settings
+[+27079ms][epoch=1794859817234] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859817682] DRIVER scenario3 clock#2 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859817683] DRIVER scenario3 clock#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859817684] DRIVER scenario3 winA#2 open
+[+27648ms][epoch=1794859817803] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859818958] DRIVER scenario3 winA#2 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+29098ms][epoch=1794859819252] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859819649] DRIVER scenario3 winA#2 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859819650] DRIVER scenario3 winA#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859819651] DRIVER scenario3 winB#2 open
+[+30621ms][epoch=1794859820776] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Chrome_WidgetWin_1|Claude
+[epoch=1794859820984] DRIVER scenario3 winB#2 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Chrome_WidgetWin_1|Claude
+[+30848ms][epoch=1794859821003] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794859821653] DRIVER scenario3 winB#2 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794859821653] DRIVER scenario3 winB#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859821653] DRIVER scenario3 ctrlEsc#2 open
+[+31607ms][epoch=1794859821762] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859823056] DRIVER scenario3 ctrlEsc#2 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+33155ms][epoch=1794859823310] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794859823724] DRIVER scenario3 ctrlEsc#2 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794859823724] DRIVER scenario3 ctrlEsc#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859823724] DRIVER scenario3 clock#3 open
+[epoch=1794859823724] DRIVER clock click pos=1376,936 trayNotify=(1215,912,1536,960) setcursor=True
+[+33597ms][epoch=1794859823752] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[+33705ms][epoch=1794859823860] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=ControlCenterWindow|Quick settings
+[epoch=1794859824994] DRIVER scenario3 clock#3 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=ControlCenterWindow|Quick settings
+[+35136ms][epoch=1794859825291] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859825665] DRIVER scenario3 clock#3 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859825665] DRIVER scenario3 clock#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859825665] DRIVER scenario3 winA#3 open
+[+35689ms][epoch=1794859825844] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+36570ms][epoch=1794859826725] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=20,255,21 fg=Windows.UI.Core.CoreWindow|Search
+[+36686ms][epoch=1794859826841] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=25,255,26 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859826944] DRIVER scenario3 winA#3 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=25,255,26 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+37022ms][epoch=1794859827176] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=13,255,14 fg=Shell_TrayWnd|
+[+37129ms][epoch=1794859827284] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859827615] DRIVER scenario3 winA#3 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859827615] DRIVER scenario3 winA#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859827615] DRIVER scenario3 winB#3 open
+[+37780ms][epoch=1794859827935] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+37896ms][epoch=1794859828051] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+38780ms][epoch=1794859828935] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=1 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Start
+[epoch=1794859828951] DRIVER scenario3 winB#3 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=1 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Start
+[+38888ms][epoch=1794859829043] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859829622] DRIVER scenario3 winB#3 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859829623] DRIVER scenario3 winB#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859829623] DRIVER scenario3 ctrlEsc#3 open
+[+39647ms][epoch=1794859829802] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794859831025] DRIVER scenario3 ctrlEsc#3 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+41082ms][epoch=1794859831236] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859831691] DRIVER scenario3 ctrlEsc#3 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794859831692] DRIVER scenario3 ctrlEsc#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794859831692] DRIVER scenario4 begin
+[+41844ms][epoch=1794859831999] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=14,255,15 fg=Shell_TrayWnd|
+[+41953ms][epoch=1794859832108] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794859832367] DRIVER scenario4 autohide=1 set
+[epoch=1794859832377] DRIVER explorer-restart-BEGIN why=scenario4-autohide-on epoch=1794859832377
+[+42239ms][epoch=1794859832394] trace hwnd=0x90264 msg=0x0082 w=0x0 l=0x0
+[+42240ms][epoch=1794859832395] event destroyed hwnd=0x90264 (own teardown or parent died)
+[+42287ms][epoch=1794859832442] STATE vis=0 tb=0 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=2 px=-1,-1,-1 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+42502ms][epoch=1794859832657] event taskbar-handle-changed old=0x0 new=0x1f06fe
+[+42519ms][epoch=1794859832674] STATE vis=0 tb=1 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-1,-1,-1 fg=Shell_TrayWnd|
+[+42613ms][epoch=1794859832768] trace hwnd=0x90222 msg=0xc171 w=0x0 l=0x0
+[+42762ms][epoch=1794859832917] STATE vis=0 tb=1 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-1,-1,-1 fg=Progman|Program Manager
+[+42762ms][epoch=1794859832917] event poll-detect needs (re)embed
+[+42763ms][epoch=1794859832917] trace hwnd=0xb07ba msg=0x0081 w=0x0 l=0xf9cdffd2f0
+[+42763ms][epoch=1794859832918] trace hwnd=0xb07ba msg=0x0083 w=0x0 l=0xf9cdffd360
+[+42763ms][epoch=1794859832918] trace hwnd=0xb07ba msg=0x0001 w=0x0 l=0xf9cdffd2c0
+[+42763ms][epoch=1794859832918] trace hwnd=0xb07ba msg=0x0005 w=0x0 l=0x2200f0
+[+42763ms][epoch=1794859832918] trace hwnd=0xb07ba msg=0x0003 w=0x0 l=0x0
+[+42764ms][epoch=1794859832918] event created hwnd=0xb07ba
+[+42764ms][epoch=1794859832919] trace hwnd=0xb07ba msg=0x0046 w=0x0 l=0xf9cdffd8c0
+[+42764ms][epoch=1794859832919] trace hwnd=0xb07ba msg=0x0083 w=0x1 l=0xf9cdffd890
+[+42764ms][epoch=1794859832919] trace hwnd=0xb07ba msg=0x0046 w=0x0 l=0xf9cdffd8c0
+[+42765ms][epoch=1794859832919] trace hwnd=0x90222 msg=0x001c w=0x1 l=0x0
+[+42765ms][epoch=1794859832920] trace hwnd=0xb07ba msg=0x0086 w=0x0 l=0x0
+[+42765ms][epoch=1794859832920] trace hwnd=0xb07ba msg=0x0006 w=0x1 l=0x0
+[+42766ms][epoch=1794859832921] trace hwnd=0xb07ba msg=0x0281 w=0x1 l=0xc000000f
+[+42767ms][epoch=1794859832922] trace hwnd=0xb07ba msg=0x0007 w=0x0 l=0x0
+[+42767ms][epoch=1794859832922] trace hwnd=0xb07ba msg=0x0047 w=0x0 l=0xf9cdffd8c0
+[+42767ms][epoch=1794859832922] trace hwnd=0xb07ba msg=0x0003 w=0x0 l=0x0
+[+42768ms][epoch=1794859832922] trace hwnd=0xb07ba msg=0x007c w=0xfffffffffffffff0 l=0xf9cdffd8a0
+[+42768ms][epoch=1794859832923] trace hwnd=0xb07ba msg=0x007d w=0xfffffffffffffff0 l=0xf9cdffd8a0
+[+42769ms][epoch=1794859832923] trace hwnd=0xb07ba msg=0x007c w=0xffffffffffffffec l=0xf9cdffd8a0
+[+42769ms][epoch=1794859832924] trace hwnd=0xb07ba msg=0x007d w=0xffffffffffffffec l=0xf9cdffd8a0
+[+42770ms][epoch=1794859832924] trace hwnd=0xb07ba msg=0x0046 w=0x0 l=0xf9cdffd8c0
+[+42770ms][epoch=1794859832925] trace hwnd=0xb07ba msg=0x0083 w=0x1 l=0xf9cdffd890
+[+42770ms][epoch=1794859832925] trace hwnd=0xb07ba msg=0x0047 w=0x0 l=0xf9cdffd8c0
+[+42770ms][epoch=1794859832925] trace hwnd=0xb07ba msg=0x0003 w=0x0 l=0xd0008
+[+42771ms][epoch=1794859832926] trace hwnd=0xb07ba msg=0x000f w=0x0 l=0x0
+[+42771ms][epoch=1794859832926] trace hwnd=0xb07ba msg=0x0014 w=0xffffffffde0100c7 l=0x0
+[+42771ms][epoch=1794859832926] event first-paint hwnd=0xb07ba count=2
+[+42771ms][epoch=1794859832926] event parented hwnd=0xb07ba taskbar=0x1f06fe pos=(8, 13) size=240x34 taskbarH=60 z='HWND_TOP (bridge class not found among children)' aboveTl=0 visibleAfter=1 bridge=0x0
+[+42771ms][epoch=1794859832926] event re-parented why=poll-detect latency=0ms taskbarWait=0ms
+[+42788ms][epoch=1794859832943] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=20,255,20 fg=Progman|Program Manager
+[+42788ms][epoch=1794859832943] trace hwnd=0xb07ba msg=0x0084 w=0x0 l=0x499001c
+[+42788ms][epoch=1794859832943] trace hwnd=0xb07ba msg=0x0020 w=0xb07ba l=0x2000001
+[+42789ms][epoch=1794859832944] trace hwnd=0xb07ba msg=0x0200 w=0x0 l=0x180014
+[+42937ms][epoch=1794859833092] trace hwnd=0xb07ba msg=0x0084 w=0x0 l=0x499001c
+[+42937ms][epoch=1794859833092] trace hwnd=0xb07ba msg=0x0020 w=0xb07ba l=0x2000001
+[+42937ms][epoch=1794859833092] trace hwnd=0xb07ba msg=0x0200 w=0x0 l=0x180014
+[+42943ms][epoch=1794859833098] trace hwnd=0xb07ba msg=0x0084 w=0x0 l=0x499001c
+[+42943ms][epoch=1794859833098] trace hwnd=0xb07ba msg=0x0020 w=0xb07ba l=0x2000001
+[+42944ms][epoch=1794859833099] trace hwnd=0xb07ba msg=0x0200 w=0x0 l=0x180014
+[+42993ms][epoch=1794859833148] trace hwnd=0xb07ba msg=0x0084 w=0x0 l=0x499001c
+[+42993ms][epoch=1794859833148] trace hwnd=0xb07ba msg=0x0020 w=0xb07ba l=0x2000001
+[+42993ms][epoch=1794859833148] trace hwnd=0xb07ba msg=0x0200 w=0x0 l=0x180014
+[+43026ms][epoch=1794859833181] trace hwnd=0xb07ba msg=0x0084 w=0x0 l=0x499001c
+[+43026ms][epoch=1794859833181] trace hwnd=0xb07ba msg=0x0020 w=0xb07ba l=0x2000001
+[+43027ms][epoch=1794859833181] trace hwnd=0xb07ba msg=0x0200 w=0x0 l=0x180014
+[+43034ms][epoch=1794859833189] trace hwnd=0xb07ba msg=0x0084 w=0x0 l=0x499001c
+[+43035ms][epoch=1794859833189] trace hwnd=0xb07ba msg=0x0020 w=0xb07ba l=0x2000001
+[+43035ms][epoch=1794859833190] trace hwnd=0xb07ba msg=0x0200 w=0x0 l=0x180014
+[+43054ms][epoch=1794859833209] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+43135ms][epoch=1794859833289] trace hwnd=0xb07ba msg=0x0084 w=0x0 l=0x499001c
+[+43135ms][epoch=1794859833290] trace hwnd=0xb07ba msg=0x0020 w=0xb07ba l=0x2000001
+[+43136ms][epoch=1794859833290] trace hwnd=0xb07ba msg=0x0200 w=0x0 l=0x180014
+[+43285ms][epoch=1794859833440] trace hwnd=0xb07ba msg=0x0084 w=0x0 l=0x499001c
+[+43439ms][epoch=1794859833594] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=2 sib=[Windows.UI.Core.CoreWindow,Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+43440ms][epoch=1794859833595] event z-heal #1 hwnd=0xb07ba method=hwnd-top ok1=true after1=[Windows.UI.Composition.DesktopWindowContentBridge] ok2=true after2=[]
+[+43537ms][epoch=1794859833692] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+43619ms][epoch=1794859833774] event TaskbarCreated broadcast received (deferred)
+[+43621ms][epoch=1794859833776] event TaskbarCreated dispatch-latency=2ms
+[+43622ms][epoch=1794859833776] event recover-skip why=TaskbarCreated already-embedded
+[+43788ms][epoch=1794859833942] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Progman|Program Manager
+[+43821ms][epoch=1794859833976] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+43928ms][epoch=1794859834083] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Progman|Program Manager
+[+46655ms][epoch=1794859836809] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+46897ms][epoch=1794859837052] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Progman|Program Manager
+[+48521ms][epoch=1794859838676] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+49734ms][epoch=1794859839889] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=1 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Start
+[epoch=1794859842449] DRIVER explorer-restart old-shell-still-alive pids=26516
+[epoch=1794859842510] DRIVER explorer-restart-LAUNCHED why=scenario4-autohide-on epoch=1794859832377
+[+52527ms][epoch=1794859842681] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=CabinetWClass|This PC - File Explorer
+[+52712ms][epoch=1794859842866] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-3,-3,-3 fg=|

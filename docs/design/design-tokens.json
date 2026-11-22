@@ -17,11 +17,11 @@
     "railGap": 6.4,
     "railIndicatorW": 2.4,
     "railIndicatorH": 14.4,
-    "CARD_PAD": 7,
+    "CARD_PAD": 8,
     "CARD_GAP": 8,
-    "contentW_approx": 346,
+    "contentW_approx": 344,
     "contentH_approx": 176,
-    "note": "v0.10: rail 48 design px (38.4 DIP at 400/500 = 0.8). Derive the content rect from the fixed values with card_content_rect(); never hardcode contentW/H. Old CARD_PAD was 12."
+    "note": "v0.11 §1: one shared 8 DIP grid (was 7, originally 12); rail 48 design px (38.4 DIP at 400/500 = 0.8). Derive the content rect from the fixed values with card_content_rect(); never hardcode contentW/H."
   },
   "components": {
     "toolbarH": 28,

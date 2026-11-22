@@ -1,0 +1,635 @@
+[epoch=1794854004192] DRIVER driver-start scenarios=1,2,3,4,5,6 exe=D:\dynamic\taskbar-island\tools\spike-embed\target\debug\spike-embed.exe
+[epoch=1794854004251] DRIVER explorer-windows-before count=0 titles=
+[+0ms][epoch=1794854004299] event spike-start pid=6536
+[+0ms][epoch=1794854004299] info Shell_TrayWnd=0x20354 screenRect=0,1140,1920,1200
+[+0ms][epoch=1794854004299] info TaskbarCreated message id=0xc0c5
+[+1ms][epoch=1794854004301] trace hwnd=0x30224 msg=0x0024 w=0x0 l=0x134a1fe980
+[+1ms][epoch=1794854004301] trace hwnd=0x30224 msg=0x0081 w=0x0 l=0x134a1fe930
+[+3ms][epoch=1794854004302] trace hwnd=0x30224 msg=0x0083 w=0x0 l=0x134a1fe9a0
+[+3ms][epoch=1794854004303] trace hwnd=0x30224 msg=0x0001 w=0x0 l=0x134a1fe900
+[+3ms][epoch=1794854004303] event relay-created hwnd=0x30224
+[+4ms][epoch=1794854004303] trace hwnd=0x1205c8 msg=0x0081 w=0x0 l=0x134a1fe2f0
+[+4ms][epoch=1794854004303] trace hwnd=0x1205c8 msg=0x0083 w=0x0 l=0x134a1fe360
+[+4ms][epoch=1794854004304] trace hwnd=0x1205c8 msg=0x0001 w=0x0 l=0x134a1fe2c0
+[+4ms][epoch=1794854004304] trace hwnd=0x1205c8 msg=0x0005 w=0x0 l=0x2200f0
+[+4ms][epoch=1794854004304] trace hwnd=0x1205c8 msg=0x0003 w=0x0 l=0x0
+[+4ms][epoch=1794854004304] event created hwnd=0x1205c8
+[+5ms][epoch=1794854004304] trace hwnd=0x1205c8 msg=0x0046 w=0x0 l=0x134a1fe8c0
+[+5ms][epoch=1794854004304] trace hwnd=0x1205c8 msg=0x0083 w=0x1 l=0x134a1fe890
+[+5ms][epoch=1794854004304] trace hwnd=0x1205c8 msg=0x0046 w=0x0 l=0x134a1fe8c0
+[+5ms][epoch=1794854004304] trace hwnd=0x30224 msg=0x001c w=0x1 l=0x0
+[+5ms][epoch=1794854004305] trace hwnd=0x1205c8 msg=0x0086 w=0x0 l=0x0
+[+6ms][epoch=1794854004305] trace hwnd=0x1205c8 msg=0x0006 w=0x1 l=0x0
+[+10ms][epoch=1794854004309] trace hwnd=0x1205c8 msg=0x0281 w=0x1 l=0xc000000f
+[+11ms][epoch=1794854004310] trace hwnd=0x1205c8 msg=0x0282 w=0x2 l=0x0
+[+11ms][epoch=1794854004310] trace hwnd=0x1205c8 msg=0x0007 w=0x0 l=0x0
+[+11ms][epoch=1794854004310] trace hwnd=0x1205c8 msg=0x0047 w=0x0 l=0x134a1fe8c0
+[+11ms][epoch=1794854004310] trace hwnd=0x1205c8 msg=0x0003 w=0x0 l=0x0
+[+11ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x007c w=0xfffffffffffffff0 l=0x134a1fe8a0
+[+11ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x007d w=0xfffffffffffffff0 l=0x134a1fe8a0
+[+11ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x007c w=0xffffffffffffffec l=0x134a1fe8a0
+[+11ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x007d w=0xffffffffffffffec l=0x134a1fe8a0
+[+11ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x0046 w=0x0 l=0x134a1fe8c0
+[+12ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x0083 w=0x1 l=0x134a1fe890
+[+12ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x0047 w=0x0 l=0x134a1fe8c0
+[+12ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x0003 w=0x0 l=0xd0008
+[+12ms][epoch=1794854004311] trace hwnd=0x1205c8 msg=0x000f w=0x0 l=0x0
+[+12ms][epoch=1794854004312] trace hwnd=0x1205c8 msg=0x0014 w=0x390108a8 l=0x0
+[+12ms][epoch=1794854004312] event first-paint hwnd=0x1205c8 count=1
+[+13ms][epoch=1794854004312] event parented hwnd=0x1205c8 taskbar=0x20354 pos=(8, 13) size=240x34 taskbarH=60 z='HWND_TOP (above bridge first try)' aboveTl=0 visibleAfter=1 bridge=0x2108c2
+[+13ms][epoch=1794854004312] event ready z='HWND_TOP (above bridge first try)' poll=100ms kill=120000ms
+[+13ms][epoch=1794854004312] trace hwnd=0x30224 msg=0x031f w=0x1 l=0x0
+[+119ms][epoch=1794854004419] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+119ms][epoch=1794854004419] info taskbar-children[7]: TbiSpikeClass,Windows.UI.Composition.DesktopWindowContentBridge,Windows.UI.Core.CoreWindow,Start,TrayDummySearchControl,TrayNotifyWnd,ReBarWindow32
+[epoch=1794854004478] DRIVER driver spike-up
+[epoch=1794854004490] DRIVER scenario1 baseline begin (5 s)
+[+5168ms][epoch=1794854009467] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794854009503] DRIVER scenario1 baseline vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794854009535] DRIVER scenario1 baseline RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854009535] DRIVER scenario2 start-open x5 begin
+[epoch=1794854010944] DRIVER scenario2 open#1 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+6686ms][epoch=1794854010985] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+6795ms][epoch=1794854011094] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854011854] DRIVER scenario2 close#1 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854011854] DRIVER scenario2 injection=fg-changed-only openFg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c… closeFg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854011854] DRIVER scenario2 close#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854013258] DRIVER scenario2 open#2 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+8996ms][epoch=1794854013296] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794854014172] DRIVER scenario2 close#2 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794854014172] DRIVER scenario2 close#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854015575] DRIVER scenario2 open#3 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+11303ms][epoch=1794854015603] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+11411ms][epoch=1794854015710] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854016488] DRIVER scenario2 close#3 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854016488] DRIVER scenario2 close#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854017898] DRIVER scenario2 open#4 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+13702ms][epoch=1794854018002] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794854018812] DRIVER scenario2 close#4 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794854018812] DRIVER scenario2 close#4 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854020215] DRIVER scenario2 open#5 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+16018ms][epoch=1794854020318] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854021125] DRIVER scenario2 close#5 vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854021125] DRIVER scenario2 close#5 RESULT=PASS vis=1 zok=1 green=True
+[+17038ms][epoch=1794854021337] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+17143ms][epoch=1794854021442] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[epoch=1794854021795] DRIVER scenario3 begin x3 each
+[epoch=1794854021795] DRIVER scenario3 clock#1 open
+[epoch=1794854021811] DRIVER clock click pos=1376,936 trayNotify=(1215,912,1536,960) setcursor=True
+[+17583ms][epoch=1794854021882] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=1 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[+17606ms][epoch=1794854021905] trace hwnd=0x1205c8 msg=0x0128 w=0x30001 l=0x0
+[+17692ms][epoch=1794854021992] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=ControlCenterWindow|Quick settings
+[epoch=1794854023099] DRIVER scenario3 clock#1 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=ControlCenterWindow|Quick settings
+[+19108ms][epoch=1794854023407] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854023761] DRIVER scenario3 clock#1 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854023761] DRIVER scenario3 clock#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854023761] DRIVER scenario3 winA#1 open
+[+19551ms][epoch=1794854023850] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+19660ms][epoch=1794854023959] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854025034] DRIVER scenario3 winA#1 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+20977ms][epoch=1794854025276] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854025697] DRIVER scenario3 winA#1 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854025697] DRIVER scenario3 winA#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854025712] DRIVER scenario3 winB#1 open
+[epoch=1794854027053] DRIVER scenario3 winB#1 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854027715] DRIVER scenario3 winB#1 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854027715] DRIVER scenario3 winB#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854027715] DRIVER scenario3 ctrlEsc#1 open
+[+23500ms][epoch=1794854027800] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[+23610ms][epoch=1794854027910] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854029117] DRIVER scenario3 ctrlEsc#1 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+25035ms][epoch=1794854029334] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854029778] DRIVER scenario3 ctrlEsc#1 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854029778] DRIVER scenario3 ctrlEsc#1 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854029778] DRIVER scenario3 clock#2 open
+[epoch=1794854029778] DRIVER clock click pos=1376,936 trayNotify=(1215,912,1536,960) setcursor=True
+[+25583ms][epoch=1794854029883] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=ControlCenterWindow|Quick settings
+[epoch=1794854031069] DRIVER scenario3 clock#2 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=ControlCenterWindow|Quick settings
+[+27015ms][epoch=1794854031315] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854031732] DRIVER scenario3 clock#2 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854031732] DRIVER scenario3 clock#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854031732] DRIVER scenario3 winA#2 open
+[+27567ms][epoch=1794854031866] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854033007] DRIVER scenario3 winA#2 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+29000ms][epoch=1794854033299] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854033668] DRIVER scenario3 winA#2 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854033668] DRIVER scenario3 winA#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854033668] DRIVER scenario3 winB#2 open
+[epoch=1794854035004] DRIVER scenario3 winB#2 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854035666] DRIVER scenario3 winB#2 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854035666] DRIVER scenario3 winB#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854035666] DRIVER scenario3 ctrlEsc#2 open
+[+31550ms][epoch=1794854035849] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854037067] DRIVER scenario3 ctrlEsc#2 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+32965ms][epoch=1794854037264] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Shell_TrayWnd|
+[+33082ms][epoch=1794854037381] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854037729] DRIVER scenario3 ctrlEsc#2 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854037729] DRIVER scenario3 ctrlEsc#2 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854037731] DRIVER scenario3 clock#3 open
+[epoch=1794854037731] DRIVER clock click pos=1376,936 trayNotify=(1215,912,1536,960) setcursor=True
+[+33625ms][epoch=1794854037924] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=ControlCenterWindow|Quick settings
+[epoch=1794854039015] DRIVER scenario3 clock#3 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=ControlCenterWindow|Quick settings
+[+34956ms][epoch=1794854039255] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854039677] DRIVER scenario3 clock#3 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854039677] DRIVER scenario3 clock#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854039677] DRIVER scenario3 winA#3 open
+[+35499ms][epoch=1794854039798] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854040948] DRIVER scenario3 winA#3 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+36924ms][epoch=1794854041223] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854041611] DRIVER scenario3 winA#3 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854041611] DRIVER scenario3 winA#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854041611] DRIVER scenario3 winB#3 open
+[epoch=1794854042949] DRIVER scenario3 winB#3 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854043611] DRIVER scenario3 winB#3 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854043611] DRIVER scenario3 winB#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854043611] DRIVER scenario3 ctrlEsc#3 open
+[+39449ms][epoch=1794854043748] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Windows.UI.Core.CoreWindow|Search
+[epoch=1794854045018] DRIVER scenario3 ctrlEsc#3 open vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Windows.UI.Core.CoreWindow|Search
+[+41015ms][epoch=1794854045314] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=5 px=11,255,12 fg=Shell_TrayWnd|
+[epoch=1794854045681] DRIVER scenario3 ctrlEsc#3 closed vis=1 zok=1 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=0 fg=Shell_TrayWnd|
+[epoch=1794854045681] DRIVER scenario3 ctrlEsc#3 RESULT=PASS vis=1 zok=1 green=True
+[epoch=1794854045681] DRIVER scenario4 begin
+[epoch=1794854046359] DRIVER scenario4 autohide=1 set
+[epoch=1794854046365] DRIVER explorer-restart-BEGIN why=scenario4-autohide-on epoch=1794854046365
+[+42084ms][epoch=1794854046384] trace hwnd=0x1205c8 msg=0x0082 w=0x0 l=0x0
+[+42084ms][epoch=1794854046384] event destroyed hwnd=0x1205c8 (own teardown or parent died)
+[+42111ms][epoch=1794854046411] STATE vis=0 tb=0 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=2 px=-1,-1,-1 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+42424ms][epoch=1794854046723] event taskbar-handle-changed old=0x0 new=0x501b6
+[+42445ms][epoch=1794854046745] STATE vis=0 tb=0 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-1,-1,-1 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+42534ms][epoch=1794854046834] trace hwnd=0x30224 msg=0xc171 w=0x0 l=0x0
+[+42715ms][epoch=1794854047014] STATE vis=0 tb=1 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-1,-1,-1 fg=Progman|Program Manager
+[+42715ms][epoch=1794854047014] event poll-detect needs (re)embed
+[+42715ms][epoch=1794854047015] trace hwnd=0x30354 msg=0x0081 w=0x0 l=0x134a1fd1a0
+[+42716ms][epoch=1794854047015] trace hwnd=0x30354 msg=0x0083 w=0x0 l=0x134a1fd210
+[+42716ms][epoch=1794854047015] trace hwnd=0x30354 msg=0x0001 w=0x0 l=0x134a1fd170
+[+42716ms][epoch=1794854047015] trace hwnd=0x30354 msg=0x0005 w=0x0 l=0x2200f0
+[+42716ms][epoch=1794854047016] trace hwnd=0x30354 msg=0x0003 w=0x0 l=0x0
+[+42716ms][epoch=1794854047016] event created hwnd=0x30354
+[+42717ms][epoch=1794854047016] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fd770
+[+42717ms][epoch=1794854047016] trace hwnd=0x30354 msg=0x0083 w=0x1 l=0x134a1fd740
+[+42717ms][epoch=1794854047016] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fd770
+[+42717ms][epoch=1794854047017] trace hwnd=0x30224 msg=0x001c w=0x1 l=0x0
+[+42717ms][epoch=1794854047017] trace hwnd=0x30354 msg=0x0086 w=0x0 l=0x0
+[+42718ms][epoch=1794854047017] trace hwnd=0x30354 msg=0x0006 w=0x1 l=0x0
+[+42718ms][epoch=1794854047017] trace hwnd=0x30354 msg=0x0281 w=0x1 l=0xc000000f
+[+42719ms][epoch=1794854047019] trace hwnd=0x30354 msg=0x0007 w=0x0 l=0x0
+[+42720ms][epoch=1794854047019] trace hwnd=0x30354 msg=0x0047 w=0x0 l=0x134a1fd770
+[+42720ms][epoch=1794854047019] trace hwnd=0x30354 msg=0x0003 w=0x0 l=0x0
+[+42720ms][epoch=1794854047019] trace hwnd=0x30354 msg=0x007c w=0xfffffffffffffff0 l=0x134a1fd750
+[+42720ms][epoch=1794854047020] trace hwnd=0x30354 msg=0x007d w=0xfffffffffffffff0 l=0x134a1fd750
+[+42721ms][epoch=1794854047020] trace hwnd=0x30354 msg=0x007c w=0xffffffffffffffec l=0x134a1fd750
+[+42721ms][epoch=1794854047021] trace hwnd=0x30354 msg=0x007d w=0xffffffffffffffec l=0x134a1fd750
+[+42721ms][epoch=1794854047021] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fd770
+[+42722ms][epoch=1794854047021] trace hwnd=0x30354 msg=0x0083 w=0x1 l=0x134a1fd740
+[+42722ms][epoch=1794854047021] trace hwnd=0x30354 msg=0x0047 w=0x0 l=0x134a1fd770
+[+42722ms][epoch=1794854047021] trace hwnd=0x30354 msg=0x0003 w=0x0 l=0xd0008
+[+42723ms][epoch=1794854047022] trace hwnd=0x30354 msg=0x000f w=0x0 l=0x0
+[+42723ms][epoch=1794854047022] trace hwnd=0x30354 msg=0x0014 w=0x2a0108ad l=0x0
+[+42723ms][epoch=1794854047023] event first-paint hwnd=0x30354 count=2
+[+42724ms][epoch=1794854047023] event parented hwnd=0x30354 taskbar=0x501b6 pos=(8, 13) size=240x34 taskbarH=60 z='HWND_TOP (bridge class not found among children)' aboveTl=0 visibleAfter=1 bridge=0x0
+[+42724ms][epoch=1794854047023] event re-parented why=poll-detect latency=0ms taskbarWait=0ms
+[+42740ms][epoch=1794854047039] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=20,255,20 fg=Progman|Program Manager
+[+42740ms][epoch=1794854047039] trace hwnd=0x30354 msg=0x0128 w=0x30001 l=0x0
+[+42981ms][epoch=1794854047280] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+43357ms][epoch=1794854047656] trace hwnd=0x30354 msg=0x0128 w=0x30002 l=0x0
+[+43384ms][epoch=1794854047683] trace hwnd=0x30354 msg=0x000f w=0x0 l=0x0
+[+43384ms][epoch=1794854047683] trace hwnd=0x30354 msg=0x0085 w=0x1 l=0x0
+[+43384ms][epoch=1794854047684] trace hwnd=0x30354 msg=0x0014 w=0xfffffffff801113c l=0x0
+[+43449ms][epoch=1794854047748] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=2 sib=[Windows.UI.Core.CoreWindow,Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+43449ms][epoch=1794854047748] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+43449ms][epoch=1794854047749] trace hwnd=0x30354 msg=0x0047 w=0x0 l=0x134a1fe0a0
+[+43450ms][epoch=1794854047749] event z-heal #1 hwnd=0x30354 method=insert-after-bridge ok=true
+[+43540ms][epoch=1794854047839] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+43540ms][epoch=1794854047840] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+43541ms][epoch=1794854047840] event z-heal #2 hwnd=0x30354 method=insert-after-bridge ok=true
+[+43599ms][epoch=1794854047898] trace hwnd=0x30354 msg=0x05c7 w=0x0 l=0x0
+[+43601ms][epoch=1794854047900] trace hwnd=0x30354 msg=0x001a w=0x0 l=0x134a1feeb8
+[+43606ms][epoch=1794854047905] trace hwnd=0x30224 msg=0xc0c5 w=0x0 l=0x0
+[+43606ms][epoch=1794854047906] event TaskbarCreated broadcast received (deferred)
+[+43609ms][epoch=1794854047909] trace hwnd=0x30224 msg=0xc0c5 w=0x1 l=0x0
+[+43609ms][epoch=1794854047909] event TaskbarCreated dispatch-latency=3ms
+[+43609ms][epoch=1794854047909] event recover-skip why=TaskbarCreated already-embedded
+[+43649ms][epoch=1794854047948] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=11,255,12 fg=Progman|Program Manager
+[+43649ms][epoch=1794854047949] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+43649ms][epoch=1794854047949] event z-heal #3 hwnd=0x30354 method=insert-after-bridge ok=true
+[+43808ms][epoch=1794854048108] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+43808ms][epoch=1794854048108] event z-heal #4 hwnd=0x30354 method=insert-after-bridge ok=true
+[+43857ms][epoch=1794854048156] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+43857ms][epoch=1794854048156] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+43857ms][epoch=1794854048156] event z-heal #5 hwnd=0x30354 method=insert-after-bridge ok=true
+[+43963ms][epoch=1794854048263] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=11,255,12 fg=Progman|Program Manager
+[+43963ms][epoch=1794854048263] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+43963ms][epoch=1794854048263] event z-heal #6 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44072ms][epoch=1794854048371] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+44072ms][epoch=1794854048371] event z-heal #7 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44180ms][epoch=1794854048479] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+44180ms][epoch=1794854048479] event z-heal #8 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44288ms][epoch=1794854048587] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+44288ms][epoch=1794854048588] event z-heal #9 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44404ms][epoch=1794854048704] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+44404ms][epoch=1794854048704] event z-heal #10 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44512ms][epoch=1794854048812] trace hwnd=0x30354 msg=0x0046 w=0x0 l=0x134a1fe0a0
+[+44513ms][epoch=1794854048812] event z-heal #11 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44621ms][epoch=1794854048920] event z-heal #12 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44737ms][epoch=1794854049037] event z-heal #13 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44846ms][epoch=1794854049145] event z-heal #14 hwnd=0x30354 method=insert-after-bridge ok=true
+[+44946ms][epoch=1794854049245] event z-heal #15 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45054ms][epoch=1794854049354] event z-heal #16 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45171ms][epoch=1794854049470] event z-heal #17 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45279ms][epoch=1794854049578] event z-heal #18 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45387ms][epoch=1794854049687] event z-heal #19 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45504ms][epoch=1794854049803] event z-heal #20 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45612ms][epoch=1794854049912] event z-heal #21 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45721ms][epoch=1794854050020] event z-heal #22 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45829ms][epoch=1794854050128] event z-heal #23 hwnd=0x30354 method=insert-after-bridge ok=true
+[+45937ms][epoch=1794854050237] event z-heal #24 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46054ms][epoch=1794854050353] event z-heal #25 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46162ms][epoch=1794854050461] event z-heal #26 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46254ms][epoch=1794854050553] event z-heal #27 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46371ms][epoch=1794854050670] event z-heal #28 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46480ms][epoch=1794854050780] event z-heal #29 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46587ms][epoch=1794854050887] event z-heal #30 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46695ms][epoch=1794854050995] event z-heal #31 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46812ms][epoch=1794854051111] event z-heal #32 hwnd=0x30354 method=insert-after-bridge ok=true
+[+46920ms][epoch=1794854051220] event z-heal #33 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47029ms][epoch=1794854051328] event z-heal #34 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47145ms][epoch=1794854051445] event z-heal #35 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47254ms][epoch=1794854051553] event z-heal #36 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47362ms][epoch=1794854051661] event z-heal #37 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47470ms][epoch=1794854051770] event z-heal #38 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47579ms][epoch=1794854051878] event z-heal #39 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47695ms][epoch=1794854051995] event z-heal #40 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47804ms][epoch=1794854052103] event z-heal #41 hwnd=0x30354 method=insert-after-bridge ok=true
+[+47912ms][epoch=1794854052211] event z-heal #42 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48020ms][epoch=1794854052320] event z-heal #43 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48129ms][epoch=1794854052428] event z-heal #44 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48245ms][epoch=1794854052545] event z-heal #45 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48354ms][epoch=1794854052653] event z-heal #46 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48462ms][epoch=1794854052761] event z-heal #47 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48570ms][epoch=1794854052870] event z-heal #48 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48687ms][epoch=1794854052986] event z-heal #49 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48795ms][epoch=1794854053095] event z-heal #50 hwnd=0x30354 method=insert-after-bridge ok=true
+[+48903ms][epoch=1794854053203] event z-heal #51 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49012ms][epoch=1794854053311] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=11,255,12 fg=Progman|Program Manager
+[+49012ms][epoch=1794854053311] event z-heal #52 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49128ms][epoch=1794854053428] event z-heal #53 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49237ms][epoch=1794854053536] event z-heal #54 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49345ms][epoch=1794854053645] event z-heal #55 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49454ms][epoch=1794854053753] event z-heal #56 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49570ms][epoch=1794854053870] event z-heal #57 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49678ms][epoch=1794854053978] event z-heal #58 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49787ms][epoch=1794854054086] event z-heal #59 hwnd=0x30354 method=insert-after-bridge ok=true
+[+49895ms][epoch=1794854054195] event z-heal #60 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50004ms][epoch=1794854054303] event z-heal #61 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50120ms][epoch=1794854054419] event z-heal #62 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50228ms][epoch=1794854054528] event z-heal #63 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50337ms][epoch=1794854054636] event z-heal #64 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50445ms][epoch=1794854054745] event z-heal #65 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50562ms][epoch=1794854054861] event z-heal #66 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50670ms][epoch=1794854054969] event z-heal #67 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50778ms][epoch=1794854055078] event z-heal #68 hwnd=0x30354 method=insert-after-bridge ok=true
+[+50887ms][epoch=1794854055186] event z-heal #69 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51003ms][epoch=1794854055303] event z-heal #70 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51120ms][epoch=1794854055419] event z-heal #71 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51228ms][epoch=1794854055528] event z-heal #72 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51328ms][epoch=1794854055627] event z-heal #73 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51445ms][epoch=1794854055744] event z-heal #74 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51536ms][epoch=1794854055836] event z-heal #75 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51645ms][epoch=1794854055944] event z-heal #76 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51761ms][epoch=1794854056061] event z-heal #77 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51870ms][epoch=1794854056169] event z-heal #78 hwnd=0x30354 method=insert-after-bridge ok=true
+[+51978ms][epoch=1794854056277] event z-heal #79 hwnd=0x30354 method=insert-after-bridge ok=true
+[+52087ms][epoch=1794854056386] event z-heal #80 hwnd=0x30354 method=insert-after-bridge ok=true
+[epoch=1794854056414] DRIVER explorer-restart old-shell-still-alive pids=4816
+[epoch=1794854056434] DRIVER explorer-restart-LAUNCHED why=scenario4-autohide-on epoch=1794854046365
+[+52203ms][epoch=1794854056503] event z-heal #81 hwnd=0x30354 method=insert-after-bridge ok=true
+[+52362ms][epoch=1794854056661] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=11,255,12 fg=CabinetWClass|This PC - File Explorer
+[+52362ms][epoch=1794854056661] event z-heal #82 hwnd=0x30354 method=insert-after-bridge ok=true
+[+52446ms][epoch=1794854056745] event z-heal #83 hwnd=0x30354 method=insert-after-bridge ok=true
+[+52541ms][epoch=1794854056841] event z-heal #84 hwnd=0x30354 method=insert-after-bridge ok=true
+[+52638ms][epoch=1794854056938] event z-heal #85 hwnd=0x30354 method=insert-after-bridge ok=true
+[+52764ms][epoch=1794854057063] event z-heal #86 hwnd=0x30354 method=insert-after-bridge ok=true
+[+52853ms][epoch=1794854057153] event z-heal #87 hwnd=0x30354 method=insert-after-bridge ok=true
+[+52962ms][epoch=1794854057261] event z-heal #88 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53087ms][epoch=1794854057386] event z-heal #89 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53187ms][epoch=1794854057486] event z-heal #90 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53295ms][epoch=1794854057594] event z-heal #91 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53404ms][epoch=1794854057703] event z-heal #92 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53512ms][epoch=1794854057811] event z-heal #93 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53628ms][epoch=1794854057927] event z-heal #94 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53736ms][epoch=1794854058035] event z-heal #95 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53853ms][epoch=1794854058152] event z-heal #96 hwnd=0x30354 method=insert-after-bridge ok=true
+[+53944ms][epoch=1794854058244] event z-heal #97 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54061ms][epoch=1794854058361] event z-heal #98 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54169ms][epoch=1794854058469] event z-heal #99 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54278ms][epoch=1794854058577] event z-heal #100 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54394ms][epoch=1794854058694] event z-heal #101 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54503ms][epoch=1794854058802] event z-heal #102 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54619ms][epoch=1794854058919] event z-heal #103 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54728ms][epoch=1794854059027] event z-heal #104 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54836ms][epoch=1794854059136] event z-heal #105 hwnd=0x30354 method=insert-after-bridge ok=true
+[+54944ms][epoch=1794854059244] event z-heal #106 hwnd=0x30354 method=insert-after-bridge ok=true
+[+55061ms][epoch=1794854059360] event z-heal #107 hwnd=0x30354 method=insert-after-bridge ok=true
+[epoch=1794854059446] DRIVER scenario4 autohide=on vis=1 zok=0 tb=1 rect=8,1153,248,1187 px=11,255,12 green=True start=0 sibAbove=1 fg=CabinetWClass|This PC - File Explorer
+[epoch=1794854059446] DRIVER scenario4 on: taskbar+child moved off-screen rect=8,1153,248,1187
+[epoch=1794854059463] DRIVER scenario4 autohide=0 set
+[epoch=1794854059463] DRIVER explorer-restart-BEGIN why=scenario4-autohide-off epoch=1794854059463
+[+55194ms][epoch=1794854059493] event z-heal #108 hwnd=0x30354 method=insert-after-bridge ok=true
+[+55196ms][epoch=1794854059495] event destroyed hwnd=0x30354 (own teardown or parent died)
+[+55275ms][epoch=1794854059574] STATE vis=0 tb=0 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=2 px=-1,-1,-1 fg=CASCADIA_HOSTING_WINDOW_CLASS|OC | Taskbar embedding spike and unified c…
+[+55495ms][epoch=1794854059795] event taskbar-handle-changed old=0x0 new=0xa0632
+[+55505ms][epoch=1794854059804] STATE vis=0 tb=1 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-1,-1,-1 fg=Shell_TrayWnd|
+[+55766ms][epoch=1794854060065] STATE vis=0 tb=1 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-1,-1,-1 fg=Progman|Program Manager
+[+55766ms][epoch=1794854060065] event poll-detect needs (re)embed
+[+55767ms][epoch=1794854060066] event created hwnd=0x4401e4
+[+55769ms][epoch=1794854060069] event first-paint hwnd=0x4401e4 count=4
+[+55770ms][epoch=1794854060069] event parented hwnd=0x4401e4 taskbar=0xa0632 pos=(8, 13) size=240x34 taskbarH=60 z='HWND_TOP (bridge class not found among children)' aboveTl=0 visibleAfter=1 bridge=0x0
+[+55770ms][epoch=1794854060069] event re-parented why=poll-detect latency=0ms taskbarWait=0ms
+[+55780ms][epoch=1794854060079] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=20,255,20 fg=Progman|Program Manager
+[+56037ms][epoch=1794854060337] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+56422ms][epoch=1794854060721] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=2 sib=[Windows.UI.Core.CoreWindow,Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+56423ms][epoch=1794854060722] event z-heal #109 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+56530ms][epoch=1794854060829] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+56530ms][epoch=1794854060829] event z-heal #110 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+56582ms][epoch=1794854060881] event TaskbarCreated broadcast received (deferred)
+[+56584ms][epoch=1794854060883] event TaskbarCreated dispatch-latency=2ms
+[+56584ms][epoch=1794854060883] event recover-skip why=TaskbarCreated already-embedded
+[+56605ms][epoch=1794854060904] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=11,255,12 fg=Progman|Program Manager
+[+56605ms][epoch=1794854060905] event z-heal #111 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+56765ms][epoch=1794854061065] event z-heal #112 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+56812ms][epoch=1794854061111] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+56812ms][epoch=1794854061111] event z-heal #113 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+56928ms][epoch=1794854061227] event z-heal #114 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57037ms][epoch=1794854061336] event z-heal #115 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57153ms][epoch=1794854061453] event z-heal #116 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57244ms][epoch=1794854061544] event z-heal #117 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57354ms][epoch=1794854061653] event z-heal #118 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57461ms][epoch=1794854061761] event z-heal #119 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57577ms][epoch=1794854061877] event z-heal #120 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57686ms][epoch=1794854061986] event z-heal #121 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57802ms][epoch=1794854062102] event z-heal #122 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+57911ms][epoch=1794854062210] event z-heal #123 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58019ms][epoch=1794854062318] event z-heal #124 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58119ms][epoch=1794854062418] event z-heal #125 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58230ms][epoch=1794854062529] event z-heal #126 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58348ms][epoch=1794854062647] event z-heal #127 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58456ms][epoch=1794854062756] event z-heal #128 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58572ms][epoch=1794854062871] event z-heal #129 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58681ms][epoch=1794854062981] event z-heal #130 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58790ms][epoch=1794854063089] event z-heal #131 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58890ms][epoch=1794854063189] event z-heal #132 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+58998ms][epoch=1794854063297] event z-heal #133 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59113ms][epoch=1794854063412] event z-heal #134 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59229ms][epoch=1794854063529] event z-heal #135 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59330ms][epoch=1794854063629] event z-heal #136 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59448ms][epoch=1794854063747] event z-heal #137 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59556ms][epoch=1794854063855] event z-heal #138 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59656ms][epoch=1794854063955] event z-heal #139 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59763ms][epoch=1794854064062] event z-heal #140 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59873ms][epoch=1794854064172] event z-heal #141 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+59989ms][epoch=1794854064288] event z-heal #142 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60097ms][epoch=1794854064396] event z-heal #143 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60213ms][epoch=1794854064513] event z-heal #144 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60304ms][epoch=1794854064604] event z-heal #145 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60423ms][epoch=1794854064722] event z-heal #146 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60530ms][epoch=1794854064829] event z-heal #147 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60647ms][epoch=1794854064947] event z-heal #148 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60755ms][epoch=1794854065055] event z-heal #149 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60864ms][epoch=1794854065163] event z-heal #150 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+60981ms][epoch=1794854065280] event z-heal #151 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61070ms][epoch=1794854065369] event z-heal #152 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61186ms][epoch=1794854065486] event z-heal #153 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61296ms][epoch=1794854065596] event z-heal #154 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61403ms][epoch=1794854065702] event z-heal #155 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61520ms][epoch=1794854065820] event z-heal #156 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61630ms][epoch=1794854065929] event z-heal #157 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61730ms][epoch=1794854066029] event z-heal #158 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61838ms][epoch=1794854066137] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+61838ms][epoch=1794854066137] event z-heal #159 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+61955ms][epoch=1794854066255] event z-heal #160 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62062ms][epoch=1794854066361] event z-heal #161 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62180ms][epoch=1794854066479] event z-heal #162 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62289ms][epoch=1794854066588] event z-heal #163 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62406ms][epoch=1794854066705] event z-heal #164 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62512ms][epoch=1794854066812] event z-heal #165 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62623ms][epoch=1794854066922] event z-heal #166 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62739ms][epoch=1794854067038] event z-heal #167 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62845ms][epoch=1794854067145] event z-heal #168 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+62964ms][epoch=1794854067263] event z-heal #169 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63062ms][epoch=1794854067362] event z-heal #170 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63187ms][epoch=1794854067486] event z-heal #171 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63294ms][epoch=1794854067594] event z-heal #172 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63403ms][epoch=1794854067702] event z-heal #173 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63511ms][epoch=1794854067811] event z-heal #174 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63628ms][epoch=1794854067927] event z-heal #175 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63736ms][epoch=1794854068036] event z-heal #176 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63853ms][epoch=1794854068152] event z-heal #177 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+63961ms][epoch=1794854068260] event z-heal #178 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64078ms][epoch=1794854068378] event z-heal #179 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64186ms][epoch=1794854068486] event z-heal #180 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64305ms][epoch=1794854068604] event z-heal #181 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64411ms][epoch=1794854068710] event z-heal #182 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64520ms][epoch=1794854068819] event z-heal #183 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64621ms][epoch=1794854068921] event z-heal #184 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64728ms][epoch=1794854069027] event z-heal #185 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64845ms][epoch=1794854069144] event z-heal #186 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+64953ms][epoch=1794854069252] event z-heal #187 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+65071ms][epoch=1794854069370] event z-heal #188 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+65187ms][epoch=1794854069487] event z-heal #189 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[epoch=1794854069571] DRIVER explorer-restart old-shell-still-alive pids=17652
+[+65285ms][epoch=1794854069585] event z-heal #190 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[epoch=1794854069580] DRIVER explorer-restart-LAUNCHED why=scenario4-autohide-off epoch=1794854059463
+[+65393ms][epoch=1794854069692] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=CabinetWClass|File Explorer
+[+65393ms][epoch=1794854069692] event z-heal #191 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+65518ms][epoch=1794854069817] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=CabinetWClass|This PC - File Explorer
+[+65518ms][epoch=1794854069817] event z-heal #192 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+65620ms][epoch=1794854069919] event z-heal #193 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+65828ms][epoch=1794854070127] event z-heal #194 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+65838ms][epoch=1794854070137] event z-heal #195 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+65935ms][epoch=1794854070234] event z-heal #196 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66052ms][epoch=1794854070351] event z-heal #197 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66160ms][epoch=1794854070459] event z-heal #198 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66268ms][epoch=1794854070568] event z-heal #199 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66376ms][epoch=1794854070676] event z-heal #200 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66476ms][epoch=1794854070775] event z-heal #201 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66594ms][epoch=1794854070894] event z-heal #202 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66702ms][epoch=1794854071001] event z-heal #203 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66819ms][epoch=1794854071118] event z-heal #204 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+66927ms][epoch=1794854071226] event z-heal #205 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67027ms][epoch=1794854071326] event z-heal #206 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67142ms][epoch=1794854071442] event z-heal #207 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67251ms][epoch=1794854071550] event z-heal #208 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67360ms][epoch=1794854071660] event z-heal #209 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67477ms][epoch=1794854071776] event z-heal #210 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67586ms][epoch=1794854071885] event z-heal #211 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67702ms][epoch=1794854072002] event z-heal #212 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67812ms][epoch=1794854072111] event z-heal #213 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+67929ms][epoch=1794854072229] event z-heal #214 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+68038ms][epoch=1794854072338] event z-heal #215 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+68154ms][epoch=1794854072453] event z-heal #216 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+68245ms][epoch=1794854072544] event z-heal #217 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[epoch=1794854072583] DRIVER scenario4 autohide=off vis=1 zok=0 tb=1 rect=8,1153,248,1187 px=28,28,28 green=False start=0 sibAbove=1 fg=CabinetWClass|This PC - File Explorer
+[epoch=1794854072583] DRIVER scenario4 autohide=off RESULT=FAIL vis=1 zok=0 green=False
+[epoch=1794854072583] DRIVER scenario5 begin (auto-hide off)
+[+68361ms][epoch=1794854072661] event z-heal #218 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+68471ms][epoch=1794854072771] event z-heal #219 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+68579ms][epoch=1794854072878] event z-heal #220 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+68696ms][epoch=1794854072995] event z-heal #221 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+68804ms][epoch=1794854073104] event z-heal #222 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[+68922ms][epoch=1794854073221] event z-heal #223 hwnd=0x4401e4 method=insert-after-bridge ok=true
+[epoch=1794854073254] DRIVER explorer-restart-BEGIN why=scenario5-restart epoch=1794854073254
+[+68995ms][epoch=1794854073295] event destroyed hwnd=0x4401e4 (own teardown or parent died)
+[+69022ms][epoch=1794854073321] STATE vis=0 tb=0 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=2 px=-1,-1,-1 fg=#32770|TranslucentTB
+[+69240ms][epoch=1794854073539] event taskbar-handle-changed old=0x0 new=0x50248
+[+69261ms][epoch=1794854073560] STATE vis=0 tb=0 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-1,-1,-1 fg=#32770|TranslucentTB
+[+69491ms][epoch=1794854073791] STATE vis=0 tb=1 rect=0,0,0,0 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=-1,-1,-1 fg=Progman|Program Manager
+[+69492ms][epoch=1794854073791] event poll-detect needs (re)embed
+[+69493ms][epoch=1794854073792] event created hwnd=0x608f4
+[+69498ms][epoch=1794854073797] event first-paint hwnd=0x608f4 count=6
+[+69498ms][epoch=1794854073798] event parented hwnd=0x608f4 taskbar=0x50248 pos=(8, 13) size=240x34 taskbarH=60 z='HWND_TOP (bridge class not found among children)' aboveTl=0 visibleAfter=1 bridge=0x0
+[+69498ms][epoch=1794854073798] event re-parented why=poll-detect latency=0ms taskbarWait=0ms
+[+69511ms][epoch=1794854073811] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=20,255,20 fg=Progman|Program Manager
+[+69802ms][epoch=1794854074102] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=1 bridge=0 sibAbove=0 sib=[] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+70170ms][epoch=1794854074469] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=2 sib=[Windows.UI.Core.CoreWindow,Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+70171ms][epoch=1794854074470] event z-heal #224 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+70253ms][epoch=1794854074552] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=7 px=11,255,12 fg=Progman|Program Manager
+[+70254ms][epoch=1794854074553] event z-heal #225 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+70299ms][epoch=1794854074599] event TaskbarCreated broadcast received (deferred)
+[+70302ms][epoch=1794854074602] event TaskbarCreated dispatch-latency=2ms
+[+70302ms][epoch=1794854074602] event recover-skip why=TaskbarCreated already-embedded
+[+70336ms][epoch=1794854074636] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=11,255,12 fg=Progman|Program Manager
+[+70337ms][epoch=1794854074636] event z-heal #226 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+70482ms][epoch=1794854074782] event z-heal #227 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+70559ms][epoch=1794854074858] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+70559ms][epoch=1794854074859] event z-heal #228 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+70668ms][epoch=1794854074967] event z-heal #229 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+70784ms][epoch=1794854075084] event z-heal #230 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+70893ms][epoch=1794854075192] event z-heal #231 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+70994ms][epoch=1794854075293] event z-heal #232 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71117ms][epoch=1794854075417] event z-heal #233 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71234ms][epoch=1794854075534] event z-heal #234 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71334ms][epoch=1794854075633] event z-heal #235 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71452ms][epoch=1794854075751] event z-heal #236 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71559ms][epoch=1794854075858] event z-heal #237 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71668ms][epoch=1794854075967] event z-heal #238 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71785ms][epoch=1794854076084] event z-heal #239 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71904ms][epoch=1794854076203] event z-heal #240 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+71995ms][epoch=1794854076295] event z-heal #241 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72111ms][epoch=1794854076411] event z-heal #242 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72221ms][epoch=1794854076520] event z-heal #243 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72335ms][epoch=1794854076634] event z-heal #244 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72445ms][epoch=1794854076745] event z-heal #245 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72546ms][epoch=1794854076845] event z-heal #246 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72654ms][epoch=1794854076953] event z-heal #247 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72771ms][epoch=1794854077071] event z-heal #248 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72878ms][epoch=1794854077177] event z-heal #249 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+72986ms][epoch=1794854077286] event z-heal #250 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73102ms][epoch=1794854077401] event z-heal #251 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73219ms][epoch=1794854077519] event z-heal #252 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73329ms][epoch=1794854077628] event z-heal #253 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73437ms][epoch=1794854077736] event z-heal #254 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73553ms][epoch=1794854077852] event z-heal #255 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73660ms][epoch=1794854077959] event z-heal #256 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73777ms][epoch=1794854078077] event z-heal #257 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73870ms][epoch=1794854078170] event z-heal #258 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+73988ms][epoch=1794854078287] event z-heal #259 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74095ms][epoch=1794854078394] event z-heal #260 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74213ms][epoch=1794854078512] event z-heal #261 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74321ms][epoch=1794854078620] event z-heal #262 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74420ms][epoch=1794854078720] event z-heal #263 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74528ms][epoch=1794854078827] event z-heal #264 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74645ms][epoch=1794854078944] event z-heal #265 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74753ms][epoch=1794854079053] event z-heal #266 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74871ms][epoch=1794854079170] event z-heal #267 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+74978ms][epoch=1794854079277] event z-heal #268 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75095ms][epoch=1794854079394] event z-heal #269 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75201ms][epoch=1794854079501] event z-heal #270 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75310ms][epoch=1794854079609] event z-heal #271 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75418ms][epoch=1794854079717] event z-heal #272 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75535ms][epoch=1794854079834] event z-heal #273 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75651ms][epoch=1794854079951] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=Progman|Program Manager
+[+75652ms][epoch=1794854079951] event z-heal #274 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75760ms][epoch=1794854080060] event z-heal #275 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75876ms][epoch=1794854080176] event z-heal #276 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+75986ms][epoch=1794854080285] event z-heal #277 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76102ms][epoch=1794854080402] event z-heal #278 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76211ms][epoch=1794854080510] event z-heal #279 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76311ms][epoch=1794854080610] event z-heal #280 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76420ms][epoch=1794854080720] event z-heal #281 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76536ms][epoch=1794854080835] event z-heal #282 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76645ms][epoch=1794854080945] event z-heal #283 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76760ms][epoch=1794854081060] event z-heal #284 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76870ms][epoch=1794854081170] event z-heal #285 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+76987ms][epoch=1794854081286] event z-heal #286 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77095ms][epoch=1794854081395] event z-heal #287 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77208ms][epoch=1794854081508] event z-heal #288 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77320ms][epoch=1794854081619] event z-heal #289 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77436ms][epoch=1794854081735] event z-heal #290 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77544ms][epoch=1794854081844] event z-heal #291 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77662ms][epoch=1794854081961] event z-heal #292 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77770ms][epoch=1794854082069] event z-heal #293 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77887ms][epoch=1794854082186] event z-heal #294 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+77995ms][epoch=1794854082294] event z-heal #295 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78094ms][epoch=1794854082393] event z-heal #296 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78202ms][epoch=1794854082501] event z-heal #297 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78320ms][epoch=1794854082619] event z-heal #298 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78427ms][epoch=1794854082727] event z-heal #299 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78535ms][epoch=1794854082835] event z-heal #300 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78652ms][epoch=1794854082952] event z-heal #301 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78743ms][epoch=1794854083043] event z-heal #302 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78861ms][epoch=1794854083160] event z-heal #303 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+78969ms][epoch=1794854083268] event z-heal #304 hwnd=0x608f4 method=insert-after-bridge ok=true
+[epoch=1794854083269] DRIVER explorer-restart old-shell-still-alive pids=15772
+[epoch=1794854083289] DRIVER explorer-restart-LAUNCHED why=scenario5-restart epoch=1794854073254
+[+79082ms][epoch=1794854083382] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=CabinetWClass|File Explorer
+[+79083ms][epoch=1794854083382] event z-heal #305 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+79216ms][epoch=1794854083515] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=CabinetWClass|This PC - File Explorer
+[+79216ms][epoch=1794854083516] event z-heal #306 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+79300ms][epoch=1794854083599] event z-heal #307 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+79403ms][epoch=1794854083703] event z-heal #308 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+79562ms][epoch=1794854083862] event z-heal #309 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+79634ms][epoch=1794854083933] event z-heal #310 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+79725ms][epoch=1794854084025] event z-heal #311 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+79833ms][epoch=1794854084132] event z-heal #312 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+79949ms][epoch=1794854084249] event z-heal #313 hwnd=0x608f4 method=insert-after-bridge ok=true
+[epoch=1794854084307] DRIVER scenario5 at1s vis=1 zok=0 tb=1 rect=8,1153,248,1187 px=28,28,28 green=False start=0 sibAbove=1 fg=CabinetWClass|This PC - File Explorer
+[epoch=1794854084307] DRIVER scenario5 at1s NOT-RECOVERED-YET
+[+80059ms][epoch=1794854084358] event z-heal #314 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+80174ms][epoch=1794854084474] event z-heal #315 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+80283ms][epoch=1794854084582] event z-heal #316 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+80392ms][epoch=1794854084692] event z-heal #317 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+80509ms][epoch=1794854084808] event z-heal #318 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+80600ms][epoch=1794854084900] event z-heal #319 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+80717ms][epoch=1794854085017] event z-heal #320 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+80825ms][epoch=1794854085125] event z-heal #321 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+80942ms][epoch=1794854085241] event z-heal #322 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81050ms][epoch=1794854085350] event z-heal #323 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81166ms][epoch=1794854085465] event z-heal #324 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81274ms][epoch=1794854085573] event z-heal #325 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81366ms][epoch=1794854085666] event z-heal #326 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81484ms][epoch=1794854085783] event z-heal #327 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81593ms][epoch=1794854085893] event z-heal #328 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81710ms][epoch=1794854086009] event z-heal #329 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81818ms][epoch=1794854086117] event z-heal #330 hwnd=0x608f4 method=insert-after-bridge ok=true
+[+81933ms][epoch=1794854086233] event z-heal #331 hwnd=0x608f4 method=insert-after-bridge ok=true
+[epoch=1794854086320] DRIVER scenario5 at3s vis=1 zok=0 tb=1 rect=8,1153,248,1187 px=28,28,28 green=False start=0 sibAbove=1 fg=CabinetWClass|This PC - File Explorer
+[epoch=1794854086320] DRIVER scenario5 at3s RESULT=FAIL vis=1 zok=0 green=False
+[+82043ms][epoch=1794854086342] event z-heal #332 hwnd=0x608f4 method=insert-after-bridge ok=true
+[epoch=1794854086353] DRIVER scenario5 re-embed-latency=544ms (from Stop-Process) internal=0ms
+[epoch=1794854086353] DRIVER scenario6 fullscreen NOT TESTED (no safe fullscreen app available offline)
+[epoch=1794854086384] DRIVER restore autohide hadKey=False original= now=False/
+[+82158ms][epoch=1794854086458] event z-heal #333 hwnd=0x608f4 method=insert-after-bridge ok=true
+[epoch=1794854086463] DRIVER cleanup closing test-spawned explorer window 'File Explorer'
+[epoch=1794854086495] DRIVER summary state-samples=69 blink-count=6
+[epoch=1794854086495] DRIVER summary blink epoch=1794854046411 vis->0
+[epoch=1794854086495] DRIVER summary blink epoch=1794854047039 vis->1
+[epoch=1794854086495] DRIVER summary blink epoch=1794854059574 vis->0
+[epoch=1794854086503] DRIVER summary blink epoch=1794854060079 vis->1
+[epoch=1794854086504] DRIVER summary blink epoch=1794854073321 vis->0
+[epoch=1794854086504] DRIVER summary blink epoch=1794854073811 vis->1
+[epoch=1794854086511] DRIVER summary [+42724ms][epoch=1794854047023] event re-parented why=poll-detect latency=0ms taskbarWait=0ms
+[epoch=1794854086511] DRIVER summary [+55770ms][epoch=1794854060069] event re-parented why=poll-detect latency=0ms taskbarWait=0ms
+[epoch=1794854086511] DRIVER summary [+69498ms][epoch=1794854073798] event re-parented why=poll-detect latency=0ms taskbarWait=0ms
+[epoch=1794854086516] DRIVER summary failures=2 driver-end elapsed=82s
+[+82261ms][epoch=1794854086560] STATE vis=1 tb=1 rect=8,1153,248,1187 aboveTl=0 zok=0 bridge=1 sibAbove=1 sib=[Windows.UI.Composition.DesktopWindowContentBridge] start=0 quns=5 px=28,28,28 fg=#32770|TranslucentTB
+[+82261ms][epoch=1794854086560] event z-heal #334 hwnd=0x608f4 method=insert-after-bridge ok=true
+[epoch=1794854086562] DRIVER spike stopped by driver pid=6536

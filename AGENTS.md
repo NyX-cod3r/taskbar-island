@@ -27,7 +27,7 @@
   unsigned under our name). Releasing is `docs/release-process.md`; code signing is
   `docs/signing.md` (all steps still `[AFTER APPROVAL]`).
 
-## Status (updated 2026-11-16)
+## Status (updated 2026-11-22)
 - **Phase 1 COMPLETE** (commit a8f4744): empty anchored pill, `WS_CHILD` inside `Shell_TrayWnd`
   (no topmost/z-order fight), geometry only in anchor.rs. Rendering: D3D11 ->
   `CreateSwapChainForComposition` (premultiplied alpha) -> DComp visual on the pill HWND -> D2D
@@ -502,10 +502,83 @@
     Hold/Resume, live-call card states, the DPI re-run, clean-VM install, the
     SignPath flow, Explorer drag-out, human-eye checks, and a 60-minute soak
     re-run (the v0.9 soak stands; the 0.10 delta is layout-only).
+- **v0.11.0 sections 1-8 COMPLETE on branch `v0.11.0`** (2026-11-19), shipped as
+  `0.11.0`:
+  - **§1 one shared card grid**: `CARD_PAD = 8` DIP gives every card the same
+    content rect (434 x 222 at the reference size, minus the 48 px rail); no
+    card-private outer margin; `--debug-layout` draws the single cyan rect
+    plus each card's used bounds and a unit test fails on drift. Idle/empty
+    states keep the layout, dimmed. Shelf and Clipboard were re-checked
+    against the grid, not rebuilt (§5).
+  - **§2-§4 cards replaced**: music (album glow, 96 px art, 12 px artist/app
+    gap, wavy bar + times, centred controls with white play, output button top
+    right, dimmed "Nothing playing"), timer (64 px stepper, sync-locked
+    5/15/30 presets, full-width Start, running view with four equal buttons),
+    call (header/box/buttons in every state, three exactly equal
+    Hold/End/Mute, Output inside the box, honest UIA-confirmed Hold/Mute).
+  - **§6 output sheet** restyled onto the grid (240 ms slide inside the fixed
+    flyout, 36 px header, 44/52 px rows); behavior unchanged from 0.9.0.
+  - **§7 Stage A shipped: the pill is a `WS_CHILD` of `Shell_TrayWnd`.**
+    Spike first (`tools\spike-embed\`, verdict in `RESULTS.md`): `HWND_TOP`
+    above the XAML bridge heals once and holds; the old fullscreen-hiding
+    logic for the pill is gone; click-through via the pill's own rounded
+    region; re-embed on `TaskbarCreated` (verified live after killing
+    explorer: new taskbar handle, placement still correct). Flyout stays a
+    separate popup.
+  - **§8 taskbar placement**: `TaskbarAl` watched via `RegNotifyChangeKeyValue`;
+    UIA icon-group/tray scans debounced 150 ms; centered → pill 12 DIP from the
+    screen edge in the empty left band, left-aligned → 8 DIP before the tray
+    (flush right + one-time squeeze notice if the band is too narrow); 200 ms
+    ease-out slides; geometry only in `anchor.rs`. Auto is the only mode (the
+    spec's `Island position` menu was dropped per the owner). **Alignment
+    debounce split**: a `TaskbarAl` flip gets a one-shot 900 ms wait
+    (`ALIGN_DEBOUNCE_MS`) because Windows slides the icons ~550 ms — the old
+    150 ms scan read the half-way group and Auto mis-picked the tray band;
+    structure events never shorten a running alignment wait.
+  - **Owner decisions**: screen-edge spacing = card edge spacing = 12 DIP
+    (`EDGE_MARGIN_DIP`); music content aligns to the shared cyan rect (the
+    private `MUSIC_INNER` box is deleted); final `TaskbarAl = 0` (left); the
+    design PDFs' idle runner animation is **out of scope for 0.11.0** (it
+    never existed in code — artboards only — and needs its own y-bump).
+  - **Owner bug fixes (2026-11-21/22)**: (1) *auto-hide reveal delay* —
+    a sync while the bar was tucked baked the hidden parent-relative offset,
+    so on reveal the child rode up 58 px and stayed clipped until the 2 s
+    guard tick. Fixed with a `SetWinEventHook` on
+    `LOCATIONCHANGE|SHOW|HIDE` filtered to `Shell_TrayWnd` →
+    `WM_APP_TASKBAR_MOVED` → re-anchor + `sync_pill_child` (which now also
+    runs at the end of every `sync_anchor` visible path), and startup gates
+    on `anchor::is_allowed()` so a hidden bar at launch no longer blocks the
+    island. Hook proven live (fired on Explorer restart; alignment held
+    across 124 samples + both restarts) — **a natural hide→reveal cannot be
+    forced in this environment** (3 methods failed) and needs an owner-machine
+    check. (2) *performance* — the per-window-open UIA subtree dump is gated
+    behind `looks_like_toast`, and the registry watcher only reacts to a real
+    `TaskbarAl` flip (sibling writes under `Explorer\Advanced` are ignored).
+    Measured: window churn 625 ms/9 s with **zero** UIA timeouts (old log had
+    them regularly), sibling write → 0 log lines/0 slides, each flip → exactly
+    1 debounced slide both ways, idle 16–47 ms/10 s, card-open 0 ms/10 s,
+    music-playing 656 ms/10 s (the 80 ms wave tick), 0 ms after stop.
+  - **Gates**: `cargo test` **338 passed / 0 failed / 1 ignored**, clippy 0,
+    fmt 0, `tools\build.ps1 -Mode Installer` green with the manifest gate, and
+    `tools\tests\install-smoke.ps1` **8/8 PASS** on the installed 0.11.0.
+    Live: idle CPU **0 ms / 10 s** (installed release), WS 82.3 MB / private
+    56.2 MB; both alignments pixel-measured (15..294 / 1229..1508 with the
+    8 DIP tray gap); zero spurious squeeze notices across a 1→0→1 flip cycle;
+    Start open/close leaves the pill at 1229..1508 throughout (no hide path
+    exists - Stage A gave the pill none). `tools\tests\ui-smoke.ps1` was
+    adapted to Stage A (`FindPill` + `ScreenRects` union of the pill child's
+    region and the card host's card+halo region; `FindByClass` alone resolved
+    to the host's empty region) and then passed **13 shots** in
+    `target\soak\ui-v0.11\`.
+  - **Not tested** (also in `docs/testing.md`): everything under the v0.9 and
+    v0.10 "not tested" lists (real call, device churn, clean-VM, SignPath,
+    Explorer drag-out, human-eye card checks), the DPI 100/150 % + light
+    re-run, a natural auto-hide hide→reveal cycle for the bug-1 fix (this
+    environment cannot hide the taskbar), and a 60-minute soak re-run.
 
 ## Version naming (x.y.z)
 
-Current version: `0.10.0` → `x = 0`, `y = 10`, `z = 0`.
+Current version: `0.11.0` → `x = 0`, `y = 11`, `z = 0`.
 
 | Part | Meaning | When to bump |
 |------|---------|--------------|

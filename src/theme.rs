@@ -469,16 +469,6 @@ impl Theme {
         }
     }
 
-    pub fn card_track(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_WINDOWTEXT)
-        } else if self.dark {
-            design::rgb(0x3A, 0x3A, 0x3A)
-        } else {
-            design::black(design::LIGHT_TRACK_A)
-        }
-    }
-
     pub fn card_hint(self) -> Color {
         if self.high_contrast {
             sys_color(COLOR_WINDOWTEXT)
@@ -496,16 +486,6 @@ impl Theme {
             design::rgb(0x4D, 0x4D, 0x4D)
         } else {
             design::rgb(0xC4, 0xC4, 0xC4)
-        }
-    }
-
-    pub fn call_status_text(self) -> Color {
-        if self.high_contrast {
-            sys_color(COLOR_WINDOWTEXT)
-        } else if self.dark {
-            design::rgb(0xD6, 0xD6, 0xD6)
-        } else {
-            design::rgb(0x1A, 0x1A, 0x1A)
         }
     }
 

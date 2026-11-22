@@ -73,7 +73,6 @@ impl ActionOutcome {
 pub struct CallRuntime {
     pub device: String,
     pub mic_muted: bool,
-    pub output_muted: bool,
     /// The default communications endpoint is a Bluetooth Hands-Free profile
     /// endpoint (proved from its own name), so the sheet can say what the
     /// route really is instead of only its brand name.
@@ -98,7 +97,6 @@ pub enum AudioCommand {
     #[allow(dead_code)] // Sent when the Call card re-reads the audio state.
     Refresh,
     ToggleMic,
-    ToggleOutput,
     /// Make this endpoint the default for every role (an output sheet's
     /// choice). When Windows refuses, the worker opens the sound settings
     /// page and reports it through `CALL_WAKE_AUDIO` with `lparam = 1`.
@@ -150,16 +148,6 @@ fn audio_worker(hwnd: isize, shared: Arc<Mutex<CallRuntime>>, rx: Receiver<Audio
                         .mic_muted = actual;
                 }
             }
-            AudioCommand::ToggleOutput => {
-                let (flow, role) = audio::communications_render();
-                let current = audio::mute_state(flow, role).unwrap_or(false);
-                if let Ok(actual) = audio::set_mute(flow, role, !current) {
-                    shared
-                        .lock()
-                        .expect("call runtime mutex poisoned")
-                        .output_muted = actual;
-                }
-            }
             AudioCommand::SetDefault(id) => {
                 // The sheet promised a real switch: set every role at once.
                 // When Windows refuses (empty or unknown id), open its own
@@ -191,7 +179,6 @@ fn refresh_audio(shared: &Arc<Mutex<CallRuntime>>) {
     // endpoint's own name proves the "Bluetooth hands-free" wording.
     let handsfree = device.to_ascii_lowercase().contains("hands-free");
     let mic = audio::mute_state(cflow, crole).unwrap_or(false);
-    let output = audio::mute_state(rflow, rrole).unwrap_or(false);
     // The output sheet's routes, read on the worker: the call's own endpoint
     // (id only — its name is `device` above) and the PC default (name + id).
     let comms_id = audio::default_id(rflow, rrole);
@@ -201,7 +188,6 @@ fn refresh_audio(shared: &Arc<Mutex<CallRuntime>>) {
     runtime.device = device;
     runtime.handsfree = handsfree;
     runtime.mic_muted = mic;
-    runtime.output_muted = output;
     runtime.comms_id = comms_id;
     runtime.console_device = console_device;
     runtime.console_id = console_id;
@@ -385,9 +371,9 @@ impl PhoneLinkState {
         self == PhoneLinkState::Available
     }
 
-    /// The one line the muted CallIdle icon explains itself with: A prompt §5
-    /// asks for "a tooltip that says which". `None` when there is nothing to
-    /// explain.
+    /// The one line the no-call box (and the Open Phone Link tooltip)
+    /// explains itself with: A prompt §5 asks for "a tooltip that says
+    /// which". `None` when there is nothing to explain.
     pub fn idle_tip(self) -> Option<&'static str> {
         match self {
             PhoneLinkState::NotInstalled => Some("Phone Link not installed"),
