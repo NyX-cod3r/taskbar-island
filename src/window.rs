@@ -28,7 +28,7 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, EndPaint,
-    InvalidateRect, ScreenToClient, SetWindowRgn, UpdateWindow, PAINTSTRUCT, RGN_OR,
+    InvalidateRect, ScreenToClient, SetWindowRgn, UpdateWindow, PAINTSTRUCT, RGN_DIFF, RGN_OR,
 };
 use windows::Win32::System::Ole::{IDropTarget, OleInitialize};
 use windows::Win32::System::SystemServices::MK_LBUTTON;
@@ -7623,7 +7623,12 @@ impl Surface {
     ///
     /// §7 Stage A: the pill band belongs to the embedded child, so the card
     /// window only claims it in the fallback (`pill_hwnd` null), where this
-    /// window draws the pill itself.
+    /// window draws the pill itself. With a child present the two regions are
+    /// an exact partition of what is painted — child = pill rounded rect,
+    /// this window = everything else — because both windows mirror *one*
+    /// frame: an overlapping region would composite the pill's fill twice
+    /// and leave a seam where the overlap ends (the "thick line" along the
+    /// pill's bottom edge while the card is open).
     fn update_window_region(&self) {
         let scale = self.scale;
         // SAFETY: every GDI region is owned by this function; on success
@@ -7654,6 +7659,18 @@ impl Surface {
                 );
                 CombineRgn(Some(region), Some(region), Some(fly), RGN_OR);
                 let _ = DeleteObject(fly.into());
+            }
+            // The card sits 12 DIP above the pill, so its halo reaches down
+            // over the pill's top rows. Hand exactly those rows — the same
+            // rounded rect `update_pill_region` gives the child — back to
+            // the child, so no row of the pill is inside both regions.
+            if !self.pill_hwnd.0.is_null() && self.view.pill().is_some() {
+                let r = self.physical(self.pill);
+                let radius = (self.theme.pill_radius() * 2.0 * scale).round() as i32;
+                let pill =
+                    CreateRoundRectRgn(r.left, r.top, r.right + 1, r.bottom + 1, radius, radius);
+                CombineRgn(Some(region), Some(region), Some(pill), RGN_DIFF);
+                let _ = DeleteObject(pill.into());
             }
             let _ = SetWindowRgn(self.hwnd, Some(region), true);
         }
