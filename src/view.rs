@@ -153,6 +153,11 @@ pub enum Element {
     ClipDelete(u64),
     ClipScrollbar,
     Rail(ActivityKind),
+    /// §3: the paused notice card's primary button — opens the Windows
+    /// taskbar settings page (`ms-settings:taskbar`).
+    NoticeSettings,
+    /// §3: the paused notice card's "Quit island" button.
+    NoticeQuit,
 }
 
 /// One icon-only tab in the Convert card's segmented strip.

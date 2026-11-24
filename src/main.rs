@@ -84,6 +84,20 @@ fn main() {
             callsrc::PENDING_SIMULATE.store(kind.code(), Ordering::Relaxed);
         }
     }
+    // §2 `--simulate-edge top|bottom|left|right`: pretend the bar sits on
+    // that edge (same monitor, same thickness) so all four layouts — and the
+    // pause/notice on a side edge — can be exercised on a machine whose real
+    // taskbar never moves. A launch flag: the running island is left alone.
+    if let Some(index) = args.iter().position(|arg| arg == "--simulate-edge") {
+        let Some(edge) = args
+            .get(index + 1)
+            .and_then(|value| anchor::Edge::parse(value))
+        else {
+            eprintln!("--simulate-edge needs top|bottom|left|right");
+            return;
+        };
+        anchor::set_simulated_edge(Some(edge));
+    }
     // Anchor geometry is measured in physical screen coordinates. Without
     // per-monitor awareness Windows virtualizes the popup bounds at scaled
     // displays, moving the pill away from the taskbar hit area.

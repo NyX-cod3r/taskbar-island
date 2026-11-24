@@ -7,7 +7,7 @@
 //! derived from it here. No other module touches `Shell_TrayWnd` or the
 //! taskbar's UIA tree.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -15,7 +15,7 @@ use std::time::Duration;
 use windows::core::{implement, w, Ref, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
+    GetMonitorInfoW, MonitorFromRect, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -33,19 +33,20 @@ use windows::Win32::UI::Accessibility::{
     HWINEVENTHOOK,
 };
 use windows::Win32::UI::Shell::{
-    SHAppBarMessage, SHQueryUserNotificationState, ABM_GETSTATE, ABS_AUTOHIDE, APPBARDATA,
-    QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+    SHAppBarMessage, SHQueryUserNotificationState, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP,
+    ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA, QUNS_BUSY, QUNS_PRESENTATION_MODE,
+    QUNS_RUNNING_D3D_FULL_SCREEN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, FindWindowExW, FindWindowW, GetMessageW, GetWindowRect, IsWindowVisible,
     PostMessageW, PostThreadMessageW, TranslateMessage, EVENT_OBJECT_HIDE,
-    EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP,
+    EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, MSG, OBJID_WINDOW,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
 };
 
 use crate::design::{
-    RectD, BUBBLE, BUBBLE_GAP, FLY_H, FLY_W, GAP_TASKBAR, PILL_INSET, PILL_W, SHADOW_HALO,
-    SLOT_GAP_DIP, WINDOW_TOP_PAD, WINDOW_W,
+    RectD, BUBBLE, BUBBLE_GAP, FLY_H, FLY_TOP_GAP, FLY_W, GAP_TASKBAR, NOTICE_H, NOTICE_W,
+    PILL_INSET, PILL_W, SHADOW_HALO, SLOT_GAP_DIP, WINDOW_TOP_PAD, WINDOW_W,
 };
 
 const TASKBAR_CLASS: PCWSTR = w!("Shell_TrayWnd");
@@ -76,6 +77,87 @@ pub const WM_APP_SPACE_REWATCH: u32 = WM_APP + 53;
 /// §7/auto-hide: the taskbar window itself moved (the auto-hide bar
 /// revealing or hiding). The window re-aligns the pill child at once.
 pub const WM_APP_TASKBAR_MOVED: u32 = WM_APP + 54;
+/// §1: another process took the foreground while the card was open — a shell
+/// flyout (Start, the tray overflow, the clock) opened, and the card goes
+/// with it. Only posted while the card is open (the hook lives with the
+/// card's other open-time hooks), so idle pays nothing for it.
+pub const WM_APP_FOREGROUND: u32 = WM_APP + 55;
+
+/// §2: which screen edge the primary taskbar sits on. `Bottom` is v0.11's
+/// behaviour; `Top` mirrors it (the card hangs below the bar); `Left` and
+/// `Right` have no horizontal room at all, so the island pauses there (§3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl Edge {
+    /// `--simulate-edge top|bottom|left|right`.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "top" => Some(Self::Top),
+            "bottom" => Some(Self::Bottom),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+
+    /// Stable 1..=4 for the atomic slots (0 = nothing applied yet).
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Top => 1,
+            Self::Bottom => 2,
+            Self::Left => 3,
+            Self::Right => 4,
+        }
+    }
+
+    /// A left/right bar is too narrow to host the island (§3).
+    pub fn is_vertical(self) -> bool {
+        matches!(self, Self::Left | Self::Right)
+    }
+}
+
+/// `--simulate-edge …`: the edge the layout pretends the bar is on (0 = the
+/// real bar decides). Parsed in `main` before any geometry runs, so all four
+/// edges can be exercised on a machine whose real taskbar never moves.
+static SIMULATED_EDGE: AtomicU8 = AtomicU8::new(0);
+/// The edge the window last applied (0 = none yet). A *different* edge has
+/// to survive the debounce before it is committed, so one taskbar move —
+/// which arrives as a storm of `LOCATIONCHANGE`s — flips the island once.
+static APPLIED_EDGE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_simulated_edge(edge: Option<Edge>) {
+    SIMULATED_EDGE.store(edge.map(Edge::code).unwrap_or(0), Ordering::Relaxed);
+}
+
+fn simulated_edge() -> Option<Edge> {
+    match SIMULATED_EDGE.load(Ordering::Relaxed) {
+        1 => Some(Edge::Top),
+        2 => Some(Edge::Bottom),
+        3 => Some(Edge::Left),
+        4 => Some(Edge::Right),
+        _ => None,
+    }
+}
+
+/// §2: is `edge` waiting to be applied? The first sync is never pending (it
+/// applies at once) and neither is a repeat of the current edge.
+pub fn edge_pending(edge: Edge) -> bool {
+    let applied = APPLIED_EDGE.load(Ordering::Relaxed);
+    applied != 0 && applied != edge.code()
+}
+
+/// Commit `edge` as applied. Returns true when it really changed — the
+/// caller then closes the card and slides/pauses for the new geometry.
+pub fn edge_commit(edge: Edge) -> bool {
+    let previous = APPLIED_EDGE.swap(edge.code(), Ordering::Relaxed);
+    previous != 0 && previous != edge.code()
+}
 
 /// Everything the app needs to place its one window and its surfaces.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,6 +177,16 @@ pub struct Anchor {
     pub taskbar_height_dip: f32,
     pub visible: bool,
     pub insufficient_space: bool,
+    /// §2: which edge of the screen the bar sits on — the layout branch that
+    /// produced every rect above.
+    pub edge: Edge,
+    /// §3: a left/right bar — the island is paused (nothing drawn, no
+    /// animation), only the notice card below is shown.
+    pub paused: bool,
+    /// §3: the paused notice card, in screen DIPs, centred in `window`. It is
+    /// computed on every edge (same window size everywhere) so flipping back
+    /// to the top/bottom stays a position-only move; only `paused` shows it.
+    pub notice: RectD,
 }
 
 /// §8: where the taskbar's content sat when the last scan ran. Rects are
@@ -150,54 +242,80 @@ fn place(band: (f32, f32), mode: Place, slot: f32) -> (f32, bool) {
 
 impl Anchor {
     pub fn compute(taskbar: HWND, dpi: u32, slot_offset_dip: i32) -> Option<Self> {
-        let mut tb = RECT::default();
+        let mut real = RECT::default();
         // SAFETY: GetWindowRect writes one RECT to a valid stack pointer.
-        unsafe { GetWindowRect(taskbar, &mut tb) }.ok()?;
-        if tb.right <= tb.left || tb.bottom <= tb.top {
+        unsafe { GetWindowRect(taskbar, &mut real) }.ok()?;
+        if real.right <= real.left || real.bottom <= real.top {
             return None;
         }
-        let fallback_tray = RECT {
-            left: tb.right
-                - ((FALLBACK_TRAY_RESERVE_DIP * dpi.max(96) as f32 / 96.0).round() as i32),
-            top: tb.top,
-            right: tb.right,
-            bottom: tb.bottom,
-        };
-        let tray = tray_rect(taskbar, fallback_tray);
         let monitor = unsafe { MonitorFromWindow(taskbar, MONITOR_DEFAULTTOPRIMARY) };
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
         // SAFETY: mi.cbSize is set and mi is writable.
-        let work = if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
-            mi.rcWork
-        } else {
-            RECT {
-                left: 0,
-                top: 0,
-                right: tb.right,
-                bottom: tb.top,
-            }
-        };
         let monitor_rect = if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
             mi.rcMonitor
         } else {
             RECT {
                 left: 0,
                 top: 0,
-                right: tb.right,
-                bottom: tb.bottom,
+                right: real.right,
+                bottom: real.bottom,
             }
         };
+        // SAFETY: as above; the second call re-fills `mi` with the work area.
+        let real_work = if unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
+            mi.rcWork
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: real.right,
+                bottom: real.top,
+            }
+        };
+        // §2: `--simulate-edge` swaps in a synthetic bar on the same monitor
+        // (same thickness as the real one) so all four edges can be exercised
+        // without ever moving the actual taskbar; otherwise the real bar
+        // decides. The free-space scan still describes the real bar, which
+        // only matters on the horizontal edges (the vertical ones pause).
+        let simulated = simulated_edge();
+        let (tb, tray, work, shown) = match simulated {
+            Some(edge) => {
+                let tb = synthetic_bar(monitor_rect, edge, bar_thickness(real));
+                let reserve =
+                    (FALLBACK_TRAY_RESERVE_DIP * dpi.max(96) as f32 / 96.0).round() as i32;
+                let tray = RECT {
+                    left: tb.right - reserve,
+                    top: tb.top,
+                    right: tb.right,
+                    bottom: tb.bottom,
+                };
+                (tb, tray, work_of(monitor_rect, tb, edge), true)
+            }
+            None => {
+                let fallback_tray = RECT {
+                    left: real.right
+                        - ((FALLBACK_TRAY_RESERVE_DIP * dpi.max(96) as f32 / 96.0).round() as i32),
+                    top: real.top,
+                    right: real.right,
+                    bottom: real.bottom,
+                };
+                let tray = tray_rect(taskbar, fallback_tray);
+                (real, tray, real_work, taskbar_is_shown(real, monitor_rect))
+            }
+        };
+        let edge = simulated.unwrap_or_else(taskbar_edge);
         // §8: the placement rule reads the last scan — no registry or UIA
         // work happens on this (UI) thread. v0.11: Auto-only, there is no
         // tray position choice any more.
         let space = current_space();
-        let mut anchor = Self::layout(tb, tray, work, dpi, slot_offset_dip, space.as_ref());
+        let mut anchor = Self::layout(tb, tray, work, dpi, slot_offset_dip, space.as_ref(), edge);
         // §8: a squeezed pill still shows (with the tray notice); hiding is
-        // only about full-screen/presentation state now.
-        anchor.visible = is_allowed() && taskbar_is_shown(tb, monitor_rect);
+        // only about full-screen/presentation state now. §3: a left/right
+        // bar already paused itself inside `layout`.
+        anchor.visible = is_allowed() && shown;
         Some(anchor)
     }
 
@@ -209,12 +327,74 @@ impl Anchor {
         dpi: u32,
         slot_offset_dip: i32,
         space: Option<&Space>,
+        edge: Edge,
     ) -> Self {
         let scale = dpi.max(96) as f32 / 96.0;
         let tb_left = taskbar.left as f32 / scale;
         let tb_top = taskbar.top as f32 / scale;
         let tb_bottom = taskbar.bottom as f32 / scale;
-        let t = (taskbar.bottom - taskbar.top) as f32 / scale;
+        // Thickness is measured *across* the bar: its height on the top and
+        // bottom edges, its width on the left and right ones.
+        let t = match edge {
+            Edge::Top | Edge::Bottom => (taskbar.bottom - taskbar.top) as f32,
+            Edge::Left | Edge::Right => (taskbar.right - taskbar.left) as f32,
+        } / scale;
+
+        // The window's size never depends on the edge — it is always built
+        // for the horizontal case (the larger of the two card gaps, see
+        // `FLY_TOP_GAP`) — because an edge flip has to be a position-only
+        // move: the swapchain cannot resize at runtime.
+        let win_w = WINDOW_W;
+        let win_h = t + FLY_TOP_GAP + FLY_H + WINDOW_TOP_PAD;
+
+        // §3: a left/right bar has no horizontal room for the island at all.
+        // The island pauses: the window only has to hold the notice card,
+        // centred in the monitor's free area, at the same size it would have
+        // on a top/bottom bar so flipping back stays a position-only move.
+        if edge.is_vertical() {
+            let work_left = work.left as f32 / scale;
+            let work_top = work.top as f32 / scale;
+            let work_right = work.right as f32 / scale;
+            let work_bottom = work.bottom as f32 / scale;
+            let win_left = ((work_left + work_right) * 0.5 - win_w * 0.5)
+                .clamp(work_left, (work_right - win_w).max(work_left));
+            let win_top = ((work_top + work_bottom) * 0.5 - win_h * 0.5)
+                .clamp(work_top, (work_bottom - win_h).max(work_top));
+            let window = RECT {
+                left: (win_left * scale).round() as i32,
+                top: (win_top * scale).round() as i32,
+                right: ((win_left + win_w) * scale).round() as i32,
+                bottom: ((win_top + win_h) * scale).round() as i32,
+            };
+            let origin = (window.left as f32 / scale, window.top as f32 / scale);
+            let notice = RectD::new(
+                win_left + (win_w - NOTICE_W) * 0.5,
+                win_top + (win_h - NOTICE_H) * 0.5,
+                NOTICE_W,
+                NOTICE_H,
+            );
+            // The pill/bubble rects are placeholders while paused (nothing
+            // is drawn and both regions are empty); they only keep every
+            // coordinate conversion inside the window.
+            return Self {
+                taskbar,
+                work,
+                window,
+                dpi,
+                scale,
+                pill: notice,
+                bubble: RectD::new(notice.x - BUBBLE_GAP - BUBBLE, notice.y, BUBBLE, BUBBLE),
+                flyout: notice,
+                origin,
+                taskbar_height_dip: t,
+                visible: true,
+                insufficient_space: false,
+                edge,
+                paused: true,
+                notice,
+            };
+        }
+
         let tray_left = if tray.right > tray.left {
             tray.left as f32 / scale
         } else {
@@ -259,7 +439,8 @@ impl Anchor {
 
         // Equal 4 DIP margins top and bottom keep the band inside the
         // taskbar and vertically center it at any taskbar height (§8: use
-        // the real height, never a constant).
+        // the real height, never a constant). The band sits the same way on
+        // both horizontal edges: inset from the bar's own top edge.
         let pill_h = (t - PILL_INSET * 2.0).max(0.0);
         let pill_top = tb_top + PILL_INSET;
         let pill = RectD::new(pill_left, pill_top, PILL_W, pill_h);
@@ -272,11 +453,15 @@ impl Anchor {
         let min_left = work_left + EDGE_MARGIN_DIP;
         let max_left = (work_right - EDGE_MARGIN_DIP - FLY_W).max(min_left);
         fly_left = fly_left.clamp(min_left, max_left);
-        let fly_bottom = tb_top - GAP_TASKBAR;
-        let flyout = RectD::new(fly_left, fly_bottom - FLY_H, FLY_W, FLY_H);
+        // §2: the card hangs off the bar's own edge — above it on a bottom
+        // bar (today's behaviour), below it on a top bar (12 DIP, the
+        // brief's 12 px), so the rail keeps its left side either way.
+        let fly_top = match edge {
+            Edge::Top => tb_bottom + FLY_TOP_GAP,
+            _ => tb_top - GAP_TASKBAR - FLY_H,
+        };
+        let flyout = RectD::new(fly_left, fly_top, FLY_W, FLY_H);
 
-        let win_w = WINDOW_W;
-        let win_h = t + GAP_TASKBAR + FLY_H + WINDOW_TOP_PAD;
         // §8: the pill can sit at either screen edge (centered alignment, a
         // cramped band), and the flyout is clamped to the work area there —
         // so nudge the window until it covers *both* surfaces. It may start
@@ -290,16 +475,31 @@ impl Anchor {
             .min(pill.x)
             .max(fly_left + FLY_W + SHADOW_HALO - win_w)
             .max(pill.right() - win_w);
-        let win_top = tb_bottom - win_h;
+        // Bottom bar: the window runs up from the screen bottom, the card
+        // sitting under its top edge. Top bar: mirrored — the window starts
+        // at the bar's top and reaches `WINDOW_TOP_PAD` past the card, for
+        // the shadow halo below it.
+        let (win_top, win_bottom) = match edge {
+            Edge::Top => (tb_top, tb_top + win_h),
+            _ => (tb_bottom - win_h, tb_bottom),
+        };
         let window = RECT {
             left: (win_left * scale).round() as i32,
             top: (win_top * scale).round() as i32,
             right: ((win_left + win_w) * scale).round() as i32,
-            bottom: (tb_bottom * scale).round() as i32,
+            bottom: (win_bottom * scale).round() as i32,
         };
         // Use the snapped physical origin for local-coordinate conversion so
         // hit testing and drawing cannot drift by a rounding fraction.
         let origin = (window.left as f32 / scale, window.top as f32 / scale);
+        // §3: computed on every edge (the window size is edge-invariant), so
+        // a flip to a side bar only has to show it — no resize, no re-place.
+        let notice = RectD::new(
+            win_left + (win_w - NOTICE_W) * 0.5,
+            win_top + (win_h - NOTICE_H) * 0.5,
+            NOTICE_W,
+            NOTICE_H,
+        );
 
         Self {
             taskbar,
@@ -316,6 +516,9 @@ impl Anchor {
             // squeeze case shows the pill plus a tray notice instead.
             visible: true,
             insufficient_space,
+            edge,
+            paused: false,
+            notice,
         }
     }
 
@@ -471,6 +674,162 @@ fn find_taskbar_hwnd() -> HWND {
 }
 
 // ---------------------------------------------------------------------------
+// §2: which edge the bar sits on.
+
+/// §2: the primary taskbar's edge, from the shell's own answer
+/// (`ABM_GETTASKBARPOS`) — it stays right while the bar animates, which
+/// comparing rects cannot say. Falls back to the bar's rect against its
+/// monitor when the call reports nothing usable.
+pub fn taskbar_edge() -> Edge {
+    if let Some(edge) = simulated_edge() {
+        return edge;
+    }
+    let mut data = APPBARDATA {
+        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: APPBARDATA is initialized with its size.
+    let raw = unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) } as u32;
+    let reported = match raw {
+        ABE_TOP => Some(Edge::Top),
+        ABE_BOTTOM => Some(Edge::Bottom),
+        ABE_LEFT => Some(Edge::Left),
+        ABE_RIGHT => Some(Edge::Right),
+        _ => None,
+    };
+    // The call also fills `rc`. A call that left it empty told us nothing —
+    // and `ABE_LEFT` is 0, so trusting a bare failure would read as "left"
+    // and pause the island for no reason.
+    if reported.is_some() && data.rc.right > data.rc.left && data.rc.bottom > data.rc.top {
+        return reported.unwrap_or(Edge::Bottom);
+    }
+    match taskbar_window() {
+        Some(bar) => {
+            let mut rect = RECT::default();
+            // SAFETY: a valid out pointer for this thread.
+            if unsafe { GetWindowRect(bar, &mut rect) }.is_ok()
+                && rect.right > rect.left
+                && rect.bottom > rect.top
+            {
+                edge_from_rect(rect)
+            } else {
+                Edge::Bottom
+            }
+        }
+        None => Edge::Bottom,
+    }
+}
+
+/// The bar's edge from its own rect: horizontal bars are Top when they hug
+/// the monitor's top, vertical ones Left when they hug its left.
+fn edge_from_rect(bar: RECT) -> Edge {
+    let monitor = unsafe { MonitorFromRect(&bar, MONITOR_DEFAULTTOPRIMARY) };
+    let mut mi = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: mi.cbSize is set and mi is writable.
+    let found = unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool();
+    if (bar.right - bar.left) >= (bar.bottom - bar.top) {
+        let top_half = if found {
+            bar.top - mi.rcMonitor.top <= mi.rcMonitor.bottom - bar.bottom
+        } else {
+            bar.top <= 0
+        };
+        if top_half {
+            Edge::Top
+        } else {
+            Edge::Bottom
+        }
+    } else {
+        let left_half = if found {
+            bar.left - mi.rcMonitor.left <= mi.rcMonitor.right - bar.right
+        } else {
+            bar.left <= 0
+        };
+        if left_half {
+            Edge::Left
+        } else {
+            Edge::Right
+        }
+    }
+}
+
+/// The bar's thickness in physical pixels: height when horizontal, width
+/// when vertical.
+fn bar_thickness(bar: RECT) -> i32 {
+    let w = bar.right - bar.left;
+    let h = bar.bottom - bar.top;
+    if w >= h {
+        h
+    } else {
+        w
+    }
+}
+
+/// §2 `--simulate-edge`: the same bar transposed onto another edge of the
+/// monitor it already lives on, keeping its real thickness, so the layout
+/// for that edge can be exercised without moving the actual taskbar.
+fn synthetic_bar(monitor: RECT, edge: Edge, thickness: i32) -> RECT {
+    match edge {
+        Edge::Top => RECT {
+            left: monitor.left,
+            top: monitor.top,
+            right: monitor.right,
+            bottom: monitor.top + thickness,
+        },
+        Edge::Bottom => RECT {
+            left: monitor.left,
+            top: monitor.bottom - thickness,
+            right: monitor.right,
+            bottom: monitor.bottom,
+        },
+        Edge::Left => RECT {
+            left: monitor.left,
+            top: monitor.top,
+            right: monitor.left + thickness,
+            bottom: monitor.bottom,
+        },
+        Edge::Right => RECT {
+            left: monitor.right - thickness,
+            top: monitor.top,
+            right: monitor.right,
+            bottom: monitor.bottom,
+        },
+    }
+}
+
+/// The free area a (real or synthetic) bar leaves on its monitor.
+fn work_of(monitor: RECT, bar: RECT, edge: Edge) -> RECT {
+    match edge {
+        Edge::Top => RECT {
+            left: monitor.left,
+            top: bar.bottom,
+            right: monitor.right,
+            bottom: monitor.bottom,
+        },
+        Edge::Bottom => RECT {
+            left: monitor.left,
+            top: monitor.top,
+            right: monitor.right,
+            bottom: bar.top,
+        },
+        Edge::Left => RECT {
+            left: bar.right,
+            top: monitor.top,
+            right: monitor.right,
+            bottom: monitor.bottom,
+        },
+        Edge::Right => RECT {
+            left: monitor.left,
+            top: monitor.top,
+            right: bar.left,
+            bottom: monitor.bottom,
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // §8: alignment, scans and watchers.
 
 /// `TaskbarAl` — 1 = icons centered, anything else (or absent) = left.
@@ -566,6 +925,57 @@ fn install_move_hook() {
             crate::log::log(&format!("anchor.watch: taskbar hook {event} failed"));
         }
     }
+    // §1: with the card open, another process taking the foreground is a
+    // shell flyout opening (Start, the tray overflow, the clock) or an app
+    // switch — the card belongs to the taskbar's UI and closes with it.
+    // Installed once like the move hooks above; the callback only posts
+    // while [`foreground_armed`] holds, so idle pays one atomic load per
+    // foreground change and nothing else.
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(foreground_hook_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    if hook.0.is_null() {
+        crate::log::log("anchor.watch: foreground hook failed");
+    }
+}
+
+/// §1: true while the card is open — the only time the foreground hook has
+/// anything to say.
+static FOREGROUND_ARMED: AtomicBool = AtomicBool::new(false);
+
+pub fn foreground_armed(armed: bool) {
+    FOREGROUND_ARMED.store(armed, Ordering::Relaxed);
+}
+
+/// SAFETY: called by the system on this thread only (OUTOFCONTEXT).
+unsafe extern "system" fn foreground_hook_proc(
+    _hook: HWINEVENTHOOK,
+    _event: u32,
+    hwnd: HWND,
+    _idobject: i32,
+    _idchild: i32,
+    _ideventthread: u32,
+    _eventtime: u32,
+) {
+    if !FOREGROUND_ARMED.load(Ordering::Relaxed) || hwnd.0.is_null() {
+        return;
+    }
+    // The taskbar itself never closes the card: clicking a tray button makes
+    // `Shell_TrayWnd` the foreground window, and that click is already an
+    // outside click (the card's own hook handles it). Our own windows never
+    // arrive — the hook skips this process.
+    if hwnd == find_taskbar_hwnd() {
+        return;
+    }
+    post_island(WM_APP_FOREGROUND, false);
 }
 
 /// SAFETY: called by the system on this thread only (OUTOFCONTEXT).
@@ -1141,6 +1551,7 @@ mod tests {
             96,
             0,
             None,
+            Edge::Bottom,
         );
         assert_eq!(a.pill.w, design::PILL_W);
         assert_eq!(a.pill.h, a.taskbar_height_dip - design::PILL_INSET * 2.0);
@@ -1162,6 +1573,7 @@ mod tests {
             96,
             0,
             None,
+            Edge::Bottom,
         );
         let b = Anchor::layout(
             rect(0, 1040, 1920, 1080),
@@ -1170,6 +1582,7 @@ mod tests {
             96,
             -24,
             None,
+            Edge::Bottom,
         );
         assert_eq!(
             a.window.right - a.window.left,
@@ -1191,6 +1604,7 @@ mod tests {
             96,
             0,
             None,
+            Edge::Bottom,
         );
         assert!(a.flyout.x >= 12.0);
         assert!(a.insufficient_space);
@@ -1207,6 +1621,7 @@ mod tests {
             120,
             0,
             None,
+            Edge::Bottom,
         );
         assert_eq!(a.scale, 1.25);
         assert_eq!(
@@ -1215,9 +1630,11 @@ mod tests {
         );
         // Each edge is snapped to a physical pixel, so an edge landing on .5 can
         // differ from the ideal height by one pixel. The origin and the
-        // taskbar-aligned bottom are the authoritative values.
+        // taskbar-aligned bottom are the authoritative values. The height
+        // always uses the larger (top-edge) card gap so a bottom↔top flip
+        // never has to resize the swapchain.
         let ideal_h = ((50.0_f64 / 1.25
-            + design::GAP_TASKBAR as f64
+            + design::FLY_TOP_GAP as f64
             + design::FLY_H as f64
             + design::WINDOW_TOP_PAD as f64)
             * 1.25)
@@ -1236,7 +1653,7 @@ mod tests {
         // the whole left side is free.
         let (taskbar, tray, work) = bar();
         let icons = space(true, rect(547, 1140, 1373, 1200), None);
-        let a = Anchor::layout(taskbar, tray, work, 96, 0, Some(&icons));
+        let a = Anchor::layout(taskbar, tray, work, 96, 0, Some(&icons), Edge::Bottom);
         // Left margin 12 px — the same edge spacing the card clamps to, so
         // the pill and the flyout it opens line up on the screen border…
         assert_eq!(a.pill.x, EDGE_MARGIN_DIP);
@@ -1252,13 +1669,13 @@ mod tests {
         // The band from Widgets to the icons must fit the pill (300 + 8 to
         // 600 - 8 = 284 DIP wide) or Auto would fall back to the tail.
         let beside = space(true, rect(600, 1140, 1400, 1200), Some(300));
-        let a = Anchor::layout(taskbar, tray, work, 96, 0, Some(&beside));
+        let a = Anchor::layout(taskbar, tray, work, 96, 0, Some(&beside), Edge::Bottom);
         assert_eq!(a.pill.x, 300.0 + design::SLOT_GAP_DIP);
         assert!(a.pill.right() <= 600.0 - design::SLOT_GAP_DIP);
         // Widgets inside the cluster does not claim the left side: Auto
         // still means "empty left side, screen-edge margin".
         let inside = space(true, rect(600, 1140, 1400, 1200), Some(700));
-        let b = Anchor::layout(taskbar, tray, work, 96, 0, Some(&inside));
+        let b = Anchor::layout(taskbar, tray, work, 96, 0, Some(&inside), Edge::Bottom);
         assert_eq!(b.pill.x, EDGE_MARGIN_DIP);
     }
 
@@ -1268,7 +1685,7 @@ mod tests {
         // at 1519.
         let (taskbar, tray, work) = bar();
         let icons = space(false, rect(0, 1140, 839, 1200), None);
-        let a = Anchor::layout(taskbar, tray, work, 96, 0, Some(&icons));
+        let a = Anchor::layout(taskbar, tray, work, 96, 0, Some(&icons), Edge::Bottom);
         assert_eq!(a.pill.right(), 1519.0 - design::SLOT_GAP_DIP);
         assert!(a.pill.x >= 839.0 + design::SLOT_GAP_DIP);
         assert!(!a.insufficient_space);
@@ -1281,7 +1698,7 @@ mod tests {
         // slot offset can no longer push the pill into the tray either.
         let (taskbar, tray, work) = bar();
         let icons = space(false, rect(0, 1140, 839, 1200), None);
-        let a = Anchor::layout(taskbar, tray, work, 96, 240, Some(&icons));
+        let a = Anchor::layout(taskbar, tray, work, 96, 240, Some(&icons), Edge::Bottom);
         assert_eq!(a.pill.right(), 1519.0 - design::SLOT_GAP_DIP);
         assert!(!a.insufficient_space);
     }
@@ -1301,6 +1718,7 @@ mod tests {
             96,
             0,
             Some(&icons),
+            Edge::Bottom,
         );
         assert!(a.insufficient_space);
         assert_eq!(a.pill.w, design::PILL_W, "the pill never shrinks");
@@ -1317,7 +1735,7 @@ mod tests {
         // open card would be clipped by its own window.
         let (taskbar, tray, work) = bar();
         let icons = space(true, rect(547, 1140, 1373, 1200), None);
-        let a = Anchor::layout(taskbar, tray, work, 96, 0, Some(&icons));
+        let a = Anchor::layout(taskbar, tray, work, 96, 0, Some(&icons), Edge::Bottom);
         assert_eq!(a.pill.x, EDGE_MARGIN_DIP, "matches the card's edge margin");
         let win_left = a.window.left as f32 / a.scale;
         let win_right = a.window.right as f32 / a.scale;
@@ -1348,5 +1766,207 @@ mod tests {
         assert!(!notice_due(), "one notice per episode");
         notice_clear();
         assert!(notice_due(), "the next episode may notify again");
+    }
+
+    // ------------------------------------------------------------- §2 edges
+
+    #[test]
+    fn edge_parse_and_codes_cover_the_four_edges() {
+        for (text, edge) in [
+            ("top", Edge::Top),
+            (" Bottom ", Edge::Bottom),
+            ("LEFT", Edge::Left),
+            ("right", Edge::Right),
+        ] {
+            let parsed = Edge::parse(text);
+            assert_eq!(parsed, Some(edge), "parsing {text:?}");
+            assert!(edge.code() >= 1, "every edge has a non-zero code");
+        }
+        assert_eq!(Edge::parse("up"), None);
+        assert_eq!(Edge::parse(""), None);
+        assert!(!Edge::Top.is_vertical() && !Edge::Bottom.is_vertical());
+        assert!(Edge::Left.is_vertical() && Edge::Right.is_vertical());
+    }
+
+    #[test]
+    fn edge_from_rect_reads_the_side_the_bar_hugs() {
+        // All four rects sit on the primary monitor, so the monitor lookup
+        // (the defensive half of the fallback) resolves the same way here as
+        // it does at runtime.
+        assert_eq!(edge_from_rect(rect(0, 1140, 1920, 1200)), Edge::Bottom);
+        assert_eq!(edge_from_rect(rect(0, 0, 1920, 60)), Edge::Top);
+        assert_eq!(edge_from_rect(rect(0, 0, 60, 1200)), Edge::Left);
+        assert_eq!(edge_from_rect(rect(1860, 0, 1920, 1200)), Edge::Right);
+    }
+
+    #[test]
+    fn an_edge_change_waits_for_the_debounce_before_it_commits() {
+        // Only this test touches APPLIED_EDGE, so the sequence is
+        // deterministic with the suite running in parallel. `edge_pending` is
+        // the gate `sync_anchor` arms the 150 ms one-shot with; the settle is
+        // the only place a *new* edge becomes current.
+        edge_commit(Edge::Bottom);
+        assert!(!edge_pending(Edge::Bottom), "a repeat is never pending");
+        assert!(edge_pending(Edge::Top), "a new edge waits out the storm");
+        assert!(edge_commit(Edge::Top), "the settle commits it once");
+        assert!(!edge_pending(Edge::Top));
+        assert!(!edge_commit(Edge::Top), "committing twice is a no-op");
+    }
+
+    #[test]
+    fn simulate_edge_overrides_the_real_bar_and_clears() {
+        // Only this test touches SIMULATED_EDGE. `compute`/`taskbar_edge`
+        // read it; nothing else in the suite does.
+        set_simulated_edge(Some(Edge::Left));
+        assert_eq!(simulated_edge(), Some(Edge::Left));
+        assert_eq!(taskbar_edge(), Edge::Left, "the override wins");
+        set_simulated_edge(None);
+        assert_eq!(simulated_edge(), None);
+    }
+
+    #[test]
+    fn top_edge_hangs_the_card_below_the_bar_at_the_same_window_height() {
+        // The bottom edge is v0.11's behaviour: the card sits above the bar.
+        let bottom = Anchor::layout(
+            rect(0, 1140, 1920, 1200),
+            rect(1519, 1140, 1920, 1200),
+            rect(0, 0, 1920, 1140),
+            96,
+            0,
+            None,
+            Edge::Bottom,
+        );
+        // The same 60 px bar hugging the top of the screen.
+        let top = Anchor::layout(
+            rect(0, 0, 1920, 60),
+            rect(1519, 0, 1920, 60),
+            rect(0, 60, 1920, 1200),
+            96,
+            0,
+            None,
+            Edge::Top,
+        );
+        assert_eq!(
+            top.flyout.y,
+            60.0 + design::FLY_TOP_GAP,
+            "§2: the card hangs 12 DIP below a top bar"
+        );
+        assert_eq!(bottom.flyout.bottom(), 1140.0 - design::GAP_TASKBAR);
+        // The window is built from the larger gap on both edges, so an edge
+        // flip is a position-only move — the swapchain cannot resize.
+        assert_eq!(
+            top.window.bottom - top.window.top,
+            bottom.window.bottom - bottom.window.top,
+            "the height never depends on the edge"
+        );
+        assert_eq!(top.window.top, 0, "the window starts at the bar's top");
+        assert_eq!(bottom.window.bottom, 1200, "…and ends at the bar's bottom");
+        // The pill keeps the same insets inside the bar either way.
+        assert_eq!(top.pill.y, design::PILL_INSET);
+        assert_eq!(top.pill.h, 60.0 - design::PILL_INSET * 2.0);
+        assert_eq!(top.pill.bottom(), 60.0 - design::PILL_INSET);
+        assert!(!top.paused && !bottom.paused, "horizontal edges run");
+        assert_eq!(top.edge, Edge::Top);
+    }
+
+    #[test]
+    fn side_edges_pause_with_the_notice_centred_in_the_window() {
+        let left = Anchor::layout(
+            rect(0, 0, 60, 1200),
+            rect(0, 0, 60, 1200),
+            rect(60, 0, 1920, 1200),
+            96,
+            0,
+            None,
+            Edge::Left,
+        );
+        assert!(left.paused, "§3: no room on a side bar — pause");
+        assert!(left.edge.is_vertical());
+        assert!(left.visible, "the notice card is what still shows");
+        assert!(!left.insufficient_space);
+        // The window keeps the horizontal size, so flipping back is
+        // position-only (the swapchain cannot resize).
+        let bottom = Anchor::layout(
+            rect(0, 1140, 1920, 1200),
+            rect(1519, 1140, 1920, 1200),
+            rect(0, 0, 1920, 1140),
+            96,
+            0,
+            None,
+            Edge::Bottom,
+        );
+        assert_eq!(
+            (
+                left.window.right - left.window.left,
+                left.window.bottom - left.window.top
+            ),
+            (
+                bottom.window.right - bottom.window.left,
+                bottom.window.bottom - bottom.window.top
+            )
+        );
+        // The notice is centred in that window, at the spec'd size.
+        let notice = left.notice;
+        assert_eq!((notice.w, notice.h), (design::NOTICE_W, design::NOTICE_H));
+        let win_left = left.window.left as f32 / left.scale;
+        let win_top = left.window.top as f32 / left.scale;
+        let win_w = (left.window.right - left.window.left) as f32 / left.scale;
+        let win_h = (left.window.bottom - left.window.top) as f32 / left.scale;
+        assert!(
+            ((notice.x - win_left) - (win_w - design::NOTICE_W) * 0.5).abs() < 1.0,
+            "centred horizontally"
+        );
+        assert!(
+            ((notice.y - win_top) - (win_h - design::NOTICE_H) * 0.5).abs() < 1.0,
+            "centred vertically"
+        );
+        // Paused surfaces still own valid (placeholder) rects so every
+        // coordinate conversion stays inside the window.
+        assert!(notice.x >= win_left && notice.right() <= win_left + win_w + 1.0);
+        assert!(notice.y >= win_top && notice.bottom() <= win_top + win_h + 1.0);
+    }
+
+    #[test]
+    fn right_edge_pauses_too_and_the_bar_thickness_comes_across() {
+        let right = Anchor::layout(
+            rect(1860, 0, 1920, 1200),
+            rect(1860, 0, 1920, 1200),
+            rect(0, 0, 1860, 1200),
+            96,
+            0,
+            None,
+            Edge::Right,
+        );
+        assert!(right.paused);
+        assert_eq!(
+            right.taskbar_height_dip, 60.0,
+            "thickness is measured across the bar"
+        );
+        assert_eq!(bar_thickness(rect(1860, 0, 1920, 1200)), 60);
+        assert_eq!(bar_thickness(rect(0, 1140, 1920, 1200)), 60);
+    }
+
+    #[test]
+    fn synthetic_bar_transposes_the_real_one_onto_another_edge() {
+        let monitor = rect(0, 0, 1920, 1200);
+        assert_eq!(synthetic_bar(monitor, Edge::Top, 60), rect(0, 0, 1920, 60));
+        assert_eq!(
+            synthetic_bar(monitor, Edge::Bottom, 60),
+            rect(0, 1140, 1920, 1200)
+        );
+        assert_eq!(synthetic_bar(monitor, Edge::Left, 60), rect(0, 0, 60, 1200));
+        assert_eq!(
+            synthetic_bar(monitor, Edge::Right, 60),
+            rect(1860, 0, 1920, 1200)
+        );
+        // The free area is whatever the bar leaves on its monitor.
+        assert_eq!(
+            work_of(monitor, rect(0, 0, 1920, 60), Edge::Top),
+            rect(0, 60, 1920, 1200)
+        );
+        assert_eq!(
+            work_of(monitor, rect(0, 0, 60, 1200), Edge::Left),
+            rect(60, 0, 1920, 1200)
+        );
     }
 }

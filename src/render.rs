@@ -131,6 +131,13 @@ pub struct RenderInput<'a> {
     pub sheet_scroll: usize,
     /// Highlight the shelf drop zone while a file drag hovers the card.
     pub drag_over: bool,
+    /// §3: while paused the island draws only `notice` — the pill and the
+    /// card are kept out of the frame entirely (and with `notice` dismissed
+    /// the frame is empty).
+    pub paused: bool,
+    /// §3: the paused notice card, window-local. Present exactly when
+    /// `paused` and not yet dismissed.
+    pub notice: Option<RectD>,
 }
 
 impl RenderInput<'_> {
@@ -219,6 +226,12 @@ const CALL_STACK_ICON: f32 = 16.0;
 /// Top padding above that glyph inside the button.
 const CALL_STACK_TOP: f32 = 6.0;
 
+/// §3 copy of the paused notice card's body. The brief's own wording was
+/// not checked into the repo, so this draft stands in for it — owner to
+/// confirm before release.
+const NOTICE_BODY: &str = "The taskbar sits on a side edge, where the island cannot live. \
+     Move it back to the top or bottom, or quit the island.";
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct FormatKey {
     size_x100: i32,
@@ -299,6 +312,15 @@ impl Painter {
         }
 
         let mut hits = HitMap::default();
+        // §3: a paused island is the notice card and nothing else — no pill,
+        // no card, no focus ring; with the card dismissed it draws nothing
+        // and the empty window region keeps the frame clipped away.
+        if input.paused {
+            if let Some(notice) = input.notice {
+                self.draw_notice(rt, input, notice, &mut hits);
+            }
+            return Ok(hits);
+        }
         // The island only exists while something is live. With no view model
         // the window stays fully transparent and click-through.
         if let Some(pill) = input.view.pill() {
@@ -1508,6 +1530,127 @@ impl Painter {
             design::R_SURFACE,
             px,
             theme.fly_border().with_alpha(alpha),
+            false,
+        );
+    }
+
+    /// §3: the single card a left/right taskbar earns. It is the whole
+    /// surface while the island is paused: what happened, and the two ways
+    /// out — open the Windows taskbar settings page, or quit. The buttons
+    /// are the only hit rects this frame registers.
+    fn draw_notice(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        notice: RectD,
+        hits: &mut HitMap,
+    ) {
+        let theme = input.theme;
+        self.draw_shadow(rt, notice, theme, 1.0);
+        self.fill_round(rt, notice, design::R_SURFACE, theme.fly_fill());
+
+        let clip = rounded_layer(rt, notice, design::R_SURFACE);
+        let inner_x = notice.x + design::NOTICE_PAD;
+        let inner_w = notice.w - design::NOTICE_PAD * 2.0;
+        let title = RectD::new(
+            inner_x,
+            notice.y + design::NOTICE_PAD + design::NOTICE_TITLE_DY,
+            inner_w,
+            design::LINE_FLY_TITLE,
+        );
+        self.text(
+            rt,
+            "Island paused",
+            title,
+            design::FONT_FLY_TITLE,
+            600,
+            0,
+            design::LINE_FLY_TITLE,
+            theme.text_primary(),
+            false,
+        );
+        // Body band: title bottom to a gap above the button row.
+        let buttons_top = notice.bottom() - design::NOTICE_PAD - design::NOTICE_BUTTON_H;
+        let body_top = title.bottom() + design::NOTICE_BODY_GAP;
+        let body = RectD::new(
+            inner_x,
+            body_top,
+            inner_w,
+            (buttons_top - design::NOTICE_BODY_GAP - body_top).max(0.0),
+        );
+        self.text(
+            rt,
+            NOTICE_BODY,
+            body,
+            design::FONT_BUTTON,
+            400,
+            0,
+            design::LINE_HINT,
+            theme.text_secondary(),
+            false,
+        );
+
+        // Two equal buttons, centred as a row: green primary (same tint as
+        // the card's Open button, §7) and a neutral Quit.
+        let row_w = design::NOTICE_BUTTON_W * 2.0 + design::NOTICE_BUTTON_GAP;
+        let settings = RectD::new(
+            notice.x + (notice.w - row_w) * 0.5,
+            buttons_top,
+            design::NOTICE_BUTTON_W,
+            design::NOTICE_BUTTON_H,
+        );
+        let (fill, hover) = if theme.high_contrast {
+            let base = theme.open_call_fill();
+            (base, darken(base, 0.92))
+        } else {
+            (
+                design::CALL_GREEN.with_alpha(0.16),
+                design::CALL_GREEN.with_alpha(0.24),
+            )
+        };
+        self.call_text_button(
+            rt,
+            input,
+            CallButton {
+                element: Element::NoticeSettings,
+                rect: settings,
+                label: "Taskbar settings",
+                fill,
+                hover,
+                text: theme.open_call_text(design::CALL_GREEN),
+            },
+            1.0,
+            hits,
+        );
+        let quit = RectD::new(
+            settings.right() + design::NOTICE_BUTTON_GAP,
+            buttons_top,
+            design::NOTICE_BUTTON_W,
+            design::NOTICE_BUTTON_H,
+        );
+        self.call_text_button(
+            rt,
+            input,
+            CallButton {
+                element: Element::NoticeQuit,
+                rect: quit,
+                label: "Quit island",
+                fill: theme.card_button(),
+                hover: theme.card_button_hover(),
+                text: theme.card_button_text(),
+            },
+            1.0,
+            hits,
+        );
+        drop_rounded_layer(rt, clip);
+
+        let px = 1.0 / input.scale;
+        self.stroke_round(
+            rt,
+            notice.inset(px * 0.5),
+            design::R_SURFACE,
+            px,
+            theme.fly_border(),
             false,
         );
     }

@@ -6,7 +6,7 @@
 
 use std::mem::size_of;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
 use windows::core::{w, Result, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -17,9 +17,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, LoadIconW, PostMessageW, RegisterClassExW, RegisterWindowMessageW,
-    SetForegroundWindow, TrackPopupMenu, MF_CHECKED, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL,
-    TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY,
-    WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
+    SetForegroundWindow, TrackPopupMenu, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING,
+    SW_SHOWNORMAL, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_CONTEXTMENU,
+    WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use crate::settings;
@@ -32,6 +32,9 @@ const WM_APP_TRAY: u32 = WM_APP + 40;
 const ID_AUTOSTART: usize = 1;
 const ID_EXIT: usize = 2;
 const ID_MANAGE_ENGINES: usize = 3;
+/// §3: grayed informational row while the island is paused — never a
+/// command, so it falls through the menu match untouched.
+const ID_PAUSED: usize = 4;
 const TIP: &str = "TaskbarIsland — right-click for options";
 /// The converters pack keeps a copy of itself beside the app so "Manage
 /// engines..." is always one command away (installer\converters.iss).
@@ -45,6 +48,14 @@ static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static ISLAND_HWND: AtomicIsize = AtomicIsize::new(0);
 /// `TaskbarCreated` is a registered message, so it is only known at runtime.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+/// §3: the island is paused on a left/right taskbar — the menu says so.
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
+/// §3: called on every pause/resume transition so the tray menu can show the
+/// paused row. The island itself is the source of truth; this is a mirror.
+pub(crate) fn set_paused(paused: bool) {
+    PAUSED.store(paused, Ordering::Relaxed);
+}
 
 /// True when `message` is the runtime-registered `TaskbarCreated` broadcast
 /// (Explorer restarted and a new taskbar exists). Registered message ids are
@@ -201,6 +212,11 @@ fn show_menu(hwnd: HWND) {
         let Ok(menu) = CreatePopupMenu() else {
             return;
         };
+        // §3: grayed state row — the island is paused on a side taskbar.
+        if PAUSED.load(Ordering::Relaxed) {
+            let _ = AppendMenuW(menu, MF_STRING | MF_GRAYED, ID_PAUSED, w!("Island paused"));
+            let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+        }
         let startup = settings::autostart_enabled();
         let startup_flags = if startup {
             MF_STRING | MF_CHECKED

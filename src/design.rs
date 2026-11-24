@@ -38,6 +38,12 @@ pub const SPACE_DEBOUNCE_MS: u32 = 150;
 /// makes Auto pick the wrong band. Alignment changes therefore wait this
 /// long (one-shot timer, not a poll) before the single rescan.
 pub const ALIGN_DEBOUNCE_MS: u32 = 900;
+/// §2: moving the taskbar to another edge arrives as a storm of
+/// `LOCATIONCHANGE`s (the bar slides, resizes and settles), so an edge
+/// change waits this long *after the last one* before it is applied. One
+/// one-shot timer, never a poll: only the edge still current when it fires
+/// flips the island.
+pub const EDGE_DEBOUNCE_MS: u32 = 150;
 /// The flyout sits closer to the pill than the v1.0 spec's 12 DIP: the taskbar
 /// surface ends at the top of the band, and the owner asked for the card to
 /// come down so it does not read as a detached popup.
@@ -47,8 +53,27 @@ pub const GAP_TASKBAR: f32 = 6.0;
 /// One value, two names: the token drift test checks this spelling.
 #[allow(dead_code)] // consumed by the design-tokens drift test
 pub const FLY_BOTTOM_GAP: f32 = GAP_TASKBAR;
+/// §2 top edge: the card hangs this far below the taskbar's bottom edge
+/// (the v0.12 brief's 12 px). The bottom edge keeps [`GAP_TASKBAR`]. The
+/// island window's height is computed from *this* gap on both edges, so an
+/// edge flip is a position-only move — the swapchain cannot resize at
+/// runtime, and a top↔bottom flip must not need one.
+pub const FLY_TOP_GAP: f32 = 12.0;
 pub const WINDOW_W: f32 = 520.0;
 pub const WINDOW_TOP_PAD: f32 = 40.0;
+/// §3 the paused-edge notice card (360 px wide, per the brief): shown once
+/// per edge change while the taskbar sits on a left or right edge, centred
+/// in the island window, which stays its normal size so flipping back to the
+/// top/bottom edge remains a position-only move.
+pub const NOTICE_W: f32 = 360.0;
+pub const NOTICE_H: f32 = 176.0;
+/// The notice's own paddings and rhythm (DIP), used only by `render.rs`.
+pub const NOTICE_PAD: f32 = 16.0;
+pub const NOTICE_TITLE_DY: f32 = -1.0;
+pub const NOTICE_BODY_GAP: f32 = 6.0;
+pub const NOTICE_BUTTON_GAP: f32 = 14.0;
+pub const NOTICE_BUTTON_W: f32 = 156.0;
+pub const NOTICE_BUTTON_H: f32 = 44.0;
 pub const PILL_TILE_GAP: f32 = 8.0;
 pub const PILL_PROGRESS_H: f32 = 2.0;
 /// Distance from the pill's bottom edge to the progress line. A small inset

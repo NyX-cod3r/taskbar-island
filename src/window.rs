@@ -48,7 +48,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     UnhookWindowsHookEx, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV,
     HHOOK, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST, IDC_ARROW, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
     SM_CXDRAG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP,
+    SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_CLOSE,
     WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETOBJECT, WM_HOTKEY, WM_KEYDOWN,
     WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
     WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
@@ -139,6 +139,10 @@ const HOLD_PROBE_DELAY_MS: u32 = 400;
 const SPACE_DEBOUNCE_TIMER_ID: usize = 20;
 /// §8 frames for the 200 ms ease-out slide between placements.
 const SLIDE_TIMER_ID: usize = 21;
+/// §2: one-shot 150 ms wait before an edge change is applied — a taskbar
+/// reposition arrives as a storm of `LOCATIONCHANGE`s, and only the edge
+/// still current after the storm may flip the island.
+const EDGE_DEBOUNCE_TIMER_ID: usize = 22;
 const SLIDE_TICK_MS: u32 = 16;
 /// How long an action's inline message stays on the card before the status
 /// line takes over again (no timer: the 1 Hz call tick re-renders it).
@@ -485,6 +489,17 @@ struct Surface {
     pill: RectD,
     flyout: RectD,
     flyout_open: bool,
+    /// §3: the taskbar sits on a left/right edge — nothing is drawn, both
+    /// window regions are empty (the last frame is clipped away), no
+    /// animation runs. Clipboard capture and the countdown keep going on
+    /// their own; only this window's presentation stops.
+    paused: bool,
+    /// §3: the paused notice card, window-local. `None` while resumed or
+    /// after an Esc/outside dismissal (the island stays paused either way).
+    notice: Option<RectD>,
+    /// §3: the edge the current notice was raised for — one card per edge
+    /// change, so a dismissal stays down until the bar moves again.
+    notice_edge: Option<crate::anchor::Edge>,
     /// Activity the open flyout belongs to; closes it when the winner changes.
     flyout_owner: Option<ActivityKind>,
     flyout_phase: FlyoutPhase,
@@ -832,6 +847,9 @@ pub fn create(
         Ok::<(), windows::core::Error>(())
     })?;
     with_surface(|surface| {
+        // §3: a left/right bar at launch starts paused — the notice card is
+        // the only thing this window will show until the bar moves back.
+        surface.sync_pause(anchor);
         if !surface.shelf_store.is_empty() {
             surface.apply_shelf();
         }
@@ -946,6 +964,8 @@ unsafe extern "system" fn low_level_keyboard_proc(
         let vk = info.vkCode;
         let interesting = [
             VK_UP, VK_DOWN, VK_HOME, VK_END, VK_RETURN, VK_SPACE, VK_TAB, VK_DELETE,
+            // §3: Esc reaches the paused island (dismiss the notice card).
+            VK_ESCAPE,
         ]
         .iter()
         .any(|key| key.0 as u32 == vk);
@@ -1303,6 +1323,12 @@ fn paste_is_due(target: HWND, foreground: HWND) -> bool {
 /// the one-time squeeze notice and hands the move to the 200 ms ease-out
 /// slide. Only position changes are applied — the window's size is fixed for
 /// its swapchain, so a taskbar height change is left to a restart.
+///
+/// §2: an *edge* change is different. It waits out [`design::EDGE_DEBOUNCE_MS`]
+/// of quiet first (a bar move is a storm of `LOCATIONCHANGE`s), and when the
+/// wait expires the card closes and the island either slides (top ↔ bottom)
+/// or pauses (a left/right bar) — the window size never changes, because
+/// `anchor::layout` builds it from the larger of the two card gaps.
 fn sync_anchor(hwnd: HWND) {
     let Some(taskbar) = crate::anchor::taskbar_window() else {
         return;
@@ -1314,6 +1340,25 @@ fn sync_anchor(hwnd: HWND) {
     let Some(anchor) = crate::anchor::Anchor::compute(taskbar, dpi, slot) else {
         return;
     };
+    // §2: a *different* edge than the one applied waits out the storm. Every
+    // sync during the storm re-arms the same one-shot, so only the edge still
+    // current 150 ms after the last event is ever committed; a bar that moved
+    // and moved back costs no flip at all.
+    if crate::anchor::edge_pending(anchor.edge) {
+        // SAFETY: this window owns the timer; re-arming restarts the wait.
+        unsafe {
+            SetTimer(
+                Some(hwnd),
+                EDGE_DEBOUNCE_TIMER_ID,
+                design::EDGE_DEBOUNCE_MS,
+                None,
+            );
+        }
+        return;
+    }
+    // Not pending: either the very first sync (record the edge so a later
+    // move counts as a flip) or a repeat of the current one (a no-op).
+    let _ = crate::anchor::edge_commit(anchor.edge);
     // §8: a free band narrower than the pill still shows the pill, plus one
     // tray notice per episode; room coming back re-arms it for the next one.
     if anchor.insufficient_space {
@@ -1342,12 +1387,61 @@ fn sync_anchor(hwnd: HWND) {
         // Size changes need a swapchain resize; not supported at runtime.
         return;
     }
-    // §7 Stage A + auto-hide: any anchor sync also heals the pill child.
-    // A reveal that never moves the window (the common case) would
-    // otherwise wait for a slide frame or the 2 s guard tick to re-align
-    // the child to the bar's new position.
+    // §3: idempotent — every sync re-states the pause for this edge (and
+    // raises/dismisses the notice card, one per edge change). The flip
+    // itself (closing the card) happened in `edge_debounce_fire`, the only
+    // place a *new* edge can get committed.
+    with_surface(|surface| surface.sync_pause(&anchor));
+    // §7 Stage A + auto-hide: any anchor sync also heals the pill child (it
+    // no-ops while paused). A reveal that never moves the window (the common
+    // case) would otherwise wait for a slide frame or the 2 s guard tick to
+    // re-align the child to the bar's new position.
     sync_pill_child(hwnd, taskbar);
     begin_slide(hwnd, anchor);
+}
+
+/// §2: the 150 ms edge wait expired — whatever edge the bar reports *now*
+/// survived the move storm, so commit it, drop the card that was anchored to
+/// the old edge, and let [`sync_anchor`] apply the new geometry (pause on a
+/// side bar, otherwise the 200 ms slide).
+fn edge_debounce_fire(hwnd: HWND) {
+    // SAFETY: one-shot timer owned by this window.
+    unsafe {
+        let _ = KillTimer(Some(hwnd), EDGE_DEBOUNCE_TIMER_ID);
+    }
+    let edge = crate::anchor::taskbar_edge();
+    let changed = crate::anchor::edge_commit(edge);
+    if changed {
+        crate::log::log(&format!("anchor.edge: flipped to {edge:?}"));
+        with_surface(|surface| {
+            // A side bar is handled by `set_paused` (it finishes the close at
+            // once); a top ↔ bottom flip rides out the normal close tween
+            // while the window slides underneath it.
+            if !edge.is_vertical() {
+                surface.begin_close_flyout(Instant::now());
+            }
+        });
+    }
+    sync_anchor(hwnd);
+}
+
+/// §3: the notice card's state machine, pure so it can be tested without a
+/// window. Returns the new `notice_edge` and whether a card must be raised
+/// now. One card per edge change: resuming clears everything, the first pause
+/// (or a flip to the *other* side edge) raises, and the same edge again —
+/// after an Esc/outside dismissal — stays dismissed.
+fn notice_decision(
+    notice_edge: Option<crate::anchor::Edge>,
+    anchor_paused: bool,
+    anchor_edge: crate::anchor::Edge,
+) -> (Option<crate::anchor::Edge>, bool) {
+    if !anchor_paused {
+        (None, false)
+    } else if notice_edge != Some(anchor_edge) {
+        (Some(anchor_edge), true)
+    } else {
+        (notice_edge, false)
+    }
 }
 
 /// §8: move the island to `anchor`'s window rect over 200 ms. Retarget-safe:
@@ -1487,6 +1581,12 @@ fn finish_slide(hwnd: HWND, slide: Slide) {
 /// Returns `true` when the child was actually moved (the auto-hide reveal
 /// handler logs that as its proof of work).
 fn sync_pill_child(card: HWND, taskbar: HWND) -> bool {
+    // §3: while paused the card window is centred in the work area, nowhere
+    // near the bar — parking the child on that offset would be pure churn
+    // (its region is empty anyway). Resume re-aligns it.
+    if with_surface_ref(|surface| surface.paused).unwrap_or(false) {
+        return false;
+    }
     let raw = PILL_HWND.load(Ordering::Relaxed);
     if raw == 0 {
         return false;
@@ -1562,6 +1662,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             let hit = with_surface_ref(|surface| {
                 let x = point.x as f32 / surface.scale;
                 let y = point.y as f32 / surface.scale;
+                if surface.paused {
+                    // §3: while paused only the notice card takes input; the
+                    // rest of the window is click-through (its region is
+                    // empty there anyway).
+                    return surface.notice.is_some_and(|notice| notice.contains(x, y));
+                }
                 (surface.view.pill().is_some() && surface.pill.contains(x, y))
                     || (surface.flyout_open && surface.drawn_flyout().contains(x, y))
             })
@@ -2059,6 +2165,28 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                                     surface.undo_conversion();
                                     None
                                 }
+                                // §3: the paused notice card's two exits.
+                                Element::NoticeSettings => {
+                                    crate::log::log("notice.settings");
+                                    if !crate::activities::call::open_app("ms-settings:taskbar") {
+                                        crate::log::log("notice.settings: shell refused");
+                                    }
+                                    None
+                                }
+                                Element::NoticeQuit => {
+                                    crate::log::log("notice.quit");
+                                    // SAFETY: hwnd is this thread's island window;
+                                    // WM_CLOSE tears the process down as usual.
+                                    unsafe {
+                                        let _ = PostMessageW(
+                                            Some(hwnd),
+                                            WM_CLOSE,
+                                            WPARAM(0),
+                                            LPARAM(0),
+                                        );
+                                    }
+                                    None
+                                }
                                 _ => None,
                             };
                             if let Some(command) = command {
@@ -2228,6 +2356,10 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                     unsafe {
                         let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
                     }
+                } else if surface.paused {
+                    // §3: a click outside drops the notice card; the island
+                    // stays paused (the dismiss draws its own frame).
+                    surface.dismiss_notice();
                 }
             });
             LRESULT(0)
@@ -2259,6 +2391,10 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                     unsafe {
                         let _ = PostMessageW(Some(hwnd), WM_PAINT, WPARAM(0), LPARAM(0));
                     }
+                } else if surface.paused {
+                    // §3: Esc dismisses the notice card; the island stays
+                    // paused (the dismiss draws its own frame).
+                    surface.dismiss_notice();
                 }
             });
             LRESULT(0)
@@ -2422,6 +2558,23 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             crate::anchor::request_scan();
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == EDGE_DEBOUNCE_TIMER_ID => {
+            // §2: no geometry event for 150 ms — the move storm is over, so
+            // the edge the bar reports now is the real one.
+            edge_debounce_fire(hwnd);
+            LRESULT(0)
+        }
+        // §1: another process took the foreground while the card was open —
+        // a shell flyout (Start, tray overflow, the clock) or an app switch.
+        // The card belongs to the taskbar's UI and closes with it.
+        crate::anchor::WM_APP_FOREGROUND => {
+            with_surface(|surface| {
+                if surface.flyout_open {
+                    surface.begin_close_flyout(Instant::now());
+                }
+            });
+            LRESULT(0)
+        }
         WM_TIMER if wparam.0 == SLIDE_TIMER_ID => {
             // §8: one frame of the 200 ms placement slide.
             advance_slide(hwnd);
@@ -2581,6 +2734,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                         surface.timer_finished_at = Some(now);
                         surface.timer_flat_at = None;
                         crate::log::log("timer.ended");
+                        // §3: while paused there is no pill to show the ended
+                        // banner on — the tray notification is the only way
+                        // the finish is visible.
+                        if surface.paused {
+                            crate::tray::notice("TaskbarIsland", "Timer finished");
+                        }
                     }
                     if ended
                         || surface.view.main.as_ref().map(|view| view.kind)
@@ -2703,6 +2862,7 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
                 let _ = KillTimer(Some(hwnd), CLIP_PREVIEW_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), HOLD_PROBE_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), SPACE_DEBOUNCE_TIMER_ID);
+                let _ = KillTimer(Some(hwnd), EDGE_DEBOUNCE_TIMER_ID);
                 let _ = KillTimer(Some(hwnd), SLIDE_TIMER_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_HOTKEY_ID);
                 let _ = UnregisterHotKey(Some(hwnd), TIMER_FALLBACK_HOTKEY_ID);
@@ -2833,6 +2993,9 @@ impl Surface {
             _pill_drop: pill_drop,
             d3d_ctx,
             flyout_open: false,
+            paused: false,
+            notice: None,
+            notice_edge: None,
             flyout_owner: None,
             flyout_phase: FlyoutPhase::Closed,
             flyout_started: Instant::now(),
@@ -5375,7 +5538,16 @@ impl Surface {
     }
 
     fn sync_tick_timer(&self) {
-        let interval = if self.wave_animating() {
+        let interval = if self.paused {
+            // §3: no wave or clock redraw while paused — but a running
+            // countdown keeps its 1 Hz tick so it can actually finish (and
+            // the "Timer finished" notice can reach the tray).
+            if self.timer.running() {
+                1000
+            } else {
+                0
+            }
+        } else if self.wave_animating() {
             // The pill itself now animates, so a resting pill needs the same
             // smooth cadence as an open card.
             80
@@ -5404,6 +5576,11 @@ impl Surface {
     /// While the card is opening/closing its drawn position is transformed, so
     /// elements only accept clicks once the tween has landed.
     fn hit_at(&self, x: f32, y: f32) -> Option<Element> {
+        // §3: while paused the notice card owns every hit; its buttons were
+        // registered by the frame the paused draw just presented.
+        if self.paused {
+            return self.hit_map.hit(x, y);
+        }
         if self.flyout_open && self.flyout_phase == FlyoutPhase::Open && self.flyout.contains(x, y)
         {
             let hit = self.hit_map.hit(x, y);
@@ -5564,6 +5741,9 @@ impl Surface {
         let y = (pt.y - self.origin.1) as f32 / self.scale;
         (self.view.pill().is_some() && self.pill.contains(x, y))
             || (self.flyout_open && self.flyout.contains(x, y))
+            // §3: the notice card counts as "on the island" too, so a click
+            // on it is not read as an outside click while paused.
+            || (self.paused && self.notice.is_some_and(|notice| notice.contains(x, y)))
     }
 
     fn install_mouse_hook(&mut self) {
@@ -6531,6 +6711,14 @@ impl Surface {
     /// removes the hovered or selected shelf files, or the focused history row.
     /// When the rail is not engaged the same keys drive the history list.
     fn handle_rail_key(&mut self, vk: u32) {
+        // §3: while paused the only key that matters is Esc, which drops the
+        // notice card (the island stays paused).
+        if self.paused {
+            if vk == VK_ESCAPE.0 as u32 {
+                self.dismiss_notice();
+            }
+            return;
+        }
         if !self.flyout_open || self.flyout_phase != FlyoutPhase::Open {
             return;
         }
@@ -6748,6 +6936,11 @@ impl Surface {
     }
 
     fn open_flyout(&mut self, now: Instant) {
+        // §3: a paused island has no pill to open from; never raise the card
+        // over the notice.
+        if self.paused {
+            return;
+        }
         if self.view.flyout().is_none() {
             return;
         }
@@ -6777,6 +6970,9 @@ impl Surface {
         self.clear_auto_close();
         self.install_mouse_hook();
         self.install_keyboard_hook();
+        // §1: while the card is up, another process taking the foreground is
+        // a shell flyout opening (or an app switch) — the card closes then.
+        crate::anchor::foreground_armed(true);
         self.sync_flyout_timer();
         self.sync_tick_timer();
         // Re-opened on a live call: re-read Phone Link's Hold button, since
@@ -6817,6 +7013,7 @@ impl Surface {
         self.clear_auto_close();
         self.remove_mouse_hook();
         self.remove_keyboard_hook();
+        crate::anchor::foreground_armed(false);
         self.rail_current = None;
         self.rail_from = None;
         self.rail_t = 1.0;
@@ -6861,6 +7058,86 @@ impl Surface {
             let _ = KillTimer(Some(self.hwnd), TOOLTIP_TIMER_ID);
         }
         self.sync_tick_timer();
+    }
+
+    /// §3: fold the anchor's pause state into the surface. One notice card
+    /// per edge change: the pause itself (or a flip to the *other* side edge
+    /// while paused) raises it, an Esc/outside dismissal keeps it down until
+    /// the edge changes again, and moving back to a horizontal edge resumes
+    /// with no notice at all. Draws whenever the visible state moved.
+    fn sync_pause(&mut self, anchor: &crate::anchor::Anchor) {
+        let before = (self.paused, self.notice);
+        let (edge, raise) = notice_decision(self.notice_edge, anchor.paused, anchor.edge);
+        self.notice_edge = edge;
+        if raise {
+            self.notice = Some(anchor.local(anchor.notice));
+        } else if !anchor.paused {
+            self.notice = None;
+        }
+        self.set_paused(anchor.paused);
+        if (self.paused, self.notice) != before {
+            if let Err(error) = self.draw() {
+                crate::log::log_err("island.pause.draw", &error);
+            }
+        }
+    }
+
+    /// §3: Esc or a click outside drops the notice card. The island stays
+    /// paused; only a later edge change brings a card back.
+    fn dismiss_notice(&mut self) {
+        if self.notice.is_none() {
+            return;
+        }
+        crate::log::log("notice.dismiss");
+        self.notice = None;
+        if let Err(error) = self.draw() {
+            crate::log::log_err("notice.dismiss", &error);
+        }
+    }
+
+    /// §3: pause/resume for a left/right (or back to a top/bottom) taskbar
+    /// edge. Idempotent — every anchor sync calls it — and it changes only
+    /// presentation: while paused the notice card owns the window (the pill
+    /// and card are clipped away and hit-test through), an open card is
+    /// dropped without its 260 ms close, and the cadences die with the
+    /// syncs below. Clipboard capture, the countdown and every worker
+    /// thread keep running.
+    fn set_paused(&mut self, paused: bool) {
+        if self.paused == paused {
+            return;
+        }
+        self.paused = paused;
+        if paused {
+            if self.flyout_open {
+                self.finish_close_flyout();
+            }
+            self.clear_auto_close();
+            self.hide_tip();
+            crate::anchor::foreground_armed(false);
+            // §3: dismissal is Esc or a click outside; both hooks pass
+            // every event through and live only while the card is up.
+            self.install_mouse_hook();
+            self.install_keyboard_hook();
+        } else if !self.flyout_open {
+            // §3: the card is gone — idle never pays for the hooks. (With a
+            // card somehow still open, the flyout owns them instead.)
+            self.remove_mouse_hook();
+            self.remove_keyboard_hook();
+        }
+        crate::tray::set_paused(paused);
+        // While paused the countdown still gets its 1 Hz tick (so "Timer
+        // finished" fires and can reach the tray); the wave and the call
+        // clock stop with `sync_tick_timer`'s paused branch.
+        self.sync_tick_timer();
+        self.sync_flyout_timer();
+        // The regions are what is actually on screen: the notice card while
+        // paused (empty once dismissed), the pill and card on resume.
+        self.update_window_region();
+        crate::log::log(if paused {
+            "island.pause: side taskbar"
+        } else {
+            "island.resume: top/bottom taskbar"
+        });
     }
 
     /// One frame of the open/close tween. Returns whether a repaint is needed,
@@ -7409,6 +7686,10 @@ impl Surface {
     }
 
     fn draw(&mut self) -> Result<()> {
+        // §3: paused on a side taskbar the notice card is the whole frame
+        // (`RenderInput::paused` keeps the pill and card out of it); with the
+        // card dismissed the frame is simply empty, and both regions clip
+        // whatever is left away.
         // The activity behind an open card can vanish between messages. Drop
         // the card immediately in that case; there is nothing to animate.
         if self.flyout_open && self.view.flyout().is_none() {
@@ -7538,6 +7819,10 @@ impl Surface {
                 sheet: self.sheet_t,
                 sheet_scroll: self.sheet_scroll,
                 drag_over: self.shelf_hover,
+                // §3: while paused only the notice card is drawn (nothing at
+                // all once it has been dismissed).
+                paused: self.paused,
+                notice: self.notice,
             };
             match self.painter.draw(&render_target, &input) {
                 Ok(hits) => self.hit_map = hits,
@@ -7635,7 +7920,29 @@ impl Surface {
         // `SetWindowRgn` takes ownership of `region`.
         unsafe {
             let region = CreateRectRgn(0, 0, 0, 0);
-            if self.pill_hwnd.0.is_null() && self.view.pill().is_some() {
+            // §3: while paused the notice card (with its shadow halo) is the
+            // whole window; once dismissed every branch below is skipped and
+            // the region ends up empty, clipping the frame away.
+            if self.paused {
+                if let Some(notice) = self.notice {
+                    let r = self.physical(notice);
+                    let halo = (design::SHADOW_HALO * scale).round() as i32;
+                    let radius = (design::R_SURFACE * 2.0 * scale).round() as i32 + halo * 2;
+                    let card = CreateRoundRectRgn(
+                        r.left - halo,
+                        r.top - halo,
+                        r.right + halo + 1,
+                        r.bottom + halo + 1,
+                        radius,
+                        radius,
+                    );
+                    CombineRgn(Some(region), Some(region), Some(card), RGN_OR);
+                    let _ = DeleteObject(card.into());
+                }
+            }
+            // §3: the branches below stay out of a paused frame (their own
+            // `!self.paused` guards) — the notice above is all that shows.
+            if self.pill_hwnd.0.is_null() && self.view.pill().is_some() && !self.paused {
                 let r = self.physical(self.pill);
                 let radius = (self.theme.pill_radius() * 2.0 * scale).round() as i32;
                 let pill =
@@ -7643,7 +7950,7 @@ impl Surface {
                 CombineRgn(Some(region), Some(region), Some(pill), RGN_OR);
                 let _ = DeleteObject(pill.into());
             }
-            if self.flyout_open && self.view.flyout().is_some() {
+            if self.flyout_open && self.view.flyout().is_some() && !self.paused {
                 // The morphed rect, so the region hugs what is actually
                 // painted while the card grows out of the pill (§7).
                 let r = self.physical(self.drawn_flyout());
@@ -7664,7 +7971,7 @@ impl Surface {
             // over the pill's top rows. Hand exactly those rows — the same
             // rounded rect `update_pill_region` gives the child — back to
             // the child, so no row of the pill is inside both regions.
-            if !self.pill_hwnd.0.is_null() && self.view.pill().is_some() {
+            if !self.pill_hwnd.0.is_null() && self.view.pill().is_some() && !self.paused {
                 let r = self.physical(self.pill);
                 let radius = (self.theme.pill_radius() * 2.0 * scale).round() as i32;
                 let pill =
@@ -7689,7 +7996,7 @@ impl Surface {
         // `SetWindowRgn` takes ownership of `region`.
         unsafe {
             let region = CreateRectRgn(0, 0, 0, 0);
-            if self.view.pill().is_some() {
+            if self.view.pill().is_some() && !self.paused {
                 let r = self.physical(self.pill);
                 let radius = (self.theme.pill_radius() * 2.0 * self.scale).round() as i32;
                 let pill =
@@ -7840,6 +8147,37 @@ mod tests {
             has_alpha: false,
             has_exif: false,
         }))
+    }
+
+    /// §3: one card per edge change, none after a dismissal, none on resume.
+    #[test]
+    fn the_notice_raises_once_per_edge_and_stays_down_after_a_dismissal() {
+        use crate::anchor::Edge;
+        // Coming from a horizontal bar: the pause itself raises the card.
+        assert_eq!(
+            notice_decision(None, true, Edge::Left),
+            (Some(Edge::Left), true)
+        );
+        // Same edge on the next sync (the dismissal case): stays down.
+        assert_eq!(
+            notice_decision(Some(Edge::Left), true, Edge::Left),
+            (Some(Edge::Left), false)
+        );
+        // Flipping to the other side edge while paused raises a fresh card.
+        assert_eq!(
+            notice_decision(Some(Edge::Left), true, Edge::Right),
+            (Some(Edge::Right), true)
+        );
+        // Back to a horizontal bar: resume, and the state resets to none.
+        assert_eq!(
+            notice_decision(Some(Edge::Right), false, Edge::Bottom),
+            (None, false)
+        );
+        // A fresh pause after that resume raises again.
+        assert_eq!(
+            notice_decision(None, true, Edge::Right),
+            (Some(Edge::Right), true)
+        );
     }
 
     #[test]
