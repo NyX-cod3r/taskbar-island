@@ -7,6 +7,7 @@ mod anchor;
 mod anim;
 #[allow(dead_code)]
 mod clipboard;
+mod coexist;
 mod convert;
 mod design;
 // The shelf/convert phases consume the rest of this API; Phase 1 lands the
@@ -38,6 +39,10 @@ use std::sync::atomic::Ordering;
 
 use windows::core::w;
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, LPARAM, WPARAM};
+use windows::Win32::System::Com::{
+    CoInitializeEx, CoInitializeSecurity, COINIT_APARTMENTTHREADED, EOAC_NONE,
+    RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{
@@ -108,6 +113,37 @@ fn main() {
         let _ = SetCurrentProcessExplicitAppUserModelID(w!("TaskbarIsland.TaskbarIsland"));
     }
     theme::enable_native_dark_menus();
+    // §4: COM security is process-wide and first-come-first-served, so it has
+    // to be claimed before anything else touches COM — the media worker, OLE
+    // drag-drop, the call sources' UIA and the WMI watcher all inherit it.
+    // Without this call WMI refuses every read with ACCESS_DENIED (see the
+    // note at the top of `coexist.rs`), which would leave the coexistence
+    // watcher blind to a tool started later. The UI thread is STA, which is
+    // exactly what its later `OleInitialize` expects. A failure is logged and
+    // swallowed: the island still runs, only late tool detection degrades.
+    match unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) } {
+        hr if hr.is_ok() => {
+            if let Err(error) = unsafe {
+                CoInitializeSecurity(
+                    None,
+                    -1, // RPC_C_AUTHN_DEFAULT: register the default services
+                    None,
+                    None,
+                    RPC_C_AUTHN_LEVEL_DEFAULT,
+                    RPC_C_IMP_LEVEL_IMPERSONATE,
+                    None,
+                    EOAC_NONE,
+                    None,
+                )
+            } {
+                log::log(&format!(
+                    "com.security: {error} (0x{:08X})",
+                    error.code().0 as u32
+                ));
+            }
+        }
+        hr => log::log(&format!("com.init: 0x{:08X}", hr.0 as u32)),
+    }
     // Held for the life of the process. The installer has the same name in
     // `AppMutex`, which lets it detect and close a running island before an
     // upgrade. A second launch exits before touching any window.
@@ -136,6 +172,10 @@ fn main() {
         return;
     }
     let settings = settings::Settings::load();
+    // §4: find any taskbar customizer already running *before* the first
+    // embed decision, so a machine that boots TranslucentTB never asks
+    // Explorer to parent the pill in the first place.
+    coexist::scan();
     // Probe the local conversion engines in the background. The capability
     // matrix is ready before the first Convert card opens and startup never
     // blocks on FFmpeg's DLLs.

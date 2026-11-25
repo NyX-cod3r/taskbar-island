@@ -17,7 +17,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
     GetCursorPos, LoadIconW, PostMessageW, RegisterClassExW, RegisterWindowMessageW,
-    SetForegroundWindow, TrackPopupMenu, MF_CHECKED, MF_GRAYED, MF_SEPARATOR, MF_STRING,
+    SetForegroundWindow, TrackPopupMenu, MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING,
     SW_SHOWNORMAL, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_CONTEXTMENU,
     WM_DESTROY, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
@@ -35,6 +35,11 @@ const ID_MANAGE_ENGINES: usize = 3;
 /// §3: grayed informational row while the island is paused — never a
 /// command, so it falls through the menu match untouched.
 const ID_PAUSED: usize = 4;
+/// §4: `Taskbar mode` submenu rows. `TPM_RETURNCMD` returns whichever row
+/// was picked, submenu rows included, so they need ids of their own.
+const ID_MODE_AUTO: usize = 11;
+const ID_MODE_EMBEDDED: usize = 12;
+const ID_MODE_SEPARATE: usize = 13;
 const TIP: &str = "TaskbarIsland — right-click for options";
 /// The converters pack keeps a copy of itself beside the app so "Manage
 /// engines..." is always one command away (installer\converters.iss).
@@ -226,6 +231,28 @@ fn show_menu(hwnd: HWND) {
         let _ = AppendMenuW(menu, startup_flags, ID_AUTOSTART, w!("Start with Windows"));
         // v0.11 owner feedback: no `Island position` menu — placement is
         // Auto-only and the app decides where the pill sits.
+        // §4: `Taskbar mode` is a different question (does the pill live
+        // *inside* the bar?), so it gets its own submenu and is remembered
+        // in settings.json across restarts.
+        // SAFETY: the submenu is created here and destroyed by the
+        // `DestroyMenu(menu)` below, which takes submenus with it.
+        if let Ok(mode_menu) = CreatePopupMenu() {
+            let current = settings::Settings::load().taskbar_mode;
+            for (id, mode) in [
+                (ID_MODE_AUTO, settings::TaskbarMode::Auto),
+                (ID_MODE_EMBEDDED, settings::TaskbarMode::Embedded),
+                (ID_MODE_SEPARATE, settings::TaskbarMode::Separate),
+            ] {
+                let flags = if mode == current {
+                    MF_STRING | MF_CHECKED
+                } else {
+                    MF_STRING
+                };
+                let wide: Vec<u16> = mode.label().encode_utf16().chain(Some(0)).collect();
+                let _ = AppendMenuW(mode_menu, flags, id, PCWSTR(wide.as_ptr()));
+            }
+            let _ = AppendMenuW(menu, MF_POPUP, mode_menu.0 as usize, w!("Taskbar mode"));
+        }
         if manage_engines_setup().is_some() {
             let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
             let _ = AppendMenuW(menu, MF_STRING, ID_MANAGE_ENGINES, w!("Manage engines..."));
@@ -251,9 +278,33 @@ fn show_menu(hwnd: HWND) {
         match command.0 as usize {
             ID_AUTOSTART => toggle_startup(hwnd),
             ID_MANAGE_ENGINES => open_manage_engines(),
+            ID_MODE_AUTO => post_taskbar_mode(settings::TaskbarMode::Auto),
+            ID_MODE_EMBEDDED => post_taskbar_mode(settings::TaskbarMode::Embedded),
+            ID_MODE_SEPARATE => post_taskbar_mode(settings::TaskbarMode::Separate),
             ID_EXIT => exit_app(),
             _ => {}
         }
+    }
+}
+
+/// §4: hand the choice to the island window, which owns the surface and the
+/// pill swap. Posted instead of called so the modal menu loop can never see
+/// a half-swapped pill.
+fn post_taskbar_mode(mode: settings::TaskbarMode) {
+    let island = ISLAND_HWND.load(Ordering::Relaxed);
+    if island == 0 {
+        return;
+    }
+    crate::log::log(&format!("tray.menu: taskbar mode -> {}", mode.key()));
+    // SAFETY: the island window belongs to this process and its pump applies
+    // the choice on the same UI thread.
+    unsafe {
+        let _ = PostMessageW(
+            Some(HWND(island as *mut core::ffi::c_void)),
+            crate::window::WM_APP_PILL_MODE,
+            WPARAM(mode.code()),
+            LPARAM(0),
+        );
     }
 }
 

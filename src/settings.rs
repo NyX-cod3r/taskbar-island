@@ -59,6 +59,76 @@ pub struct Settings {
     pub clipboard_paused: bool,
     /// §6 "remember the last duration": the stepper's minutes (1..=180).
     pub timer_minutes: u32,
+    /// §4: how the pill relates to the taskbar. Remembered across restarts.
+    pub taskbar_mode: TaskbarMode,
+}
+
+/// §4 `Taskbar mode`: whether the pill is a `WS_CHILD` of `Shell_TrayWnd`
+/// (v0.11 Stage A) or a separate top-level window the card draws itself
+/// (pre-0.11). `Auto` is the default and the only value that reacts to a
+/// detected taskbar tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TaskbarMode {
+    /// Embed when it is safe to; a detected taskbar tool or a refused embed
+    /// falls back to the separate pill.
+    #[default]
+    Auto,
+    /// Always embed, even with a taskbar tool present (the owner's choice,
+    /// and the only way to opt back in once a tool has been seen).
+    Embedded,
+    /// Never embed.
+    Separate,
+}
+
+impl TaskbarMode {
+    pub fn all() -> [TaskbarMode; 3] {
+        [
+            TaskbarMode::Auto,
+            TaskbarMode::Embedded,
+            TaskbarMode::Separate,
+        ]
+    }
+
+    /// The stored `settings.json` value.
+    pub fn key(self) -> &'static str {
+        match self {
+            TaskbarMode::Auto => "auto",
+            TaskbarMode::Embedded => "embedded",
+            TaskbarMode::Separate => "separate",
+        }
+    }
+
+    /// The tray-menu row.
+    pub fn label(self) -> &'static str {
+        match self {
+            TaskbarMode::Auto => "Auto",
+            TaskbarMode::Embedded => "Always embedded",
+            TaskbarMode::Separate => "Always separate",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<TaskbarMode> {
+        TaskbarMode::all()
+            .into_iter()
+            .find(|mode| mode.key() == value)
+    }
+
+    /// Stable discriminant for the `WM_APP_PILL_MODE` payload.
+    pub fn code(self) -> usize {
+        match self {
+            TaskbarMode::Auto => 0,
+            TaskbarMode::Embedded => 1,
+            TaskbarMode::Separate => 2,
+        }
+    }
+
+    pub fn from_code(code: usize) -> TaskbarMode {
+        match code {
+            1 => TaskbarMode::Embedded,
+            2 => TaskbarMode::Separate,
+            _ => TaskbarMode::Auto,
+        }
+    }
 }
 
 impl Default for Settings {
@@ -70,6 +140,7 @@ impl Default for Settings {
             enabled: Enabled::default(),
             clipboard_paused: false,
             timer_minutes: design::TIMER_DEFAULT_MINUTES,
+            taskbar_mode: TaskbarMode::Auto,
         }
     }
 }
@@ -98,6 +169,13 @@ impl Settings {
         }
         if let Some(v) = json.get("timerMinutes").and_then(Json::as_i32) {
             settings.timer_minutes = design::clamp_minutes(v as i64);
+        }
+        // §4: an unknown or absent value keeps Auto, which is the only mode
+        // that can fall back on its own.
+        if let Some(v) = json.get("taskbarMode").and_then(Json::as_str) {
+            if let Some(mode) = TaskbarMode::parse(v) {
+                settings.taskbar_mode = mode;
+            }
         }
         // A legacy `islandPosition` key is ignored: v0.11 placement is
         // Auto-only (owner feedback), so there is no choice to restore.
@@ -152,6 +230,10 @@ impl Settings {
             (
                 "timerMinutes".into(),
                 Json::Num(design::clamp_minutes(self.timer_minutes as i64) as f64),
+            ),
+            (
+                "taskbarMode".into(),
+                Json::Str(self.taskbar_mode.key().into()),
             ),
         ]);
         let _ = std::fs::write(path, json::to_string_pretty(&doc));
@@ -320,5 +402,18 @@ mod tests {
         assert_eq!(design::clamp_minutes(0), design::TIMER_MIN_MINUTES);
         assert_eq!(design::clamp_minutes(5000), design::TIMER_MAX_MINUTES);
         assert_eq!(design::clamp_minutes(42), 42);
+    }
+
+    #[test]
+    fn taskbar_mode_round_trips_through_its_key() {
+        for mode in TaskbarMode::all() {
+            assert_eq!(TaskbarMode::parse(mode.key()), Some(mode));
+            assert_eq!(TaskbarMode::from_code(mode.code()), mode);
+            assert!(!mode.label().is_empty());
+        }
+        // A hand-edited or future value must not break loading.
+        assert_eq!(TaskbarMode::parse("quantum"), None);
+        assert_eq!(TaskbarMode::from_code(99), TaskbarMode::Auto);
+        assert_eq!(Settings::default().taskbar_mode, TaskbarMode::Auto);
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::mem::{size_of, ManuallyDrop};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -153,6 +153,10 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 /// Sent to the window that loses the mouse when something else captures it
 /// (§6: stops the stepper repeat; also fires on our own `ReleaseCapture`).
 const WM_CAPTURECHANGED: u32 = 0x0215;
+/// §4: the tray menu picked a new `Taskbar mode`. `wparam` is
+/// `settings::TaskbarMode::code()`; posted rather than called so the choice
+/// is applied on the island's own message pump.
+pub const WM_APP_PILL_MODE: u32 = WM_APP + 57;
 
 /// Set only while the low-level mouse hook is armed, so the hook procedure can
 /// post the outside-click message without touching the surface from a hook.
@@ -172,6 +176,21 @@ static PILL_HWND: AtomicIsize = AtomicIsize::new(0);
 /// once by `create`, so `WM_DESTROY` can tell the pill child dying from the
 /// app quitting even when the surface borrow is unavailable.
 static CARD_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// §4: the remembered `Taskbar mode` as a `TaskbarMode::code()`. Written once
+/// by `create` from settings and again whenever the tray menu changes it, so
+/// the embed decision never has to re-read the settings file.
+static EMBED_MODE: AtomicU8 = AtomicU8::new(0);
+
+/// §4: an embed was refused once this session. Stays separate instead of
+/// retrying `SetParent` on the z-order tick (that was a 2 s log/`SetParent`
+/// loop against a taskbar that will not have us). Cleared on `TaskbarCreated`
+/// — a fresh Explorer is a fresh chance — and when the mode changes.
+static EMBED_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// §4: the "another taskbar tool is running" balloon is raised once per
+/// process, no matter how many tools show up afterwards.
+static SAFE_NOTICE: AtomicBool = AtomicBool::new(false);
 
 /// §8: the in-flight placement slide. `None` whenever the island sits still,
 /// so the resting process owns no timer beyond the existing low-frequency
@@ -782,6 +801,9 @@ pub fn create(
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     }
     let settings = crate::settings::Settings::load();
+    // §4: the remembered `Taskbar mode` decides, together with any detected
+    // taskbar tool, whether `create_pill_window` below may embed at all.
+    EMBED_MODE.store(settings.taskbar_mode.code() as u8, Ordering::Relaxed);
     let (media_tx, media_command_rx) = mpsc::channel();
     let (media_snapshot_tx, media_rx) = mpsc::channel();
     media::subscribe(media_snapshot_tx, media_command_rx, media_tx.clone(), hwnd)?;
@@ -925,6 +947,11 @@ pub fn create(
     // §8: start the taskbar-alignment and free-region watchers on their own
     // threads. They post back here; nothing on this thread ever polls.
     crate::anchor::start_watching(hwnd);
+    // §4: from here a taskbar tool started later reaches us as
+    // `WM_APP_TOOL_DETECTED`; if the launch scan already found one, raise
+    // the one-time notice now that a tray icon exists to raise it from.
+    crate::coexist::watch(hwnd);
+    note_safe_mode();
     Ok(hwnd)
 }
 
@@ -1066,7 +1093,94 @@ fn reassert_topmost(hwnd: HWND) {
 /// coordinate space and one rendered frame. `None` means the taskbar
 /// refused the embed: the caller keeps the top-level fallback, where the
 /// card window draws the pill itself.
+/// §4: the mode the tray menu last set, as a `TaskbarMode`.
+fn taskbar_mode() -> crate::settings::TaskbarMode {
+    crate::settings::TaskbarMode::from_code(EMBED_MODE.load(Ordering::Relaxed) as usize)
+}
+
+/// §4: the one decision every embed path consults. `Auto` is the only mode
+/// that yields to a detected taskbar tool; `Always embedded` is the owner's
+/// explicit override of that safety net, `Always separate` never embeds.
+fn embed_allowed() -> bool {
+    match taskbar_mode() {
+        crate::settings::TaskbarMode::Separate => false,
+        crate::settings::TaskbarMode::Embedded => true,
+        crate::settings::TaskbarMode::Auto => !crate::coexist::active(),
+    }
+}
+
+/// §4: let go of the pill child so the card window draws the pill itself —
+/// the pre-0.11 arrangement, which needs no parent and so cannot be broken
+/// by one. Idempotent: `PILL_HWND` is swapped out first, so a nested destroy
+/// or a second call finds nothing left to detach.
+fn drop_pill() {
+    let raw = PILL_HWND.swap(0, Ordering::Relaxed);
+    if raw == 0 {
+        return;
+    }
+    let pill = HWND(raw as *mut core::ffi::c_void);
+    with_surface(|surface| surface.detach_pill(pill));
+    // SAFETY: our own child window on this thread; one already gone with
+    // Explorer fails harmlessly.
+    let _ = unsafe { DestroyWindow(pill) };
+    crate::log::log("pill.embed: released — the card window draws the pill");
+}
+
+/// §4: the one-time "another taskbar tool owns the bar" balloon. Only `Auto`
+/// reaches it: `Always separate` needs no explanation and `Always embedded`
+/// is not in safe mode. Fires once per process however many tools appear.
+fn note_safe_mode() {
+    if taskbar_mode() != crate::settings::TaskbarMode::Auto || !crate::coexist::active() {
+        return;
+    }
+    let Some(tool) = crate::coexist::found() else {
+        return;
+    };
+    if SAFE_NOTICE.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    crate::log::log(&format!("coexist: safe mode under {tool}"));
+    crate::tray::notice(
+        "TaskbarIsland",
+        &format!(
+            "{tool} is customizing the taskbar, so the island is showing a separate pill \
+             instead of embedding in the bar. Right-click the tray icon > Taskbar mode to change."
+        ),
+    );
+}
+
+/// §4: apply a `Taskbar mode` choice. Runs on the island's own pump (the
+/// tray posts `WM_APP_PILL_MODE`), so the pill swap can never re-enter a
+/// borrowed surface from inside the tray window's modal menu loop.
+fn apply_taskbar_mode(card: HWND, mode: crate::settings::TaskbarMode) {
+    EMBED_MODE.store(mode.code() as u8, Ordering::Relaxed);
+    // A new mode is a new decision: whatever refused before may be worth
+    // retrying, and a refused embed must not outlive the choice that hid it.
+    EMBED_REFUSED.store(false, Ordering::Relaxed);
+    let mut settings = crate::settings::Settings::load();
+    settings.taskbar_mode = mode;
+    settings.save();
+    crate::log::log(&format!("pill.mode: {}", mode.key()));
+    if embed_allowed() {
+        if PILL_HWND.load(Ordering::Relaxed) == 0 {
+            rebuild_pill(card);
+        }
+    } else {
+        drop_pill();
+        with_surface(|surface| {
+            let _ = surface.draw();
+        });
+    }
+    note_safe_mode();
+}
+
 fn create_pill_window(card: HWND, instance: HINSTANCE) -> Option<HWND> {
+    // §4: never hand the taskbar a child window while another customizer
+    // owns it, while the owner asked for a separate pill, or after an embed
+    // has already been refused this session.
+    if !embed_allowed() || EMBED_REFUSED.load(Ordering::Relaxed) {
+        return None;
+    }
     let taskbar = crate::anchor::taskbar_window()?;
     let mut window = RECT::default();
     let mut bar = RECT::default();
@@ -1122,6 +1236,9 @@ fn create_pill_window(card: HWND, instance: HINSTANCE) -> Option<HWND> {
     };
     if !embedded {
         crate::log::log("pill.embed: refused; the card window keeps drawing the pill");
+        // §4: one refusal ends the question for this Explorer session — the
+        // z-order tick must not keep offering a child the bar rejects.
+        EMBED_REFUSED.store(true, Ordering::Relaxed);
         // SAFETY: the window was created above on this thread.
         let _ = unsafe { DestroyWindow(pill) };
         return None;
@@ -1148,6 +1265,16 @@ fn create_pill_window(card: HWND, instance: HINSTANCE) -> Option<HWND> {
 /// heal — one shot that stuck, where `insert-after-bridge` churned 334
 /// times over 82 s and never landed).
 fn guard_pill(card: HWND) {
+    // §4: no embed is wanted right now (safe mode, `Always separate`, or an
+    // embed already refused this session) — there is nothing to guard and
+    // nothing to heal, and re-asking every 2 s would be a `SetParent` loop.
+    if !embed_allowed() {
+        drop_pill();
+        return;
+    }
+    if EMBED_REFUSED.load(Ordering::Relaxed) {
+        return;
+    }
     let Some(taskbar) = crate::anchor::taskbar_window() else {
         return; // Explorer is restarting; `TaskbarCreated` re-embeds.
     };
@@ -1193,6 +1320,14 @@ fn guard_pill(card: HWND) {
 /// *current* position, so both windows stay origin-aligned without
 /// recomputing the anchor.
 fn rebuild_pill(card: HWND) {
+    // Defensive: drop any stale handle first — its window may have died
+    // while the surface borrow was unavailable to detach it.
+    drop_pill();
+    // §4: an embed that is not allowed (safe mode / `Always separate`) or
+    // that has already been refused must not be retried on every tick.
+    if !embed_allowed() || EMBED_REFUSED.load(Ordering::Relaxed) {
+        return;
+    }
     let instance = match unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) } {
         Ok(instance) => instance.into(),
         Err(error) => {
@@ -1200,15 +1335,6 @@ fn rebuild_pill(card: HWND) {
             return;
         }
     };
-    // Defensive: drop any stale handle first — its window may have died
-    // while the surface borrow was unavailable to detach it.
-    let stale = PILL_HWND.swap(0, Ordering::Relaxed);
-    if stale != 0 {
-        let stale_hwnd = HWND(stale as *mut core::ffi::c_void);
-        with_surface(|surface| surface.detach_pill(stale_hwnd));
-        // SAFETY: destroying a dead handle fails harmlessly.
-        let _ = unsafe { DestroyWindow(stale_hwnd) };
-    }
     let Some(pill) = create_pill_window(card, instance) else {
         return; // logged inside; the card window keeps drawing the pill
     };
@@ -2564,6 +2690,24 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             edge_debounce_fire(hwnd);
             LRESULT(0)
         }
+        // §4: a taskbar customizer started while the island was already up.
+        // The pill leaves the bar (if it was in it) and the one-time notice
+        // explains why; clipboard capture, timers and call watching continue.
+        crate::coexist::WM_APP_TOOL_DETECTED => {
+            note_safe_mode();
+            if !embed_allowed() {
+                drop_pill();
+                with_surface(|surface| {
+                    let _ = surface.draw();
+                });
+            }
+            LRESULT(0)
+        }
+        // §4: the tray menu picked a new `Taskbar mode`.
+        msg if msg == WM_APP_PILL_MODE => {
+            apply_taskbar_mode(hwnd, crate::settings::TaskbarMode::from_code(wparam.0));
+            LRESULT(0)
+        }
         // §1: another process took the foreground while the card was open —
         // a shell flyout (Start, tray overflow, the clock) or an app switch.
         // The card belongs to the taskbar's UI and closes with it.
@@ -2774,6 +2918,12 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
         // The broadcast only reaches top-level windows, so `hwnd` is the card.
         msg if crate::tray::is_taskbar_created(msg) => {
             sync_anchor(hwnd);
+            // §4: a fresh Explorer is a fresh taskbar — retry an embed that
+            // was refused on the old one, and look again for the tools it
+            // just loaded into itself.
+            EMBED_REFUSED.store(false, Ordering::Relaxed);
+            crate::coexist::scan();
+            note_safe_mode();
             rebuild_pill(hwnd);
             // §8: the watched taskbar element died with Explorer, so the
             // structure handler is re-registered on the new one (it rescans).
