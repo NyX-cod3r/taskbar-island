@@ -690,33 +690,64 @@ pub fn taskbar_edge() -> Edge {
     };
     // SAFETY: APPBARDATA is initialized with its size.
     let raw = unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut data) } as u32;
-    let reported = match raw {
+    // The edge is `data.uEdge`, **not** the return value: for
+    // `ABM_GETTASKBARPOS` `SHAppBarMessage` answers with a plain success
+    // code (1), and 1 is `ABE_TOP` — reading it as the edge called every
+    // bar "top", which opened the card below the screen on a bottom
+    // taskbar (v0.12 §2, found by ui-smoke's shots). A failed call leaves
+    // `uEdge` at 0, which is `ABE_LEFT`, so an empty `rc` (the failure
+    // signature) discards the field and the caller falls back to the bar's
+    // own rect instead of pausing the island for no reason.
+    let reported = appbar_edge(data.uEdge, &data.rc);
+    let edge = match reported {
+        Some(edge) => edge,
+        None => match taskbar_window() {
+            Some(bar) => {
+                let mut rect = RECT::default();
+                // SAFETY: a valid out pointer for this thread.
+                if unsafe { GetWindowRect(bar, &mut rect) }.is_ok()
+                    && rect.right > rect.left
+                    && rect.bottom > rect.top
+                {
+                    edge_from_rect(rect)
+                } else {
+                    Edge::Bottom
+                }
+            }
+            None => Edge::Bottom,
+        },
+    };
+    note_edge(raw, data.uEdge, &data.rc, edge);
+    edge
+}
+
+/// The shell's answer for `ABM_GETTASKBARPOS`, or `None` when it told us
+/// nothing usable. See the caller: the edge comes from `uEdge`, and an empty
+/// `rc` means the call failed (leaving `uEdge` zeroed = `ABE_LEFT`).
+fn appbar_edge(u_edge: u32, rc: &RECT) -> Option<Edge> {
+    if rc.right <= rc.left || rc.bottom <= rc.top {
+        return None;
+    }
+    match u_edge {
         ABE_TOP => Some(Edge::Top),
         ABE_BOTTOM => Some(Edge::Bottom),
         ABE_LEFT => Some(Edge::Left),
         ABE_RIGHT => Some(Edge::Right),
         _ => None,
-    };
-    // The call also fills `rc`. A call that left it empty told us nothing —
-    // and `ABE_LEFT` is 0, so trusting a bare failure would read as "left"
-    // and pause the island for no reason.
-    if reported.is_some() && data.rc.right > data.rc.left && data.rc.bottom > data.rc.top {
-        return reported.unwrap_or(Edge::Bottom);
     }
-    match taskbar_window() {
-        Some(bar) => {
-            let mut rect = RECT::default();
-            // SAFETY: a valid out pointer for this thread.
-            if unsafe { GetWindowRect(bar, &mut rect) }.is_ok()
-                && rect.right > rect.left
-                && rect.bottom > rect.top
-            {
-                edge_from_rect(rect)
-            } else {
-                Edge::Bottom
-            }
-        }
-        None => Edge::Bottom,
+}
+
+/// One line per edge the layout sees: what the call returned, the `uEdge`
+/// and `rc` it filled, and the edge that won. A bar read as the wrong side
+/// then shows up in `TBI_LOG` instead of only in a misplaced card.
+fn note_edge(raw: u32, u_edge: u32, rc: &RECT, edge: Edge) {
+    use std::sync::atomic::AtomicU8;
+    static LAST: AtomicU8 = AtomicU8::new(0);
+    if LAST.swap(edge.code(), Ordering::Relaxed) != edge.code() {
+        crate::log::log(&format!(
+            "anchor.edge: raw={raw} uEdge={u_edge} rc=({},{})-({},{}) -> {edge:?}",
+            rc.left, rc.top, rc.right, rc.bottom
+        ));
     }
 }
 
@@ -1797,6 +1828,28 @@ mod tests {
         assert_eq!(edge_from_rect(rect(0, 0, 1920, 60)), Edge::Top);
         assert_eq!(edge_from_rect(rect(0, 0, 60, 1200)), Edge::Left);
         assert_eq!(edge_from_rect(rect(1860, 0, 1920, 1200)), Edge::Right);
+    }
+
+    /// The shell answers `ABM_GETTASKBARPOS` with a *success code* in the
+    /// return value (1) and the real edge in `uEdge` — 3 (`ABE_BOTTOM`) for a
+    /// bottom bar. Reading the return value matched `ABE_TOP` (1) on every
+    /// call, so the card opened below the screen on a bottom taskbar (v0.12
+    /// §2; found by ui-smoke's shots). The mapping is pinned here.
+    #[test]
+    fn appbar_edge_reads_u_edge_not_the_return_value() {
+        let bottom = rect(0, 1140, 1920, 1200);
+        // Observed on the real shell: return value 1, uEdge 3, rc bottom bar.
+        assert_eq!(appbar_edge(ABE_BOTTOM, &bottom), Some(Edge::Bottom));
+        let top = rect(0, 0, 1920, 60);
+        assert_eq!(appbar_edge(ABE_TOP, &top), Some(Edge::Top));
+        assert_eq!(
+            appbar_edge(ABE_LEFT, &rect(0, 0, 60, 1200)),
+            Some(Edge::Left)
+        );
+        // A failed call leaves uEdge at 0 — which is `ABE_LEFT` — with an
+        // empty rc, so the caller falls back to the bar's own rect instead
+        // of pausing the island for no reason.
+        assert_eq!(appbar_edge(ABE_LEFT, &RECT::default()), None);
     }
 
     #[test]
