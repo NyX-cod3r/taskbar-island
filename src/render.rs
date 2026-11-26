@@ -3608,6 +3608,14 @@ impl Painter {
         let theme = input.theme;
         let accent = design::rail_accent(ActivityKind::Call);
 
+        // §7 (v0.12): with no call the card is two rows — a green-tinted
+        // header stating the condition over a box naming the app. No dimmed
+        // Hold/End/Mute: they promised controls that do not exist.
+        if c.phase == CallPhase::None {
+            self.draw_call_idle(rt, input, c, content, alpha, hits);
+            return;
+        }
+
         // §4: three fixed rows sized from the design's own px (60 / 60 / 66
         // x 0.8); the two gaps share the column's leftover, so every phase
         // keeps this one shell (design §7: "Same three rows … No wasted
@@ -3758,6 +3766,139 @@ impl Painter {
                 );
             }
         }
+    }
+
+    /// The `No active call` card (§7 v0.12): a `CALL_GREEN` 18 % header tile
+    /// with the phone glyph over the state line, then one box holding the
+    /// app name and the green Open button. The two rows float as a block in
+    /// the 176 DIP column (the leftover splits above and below), so no dead
+    /// band opens up where the action row used to be.
+    fn draw_call_idle(
+        &mut self,
+        rt: &ID2D1RenderTarget,
+        input: &RenderInput<'_>,
+        c: &crate::view::CallBody,
+        content: RectD,
+        alpha: f32,
+        hits: &mut HitMap,
+    ) {
+        let theme = input.theme;
+        let accent = design::rail_accent(ActivityKind::Call);
+        let block = design::CALL_HEADER_H + design::CALL_ROW_GAP + design::CALL_BOX_H;
+        let top = content.y + (content.h - block) * 0.5;
+        let row1 = RectD::new(content.x, top, content.w, design::CALL_HEADER_H);
+        let row2 = RectD::new(
+            content.x,
+            row1.bottom() + design::CALL_ROW_GAP,
+            content.w,
+            design::CALL_BOX_H,
+        );
+
+        // Header: tinted tile + phone glyph + the state line (the live
+        // card's dim tile and right-aligned status word are not this one).
+        let tile = RectD::new(
+            row1.x,
+            row1.y + (row1.h - design::CALL_LEAD) * 0.5,
+            design::CALL_LEAD,
+            design::CALL_LEAD,
+        );
+        self.fill_round(
+            rt,
+            tile,
+            design::R_TILE_LEAD,
+            design::CALL_GREEN.with_alpha(design::CALL_IDLE_TILE_A * alpha),
+        );
+        self.icon_center(
+            rt,
+            IconId::Phone,
+            tile,
+            design::CALL_IDLE_GLYPH,
+            design::CALL_GREEN.with_alpha(alpha),
+            input.scale,
+            design::ICON_STROKE,
+        );
+        let title = c.header_title();
+        let line = design::LINE_CALL_IDLE;
+        self.text(
+            rt,
+            &title,
+            RectD::new(
+                tile.right() + design::HEADER_GAP,
+                row1.y + (row1.h - line) * 0.5,
+                row1.right() - (tile.right() + design::HEADER_GAP),
+                line,
+            ),
+            design::CALL_IDLE_TITLE,
+            600,
+            0,
+            line,
+            theme.text_primary().with_alpha(alpha),
+            true,
+        );
+
+        // Box: theme fill (the design's white/black 6 % over the card),
+        // radius 6, one line of wording left, Open button right.
+        self.fill_round(
+            rt,
+            row2,
+            design::R_CONTROL,
+            theme.card_button().with_alpha(alpha),
+        );
+        let control = RectD::new(
+            row2.right() - 10.0 - design::CALL_IDLE_OPEN_W,
+            row2.y + (row2.h - design::CALL_OUTPUT_H) * 0.5,
+            design::CALL_IDLE_OPEN_W,
+            design::CALL_OUTPUT_H,
+        );
+        let line1 = c.box_line1();
+        if !line1.is_empty() {
+            let text_x = row2.x + 10.0;
+            let line_h = design::LINE_CALL_META;
+            self.text(
+                rt,
+                &line1,
+                RectD::new(
+                    text_x,
+                    row2.y + (row2.h - line_h) * 0.5,
+                    (control.x - 8.0 - text_x).max(0.0),
+                    line_h,
+                ),
+                design::CALL_IDLE_TEXT,
+                600,
+                0,
+                line_h,
+                theme.text_primary().with_alpha(alpha),
+                true,
+            );
+        }
+        // §7: green 16 % fill with green text, hover lifts the tint. High
+        // contrast keeps the opaque theme fill so the button still reads as
+        // a button against any background.
+        let (fill, hover) = if theme.high_contrast {
+            let base = theme.open_call_fill();
+            (base, darken(base, 0.92))
+        } else {
+            (
+                design::CALL_GREEN.with_alpha(0.16),
+                design::CALL_GREEN.with_alpha(0.24),
+            )
+        };
+        // `label` lives as long as this frame's format cache.
+        let label = format!("Open {}", c.app_name);
+        self.call_text_button(
+            rt,
+            input,
+            CallButton {
+                element: Element::CallOpen,
+                rect: control,
+                label: &label,
+                fill,
+                hover,
+                text: theme.open_call_text(accent),
+            },
+            alpha,
+            hits,
+        );
     }
 
     /// Row 1 of the card: the activity tile, the caller's name over its sub

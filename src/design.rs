@@ -264,6 +264,22 @@ pub const CALL_OUTPUT_W: f32 = 105.6;
 pub const CALL_OUTPUT_H: f32 = 35.2;
 /// Green "Open Phone Link" button of the no-call box (design 157 x 49).
 pub const CALL_OPEN_W: f32 = 111.2;
+// ------------------------------------------------ §7 idle card (v0.12.0)
+// With no call the card drops the action row entirely — dimmed Hold/End/Mute
+// only promised controls that do not exist — so the header and the box share
+// the 176 DIP column alone. Design px x 0.8.
+/// Phone glyph in the idle header tile (design 28 px).
+pub const CALL_IDLE_GLYPH: f32 = 22.4;
+/// Idle header state line (design 18 px semibold).
+pub const CALL_IDLE_TITLE: f32 = 14.4;
+/// Its line box, so the single line centres in the 48 DIP row.
+pub const LINE_CALL_IDLE: f32 = 18.0;
+/// Idle box line — the app name (design 14 px semibold).
+pub const CALL_IDLE_TEXT: f32 = 11.2;
+/// Idle header tile tint: `CALL_GREEN` at 18 %.
+pub const CALL_IDLE_TILE_A: f32 = 0.18;
+/// Idle Open button (design 132 x 44) — the Output chip's own box size.
+pub const CALL_IDLE_OPEN_W: f32 = CALL_OUTPUT_W;
 /// Ringing dot of the incoming box (design 17 px) and its right inset.
 pub const CALL_DOT: f32 = 12.0;
 pub const CALL_DOT_INSET: f32 = 12.8;
@@ -1295,6 +1311,11 @@ mod tests {
         close(CALL_OUTPUT_W, 105.6);
         close(CALL_OUTPUT_H, 35.2);
         close(CALL_OPEN_W, 111.2);
+        close(CALL_IDLE_GLYPH, 22.4);
+        close(CALL_IDLE_TITLE, 14.4);
+        close(CALL_IDLE_TEXT, 11.2);
+        close(CALL_IDLE_TILE_A, 0.18);
+        close(CALL_IDLE_OPEN_W, 105.6);
         close(CALL_DOT, 12.0);
         close(CALL_DOT_INSET, 12.8);
         close(CALL_BTN_GAP, 8.0);
@@ -1306,6 +1327,12 @@ mod tests {
             assert!(CALL_LEAD <= CALL_HEADER_H, "avatar must fit the header row");
             assert!(CALL_OUTPUT_H <= CALL_BOX_H, "Output must fit the box");
             assert!(CALL_OPEN_W < CALL_CONTENT_H, "Open must fit the box");
+            assert!(CALL_IDLE_GLYPH <= CALL_LEAD, "glyph must fit the tile");
+            // §7: the idle card's two rows still fit the fixed column.
+            assert!(
+                CALL_HEADER_H + CALL_ROW_GAP + CALL_BOX_H <= CALL_CONTENT_H,
+                "idle rows must fit the column"
+            );
             assert!(SHEET_ROW_H <= CALL_BOX_H, "sheet rows ride the box");
         }
         // Three action buttons with their gaps still fit the content width.

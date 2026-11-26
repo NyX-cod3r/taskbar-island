@@ -432,8 +432,13 @@ impl CallBody {
     }
 
     /// Header line 1: the caller's name, or wording that states there is no
-    /// call without inventing an identity.
+    /// call without inventing an identity. The idle card's header *is* its
+    /// state line (§7 v0.12), so `None` says so outright.
     pub fn header_title(&self) -> String {
+        use crate::activities::call_state::CallPhase;
+        if self.phase == CallPhase::None {
+            return "No active call".to_string();
+        }
         let caller = self.caller.trim();
         if caller.is_empty() {
             "Call".to_string()
@@ -442,10 +447,22 @@ impl CallBody {
         }
     }
 
+    /// The app this card acts on; never empty (the design's own fallback
+    /// name stands in when the display name is unavailable).
+    fn app_label(&self) -> String {
+        let app = self.app_name.trim();
+        if app.is_empty() {
+            "Phone Link".to_string()
+        } else {
+            app.to_string()
+        }
+    }
+
     /// Header line 2 (design: `Phone Link · 02:14`, `On hold · 02:14`,
     /// `Incoming call · Phone Link`, `Calling… · Phone Link`). A fresh action
     /// note stands in on a live card, where the idle card's big line is
-    /// already carrying it.
+    /// already carrying it. The idle card has no sub-line (§7 v0.12): its box
+    /// names the app instead.
     pub fn header_sub(&self) -> String {
         use crate::activities::call_state::CallPhase;
         if self.live {
@@ -453,35 +470,34 @@ impl CallBody {
                 return note.clone();
             }
         }
-        let app = self.app_name.trim();
-        let app = if app.is_empty() { "Phone Link" } else { app };
         match self.phase {
-            CallPhase::Incoming => format!("Incoming call \u{b7} {app}"),
-            CallPhase::Dialing => format!("Calling\u{2026} \u{b7} {app}"),
+            CallPhase::Incoming => format!("Incoming call \u{b7} {}", self.app_label()),
+            CallPhase::Dialing => format!("Calling\u{2026} \u{b7} {}", self.app_label()),
             CallPhase::Active => {
                 let clock = self.elapsed.trim();
                 if clock.is_empty() {
-                    app.to_string()
+                    self.app_label()
                 } else if self.held {
                     format!("On hold \u{b7} {clock}")
                 } else {
-                    format!("{app} \u{b7} {clock}")
+                    format!("{} \u{b7} {clock}", self.app_label())
                 }
             }
-            CallPhase::Ended | CallPhase::None => app.to_string(),
+            CallPhase::Ended => self.app_label(),
+            CallPhase::None => String::new(),
         }
     }
 
     /// Right-aligned header status. The design only words the states that
-    /// need it: `Ringing` while an incoming call waits and `No call` on the
-    /// idle card; a live call keeps its clock in the sub-line instead.
+    /// need it: `Ringing` while an incoming call waits; a live call keeps its
+    /// clock in the sub-line instead. The idle card carries no status — its
+    /// title already states the condition (§7 v0.12).
     pub fn header_status(&self) -> Option<&'static str> {
         use crate::activities::call_state::CallPhase;
         match self.phase {
             CallPhase::Incoming => Some("Ringing"),
             CallPhase::Ended => Some("Ended"),
-            CallPhase::None => Some("No call"),
-            CallPhase::Dialing | CallPhase::Active => None,
+            CallPhase::None | CallPhase::Dialing | CallPhase::Active => None,
         }
     }
 
@@ -506,7 +522,19 @@ impl CallBody {
             return note.clone();
         }
         match self.phase {
-            CallPhase::None | CallPhase::Ended => self
+            // §7 (v0.12): the idle box's one line is the app name — or the
+            // honest reason Phone Link is not there, which still outranks it.
+            CallPhase::None => {
+                if self.link.is_available() {
+                    self.app_label()
+                } else {
+                    self.link
+                        .idle_tip()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| self.app_label())
+                }
+            }
+            CallPhase::Ended => self
                 .link
                 .idle_tip()
                 .map(str::to_string)
@@ -524,14 +552,12 @@ impl CallBody {
     }
 
     /// Line 2 of the box: what the phase really promises — ringing wording,
-    /// the connected endpoint's own proof, or (only while there is no call
-    /// and Phone Link is really there) the line that says what will appear.
+    /// the connected endpoint's own proof. The idle box is one line now
+    /// (§7 v0.12): its header carries the state, so the old "calls show up
+    /// here" promise is gone.
     pub fn box_line2(&self) -> String {
         use crate::activities::call_state::CallPhase;
         match self.phase {
-            CallPhase::None if self.link.is_available() => {
-                "Phone Link calls show up here".to_string()
-            }
             CallPhase::None | CallPhase::Ended => String::new(),
             CallPhase::Incoming => "Ringing on your phone".to_string(),
             CallPhase::Dialing | CallPhase::Active => self.device_line2.clone(),
@@ -2011,6 +2037,23 @@ mod tests {
             .status_text(),
             "Open Phone Link to do this"
         );
+        // §7: the idle header is the state line, and the live header keeps
+        // its caller over the app's sub-line plus the right-aligned word.
+        let idle_h = body(CallPhase::None, "", "", "", None);
+        assert_eq!(idle_h.header_title(), "No active call");
+        assert_eq!(idle_h.header_sub(), "");
+        assert_eq!(idle_h.header_status(), None);
+        let ringing_h = body(CallPhase::Incoming, "Priya", "", "", None);
+        assert_eq!(ringing_h.header_title(), "Priya");
+        assert_eq!(ringing_h.header_sub(), "Incoming call \u{b7} Phone Link");
+        assert_eq!(ringing_h.header_status(), Some("Ringing"));
+        let active_h = body(CallPhase::Active, "", "Galaxy Buds2 Pro", "1:05", None);
+        assert_eq!(active_h.header_title(), "Call");
+        assert_eq!(active_h.header_sub(), "Phone Link \u{b7} 1:05");
+        assert_eq!(active_h.header_status(), None);
+        let ended_h = body(CallPhase::Ended, "", "", "", None);
+        assert_eq!(ended_h.header_sub(), "Phone Link");
+        assert_eq!(ended_h.header_status(), Some("Ended"));
     }
 
     /// §4: one box words every phase through the same two lines — the
@@ -2042,10 +2085,14 @@ mod tests {
                 note,
             };
 
-        // No call with Phone Link present: the design's own two lines.
+        // No call with Phone Link present: the header states the condition
+        // and the box names the app — one line, no promise of content (§7).
         let idle = body(CallPhase::None, "", "", PhoneLinkState::Available, None);
-        assert_eq!(idle.box_line1(), "No active call");
-        assert_eq!(idle.box_line2(), "Phone Link calls show up here");
+        assert_eq!(idle.box_line1(), "Phone Link");
+        assert_eq!(idle.box_line2(), "");
+        assert_eq!(idle.header_title(), "No active call");
+        assert_eq!(idle.header_sub(), "");
+        assert_eq!(idle.header_status(), None);
         // Without a usable phone the box only says which condition is
         // missing, and promises no content that cannot arrive.
         let missing = body(CallPhase::None, "", "", PhoneLinkState::NotInstalled, None);
