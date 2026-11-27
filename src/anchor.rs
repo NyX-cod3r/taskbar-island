@@ -82,6 +82,12 @@ pub const WM_APP_TASKBAR_MOVED: u32 = WM_APP + 54;
 /// with it. Only posted while the card is open (the hook lives with the
 /// card's other open-time hooks), so idle pays nothing for it.
 pub const WM_APP_FOREGROUND: u32 = WM_APP + 55;
+/// §2/§6: `--simulate-edge` aimed at the island that is already running.
+/// The launch flag only reaches a fresh process (a second one exits at the
+/// single-instance gate), so the edge reaches the live island the same way a
+/// call simulation does — and the receiver then flips through the normal
+/// 150 ms debounce, exactly like a real taskbar move.
+pub const WM_APP_EDGE_SIMULATE: u32 = WM_APP + 58;
 
 /// §2: which screen edge the primary taskbar sits on. `Bottom` is v0.11's
 /// behaviour; `Top` mirrors it (the card hangs below the bar); `Left` and
@@ -113,6 +119,18 @@ impl Edge {
             Self::Bottom => 2,
             Self::Left => 3,
             Self::Right => 4,
+        }
+    }
+
+    /// Inverse of [`Self::code`] — the payload a `WM_APP_EDGE_SIMULATE`
+    /// carries (0 and anything out of range are no edge at all).
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Top),
+            2 => Some(Self::Bottom),
+            3 => Some(Self::Left),
+            4 => Some(Self::Right),
+            _ => None,
         }
     }
 
@@ -1812,9 +1830,13 @@ mod tests {
             let parsed = Edge::parse(text);
             assert_eq!(parsed, Some(edge), "parsing {text:?}");
             assert!(edge.code() >= 1, "every edge has a non-zero code");
+            // The same edge travels as a number in WM_APP_EDGE_SIMULATE.
+            assert_eq!(Edge::from_code(edge.code()), Some(edge), "round trip");
         }
         assert_eq!(Edge::parse("up"), None);
         assert_eq!(Edge::parse(""), None);
+        assert_eq!(Edge::from_code(0), None, "0 means no edge applied yet");
+        assert_eq!(Edge::from_code(5), None);
         assert!(!Edge::Top.is_vertical() && !Edge::Bottom.is_vertical());
         assert!(Edge::Left.is_vertical() && Edge::Right.is_vertical());
     }

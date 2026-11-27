@@ -2765,6 +2765,20 @@ extern "system" fn wnd_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LP
             }
             LRESULT(0)
         }
+        // §2/§6: `--simulate-edge` aimed at this running island (a second
+        // launch cannot change its own statics — they die with the process —
+        // so the flag arrives as a message). Swapping the synthetic bar and
+        // re-syncing sends the change down the *same* path a real taskbar
+        // move takes: `edge_pending` arms the 150 ms one-shot, the fire
+        // commits it, and only then does the layout slide or pause.
+        crate::anchor::WM_APP_EDGE_SIMULATE => {
+            if let Some(edge) = crate::anchor::Edge::from_code(wparam.0 as u8) {
+                crate::log::log(&format!("anchor.edge: simulate {edge:?}"));
+                crate::anchor::set_simulated_edge(Some(edge));
+                sync_anchor(hwnd);
+            }
+            LRESULT(0)
+        }
         WM_APP_THUMB => {
             with_surface(|surface| {
                 if surface.drain_thumbs() {

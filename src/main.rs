@@ -92,7 +92,8 @@ fn main() {
     // §2 `--simulate-edge top|bottom|left|right`: pretend the bar sits on
     // that edge (same monitor, same thickness) so all four layouts — and the
     // pause/notice on a side edge — can be exercised on a machine whose real
-    // taskbar never moves. A launch flag: the running island is left alone.
+    // taskbar never moves. A running island takes the flag now and flips
+    // through the normal debounce; otherwise it is parked for this launch.
     if let Some(index) = args.iter().position(|arg| arg == "--simulate-edge") {
         let Some(edge) = args
             .get(index + 1)
@@ -101,7 +102,12 @@ fn main() {
             eprintln!("--simulate-edge needs top|bottom|left|right");
             return;
         };
-        anchor::set_simulated_edge(Some(edge));
+        // A running island takes it now (and flips through the normal
+        // 150 ms debounce); otherwise the flag is parked for the island this
+        // launch is about to create.
+        if !deliver_edge_simulation(edge) {
+            anchor::set_simulated_edge(Some(edge));
+        }
     }
     // Anchor geometry is measured in physical screen coordinates. Without
     // per-monitor awareness Windows virtualizes the popup bounds at scaled
@@ -245,6 +251,30 @@ fn deliver_simulation(kind: callsrc::SimKind) -> bool {
             Some(hwnd),
             callsrc::WM_APP_SIMULATE,
             WPARAM(kind.code()),
+            LPARAM(0),
+        );
+    }
+    true
+}
+
+/// Hand a `--simulate-edge` to the island that is already running. Returns
+/// false when there is none, so the caller can park it for this launch.
+fn deliver_edge_simulation(edge: anchor::Edge) -> bool {
+    let Ok(hwnd) = (unsafe { FindWindowW(w!("TaskbarIsland"), windows::core::PCWSTR::null()) })
+    else {
+        return false;
+    };
+    if hwnd.0.is_null() {
+        return false;
+    }
+    // SAFETY: posting to this app's own island window; the receiver re-runs
+    // the anchor sync, so the flip waits out the same 150 ms debounce a real
+    // taskbar move does.
+    unsafe {
+        let _ = PostMessageW(
+            Some(hwnd),
+            anchor::WM_APP_EDGE_SIMULATE,
+            WPARAM(edge.code() as usize),
             LPARAM(0),
         );
     }
