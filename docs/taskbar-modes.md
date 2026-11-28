@@ -51,7 +51,7 @@ move — a storm of `LOCATIONCHANGE`s — flips the island exactly once
 * **Left / right** — no horizontal room, so the island **pauses**: the pill and flyout
   hide, drawing and animation stop, but clipboard capture and all timers keep running.
   One **notice card** per edge change (360×176, `design::NOTICE_W/H`) explains it with
-  two exits — **Taskbar settings** (`ms-settings:taskbar`) and **Quit island**; Esc or
+  two exits — **Open taskbar settings** (`ms-settings:taskbar`) and **Quit island**; Esc or
   an outside click dismisses the card but **keeps the island paused**. The tray menu
   shows a grayed `Paused` row while paused, a finished countdown posts a `Timer
   finished` tray notification instead of an ended banner (there is no pill to show it

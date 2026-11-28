@@ -27,7 +27,7 @@
   unsigned under our name). Releasing is `docs/release-process.md`; code signing is
   `docs/signing.md` (all steps still `[AFTER APPROVAL]`).
 
-## Status (updated 2026-11-22)
+## Status (updated 2026-11-28)
 - **Phase 1 COMPLETE** (commit a8f4744): empty anchored pill, `WS_CHILD` inside `Shell_TrayWnd`
   (no topmost/z-order fight), geometry only in anchor.rs. Rendering: D3D11 ->
   `CreateSwapChainForComposition` (premultiplied alpha) -> DComp visual on the pill HWND -> D2D
@@ -586,6 +586,73 @@
     Explorer drag-out, human-eye card checks), the DPI 100/150 % + light
     re-run, a natural auto-hide hide→reveal cycle for the bug-1 fix (this
     environment cannot hide the taskbar), and a 60-minute soak re-run.
+- **v0.12.0 sections 1-7 COMPLETE on branch `v0.12.0`** (2026-11-28), shipped
+  as `0.12.0` (a `y` bump; the version lives only in `Cargo.toml`):
+  - **§1 the island is part of the taskbar**: it hides/shows with the bar with
+    no blink, and a shell flyout taking foreground closes the card — event
+    hooks only (a `SetWinEventHook` foreground hook posts
+    `WM_APP_FOREGROUND` = `WM_APP+55`).
+  - **§2 top/bottom edges**: the edge comes from
+    `SHAppBarMessage(ABM_GETTASKBARPOS)`'s `uEdge` with a rect fallback
+    (`appbar_edge(u_edge, rc)` — the return value is a status code, not the
+    edge), re-read on LOCATIONCHANGE / `WM_SETTINGCHANGE` / `TaskbarCreated` /
+    display-DPI change behind a **150 ms debounce**
+    (`EDGE_DEBOUNCE_TIMER_ID` 22, `design::EDGE_DEBOUNCE_MS`); bottom keeps
+    today's behavior, top hangs the flyout 12 px below the bar's bottom, real
+    thickness, and the `Island position` setting is gone (Auto only, owner).
+    Flyout stays **400x192** (owner rejected the brief's 500x240).
+  - **§3 left/right edges**: the island pauses (pill + card hidden, clipboard
+    capture and timers keep running), raises **one notice card per edge
+    change** (`notice_decision(notice_edge, anchor_paused, anchor_edge)` is
+    pure and unit-tested; copy = title `Island needs a top or bottom taskbar`,
+    edge-aware body, button `Open taskbar settings` → `ms-settings:taskbar`,
+    plus `Quit island`; Esc/outside dismiss keeps it paused), shows a paused
+    row in the tray menu, fires a `Timer finished` tray notification while
+    paused, and auto-resumes on a top/bottom edge. Primary monitor only;
+    `--simulate-edge top|bottom|left|right` delivers to the running instance
+    via `WM_APP_EDGE_SIMULATE` (`WM_APP+58`).
+  - **§4 coexistence**: `src/coexist.rs` detects TranslucentTB / Windhawk /
+    ExplorerPatcher / StartAllBack / TaskbarX / RoundedTB and enters safe
+    mode (separate pill) under them, with a `Taskbar mode` setting
+    (Auto / Always embedded / Always separate) persisted in `settings.json`
+    and applied through `WM_APP_PILL_MODE` (`WM_APP+57` = `0x8039`);
+    `embed_allowed()` (window.rs) maps Separate→false, Embedded→true (safe
+    mode is overridden), Auto→`!coexist::active()`, with a sticky per-process
+    `EMBED_REFUSED` that a `0x8039` post clears. `TaskbarCreated` re-attaches
+    and an embed failure falls back to a separate pill by design. Evidence in
+    `docs/compat.md`.
+  - **§7 call card None state**: the dimmed Hold/End/Mute row is gone — the
+    None layout is a header row (60 DIP green `#4ADE80` 18 % tile, 28 DIP
+    phone glyph, `No active call` 18 semibold) over a bottom box (radius 6,
+    white 6 %, `Phone Link` 14 semibold + `Open` 132x44 green 16 %); `Phone
+    Link calls show up here` removed. Live/incoming/dialing, the pill, the
+    progress line and every other string are untouched. **Owner flags**: the
+    None header carries no sub/status line and its two rows float centred in
+    the 176 DIP column; `Ended` deliberately keeps the old layout; the box
+    fill stays `theme.card_button()`.
+  - **Gates**: `cargo test` **353 passed / 0 failed / 1 ignored**, clippy 0,
+    fmt 0, `tools\build.ps1 -Mode Installer` green, and
+    `tools\tests\install-smoke.ps1` **8/8 PASS** on the installed 0.12.0.
+  - **Acceptance**: `tools\tests\edge-smoke.ps1` (new, phases 1-6) run 4 =
+    **44 passed / 1 failed / 4 skipped** with §1/§2/§3/§5/§6 green except the
+    Explorer-restart phase; evidence in `target\soak\edge\` (log, `mat-*.png`
+    TTB matrix, fullscreen, notice). The 1 failure is the environmental
+    taskbar wedge: one shell-flyout cycle makes `EnumWindows` miss
+    `Shell_TrayWnd` while `FindWindowW` still finds it, so `SetParent` fails
+    with error 87 and the embed is refused (the island then runs separate by
+    §4 design; geometry is unaffected because the island looks the bar up with
+    `FindWindowW`). `probe-phase3.ps1` proved: a Start-menu cycle wedges it, a
+    TTB bounce does not heal it, an Explorer restart does; the script now
+    detects the signature and restarts Explorer before the embed attempts.
+    Also investigated post-run: a temporarily unpainted pill window (correct
+    geometry/region/z-order, flat pixels) healed on hover+click and never
+    reproduced on a clean restart with zero input — a stale present in the
+    wedged environment, not an app bug (`pill-fresh-start.png`).
+  - **Not tested** (also in `docs/testing.md`): everything under the v0.9-v0.11
+    "not tested" lists, the DPI matrix, five of six coexistence targets never
+    seen live (only TranslucentTB is installed here), primary-monitor-only on
+    real second-monitor hardware, a 60-minute soak re-run, and one unexplained
+    `cargo test` STATUS_ACCESS_VIOLATION (nine runs since were green).
 
 ## Version naming (x.y.z)
 

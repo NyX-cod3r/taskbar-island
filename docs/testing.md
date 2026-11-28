@@ -1,21 +1,22 @@
 # Testing
 
 What is tested in this repository, what is skipped, and why. The current gate
-evidence was produced on branch `v0.11.0` (tag pending) on 2026-11-19 (the v0.10
-gates ran on 2026-11-16 and the v0.9 gates on 2026-11-15); the quoted v0.8.0
-logs were rescued from the scratch logs at
-the workspace root before those were deleted by the v0.9 cleanup
+evidence was produced on branch `v0.12.0` (tag pending) on 2026-11-28 (the
+v0.11 gates ran on 2026-11-19/22, the v0.10 gates on 2026-11-16 and the v0.9
+gates on 2026-11-15); the quoted v0.8.0 logs were rescued from the scratch
+logs at the workspace root before those were deleted by the v0.9 cleanup
 (`docs/cleanup-plan.md`).
 
-## Rust gates (current, v0.11)
+## Rust gates (current, v0.12)
 
-| Gate | Command | Result (2026-11-19) |
+| Gate | Command | Result (2026-11-28) |
 | --- | --- | --- |
-| Unit/integration tests | `cargo test` | **338 passed, 0 failed, 1 ignored** |
+| Unit/integration tests | `cargo test` | **353 passed, 0 failed, 1 ignored** |
 | Clippy | `cargo clippy --all-targets -- -D warnings` | Clean, no diagnostics |
 | Format | `cargo fmt --all` (then `--check`) | Clean, no diffs |
-| Release build | `tools\build.ps1 -Mode Installer` | Green, manifest gate passed (`exactly one <assembly> root including <msix>`), `dist\TaskbarIsland-Setup.exe` for 0.11.0 |
+| Release build | `tools\build.ps1 -Mode Installer` | Green, manifest gate passed (`exactly one <assembly> root including <msix>`), `dist\TaskbarIsland-Setup.exe` for 0.12.0 |
 | Installer gate | `powershell -File tools\tests\install-smoke.ps1` | **8 checked, 0 failed** (stop → install → exe/version → byte-match against `target\release` → launch → pill/tray windows → single-instance) |
+| §5/§6 acceptance | `powershell -File tools\tests\edge-smoke.ps1` | see "Acceptance (v0.12)" below |
 | Ignored test | `convert::jobs::live_external_engines_convert_real_files` | Needs live engines in `%LOCALAPPDATA%\Filee\engines`; run manually when engines are installed |
 
 Toolchain note: builds must use the WinLibs gcc — a broken `C:\MinGW\bin\gcc.exe`
@@ -25,6 +26,17 @@ shadows it. `tools\build.ps1` and `tools\cargo-winlibs.cmd` prepend the WinLibs
 `cargo test` alone is not evidence that a change works: the pill, the tray, the
 clipboard listener and the installer only exist in the installed copy, which is
 why `install-smoke.ps1` is the release gate.
+
+## Rust gates (v0.11)
+
+| Gate | Command | Result (2026-11-19) |
+| --- | --- | --- |
+| Unit/integration tests | `cargo test` | **338 passed, 0 failed, 1 ignored** |
+| Clippy | `cargo clippy --all-targets -- -D warnings` | Clean, no diagnostics |
+| Format | `cargo fmt --all` (then `--check`) | Clean, no diffs |
+| Release build | `tools\build.ps1 -Mode Installer` | Green, manifest gate passed (`exactly one <assembly> root including <msix>`), `dist\TaskbarIsland-Setup.exe` for 0.11.0 |
+| Installer gate | `powershell -File tools\tests\install-smoke.ps1` | **8 checked, 0 failed** |
+| Ignored test | `convert::jobs::live_external_engines_convert_real_files` | Needs live engines in `%LOCALAPPDATA%\Filee\engines` |
 
 ## Engine golden suite (skip table)
 
@@ -396,6 +408,100 @@ Stated honestly so nothing is claimed that was not run:
 - **The idle runner animation from the design PDFs was never implemented in
   any version** (artboards only, no code in git history) and is out of scope
   for 0.11.0 by owner decision - it needs its own y-bump later.
+- The one ignored test and the 22 golden engine rows above.
+
+## Acceptance (v0.12)
+
+`tools\tests\edge-smoke.ps1`, run 4 on 2026-11-28 (installed 0.12.0, 1920x1200
+@ 125 %, TranslucentTB 2026.2.0.0, bottom taskbar): **44 passed / 1 failed /
+4 skipped**, evidence in `target\soak\edge\`.
+
+Green in run 4:
+
+- **§1 island as part of the taskbar**: shell-element clicks (Start, clock,
+  quick settings) x20 each with the pill sampled throughout - 0 blinks; the
+  pill hides/shows with the bar and the flyout yields foreground to shell
+  flyouts (event hooks only).
+- **§2 top/bottom edges**: all 4 edge flips committed through the 150 ms
+  debounce, `anchor.edge: raw=... uEdge=...` lines show the real edge, top
+  places the flyout below the taskbar bottom +12 px, bottom is today's
+  behavior, real thickness, `Island position` gone; 20x open/close per edge.
+- **§3 side edges**: flip to left pauses the island (`island.pause: side
+  taskbar`), ONE notice card (`notice-left.png`), Esc keeps it paused, the
+  other side edge raises a fresh notice, auto-resume on return to bottom,
+  still exactly one pause line across both side edges.
+- **§5/§6** the phases above, the fullscreen shot, and the TranslucentTB
+  material x pill-mode matrix (clear/blur/acrylic x auto/embedded, dark+light
+  shots `mat-*.png`), zero Event Viewer 1000/1002, zero crash dumps, no panic
+  in the run log.
+
+The 1 failure and its 4 skips:
+
+- **`Taskbar mode Always embedded: pill is a WS_CHILD` failed** - the
+  environmental taskbar wedge, not the product: one shell-flyout cycle earlier
+  in the run left `EnumWindows` unable to visit `Shell_TrayWnd` while
+  `FindWindowW` still found it, so `SetParent` returned error 87 and the embed
+  was refused (the island then fell back to a separate pill by §4 design, and
+  geometry kept working because the island's own lookup is `FindWindowW`).
+  `target\soak\edge\probe-phase3.ps1` reproduced the signature: one Start-menu
+  flyout cycle wedges it; a TranslucentTB bounce does **not** heal it;
+  restarting Explorer does. The script now detects the signature at the top of
+  phase 3 and restarts Explorer before the embed attempts.
+- **4 skipped**: the two checks that depend on that embed (`TaskbarCreated
+  re-attach < 1 s`, `island survived the Explorer restart`) plus the two
+  standing honest skips (natural auto-hide hide->reveal, DPI matrix). The
+  Explorer-restart re-attach itself was proven live for v0.11 (AGENTS.md) and
+  the island survived every restart this session, but the <1 s re-attach claim
+  was not re-measured inside run 4.
+- The run-4 phase 3 failure also means the wedge was still up at phase 3 but
+  had cleared by phase 5 (the embedded TTB combos assert `child=true` and
+  passed), so those shots are post-heal. **What healed it between the two
+  phases is unknown**: `probe-phase3.ps1` showed a TranslucentTB bounce alone
+  does not clear it, so the trigger was something else in phase 4/5 (the
+  fullscreen window, the theme flip, or the island restarts).
+
+Pill-paint investigation (2026-11-28, after run 4): the pill window was found
+with correct geometry, correct 7-rect region and correct z-order (it is the
+top window at its own center per `WindowFromPoint`) yet showed flat taskbar
+pixels. Input (hover+click) forced a redraw and the card then painted fully;
+a clean restart with **zero input** painted correctly
+(`pill-fresh-start.png`, idle fill rgb(48,48,48) vs outside rgb(28,28,28)).
+Verdict: a transient stale present in the wedged environment, not an app bug -
+startup rendering is correct and idle CPU stayed 0.03 s / 3 s throughout.
+
+## Not tested (v0.12)
+
+Stated honestly so nothing is claimed that was not run:
+
+- **Everything under *Not tested (v0.11)*, *(v0.10)* and *(v0.9)* still
+  applies**: a real Phone Link call and live Hold/Resume, real device churn,
+  clean-VM install, SignPath, Explorer drag-out of a shelf tile and human-eye
+  card checks.
+- **DPI 100 / 125 / 150 % x light/dark**: reported as an honest SKIP by the
+  acceptance script (changing system DPI is not scriptable on the owner
+  machine). All v0.12 evidence is 125 % dark. Manual before 1.0.0.
+- **A natural auto-hide hide -> reveal** still cannot be forced in this
+  environment (three methods failed for v0.11); the standing evidence is
+  phase 2's pill sampler (0 blinks across 60 shell-element clicks) plus the
+  v0.11 Explorer-restart hook evidence.
+- **Five of the six coexistence targets were never exercised live**: only
+  TranslucentTB 2026.2.0.0 (store) is installed on this machine, so the §4
+  material x mode matrix ran against it alone. Detection of Windhawk,
+  ExplorerPatcher, StartAllBack, TaskbarX and RoundedTB is unit-tested
+  (`src/coexist.rs`) and recorded in `docs/compat.md`, but no safe-mode entry
+  was observed under any of them.
+- **Primary-monitor-only behavior (§3) was not exercised on second-monitor
+  hardware**: this machine has one display, so the claim rests on
+  `MonitorFromWindow(taskbar, MONITOR_DEFAULTTOPRIMARY)` in `anchor.rs` and
+  the unit-tested geometry, not on a two-monitor run.
+- **The 60-minute soak was not re-run for 0.12.0** (the v0.9 soak above
+  stands; the 0.12 delta is edge geometry, pause/notice and coexistence -
+  all event-driven paths with no new periodic work).
+- **One `cargo test` run aborted with STATUS_ACCESS_VIOLATION (0xc0000005)**
+  in the test harness on 2026-11-28; the nine runs that followed were 353
+  passed / 0 failed each and it never reproduced. The crashing test was not
+  identified (the output was only tail-captured); if it recurs, re-run with
+  `cargo test -- --nocapture` to name it.
 - The one ignored test and the 22 golden engine rows above.
 
 ## Release-gate evidence (v0.8.0, quoted from the deleted scratch logs)

@@ -4,6 +4,95 @@ All notable changes to TaskbarIsland are recorded here. The format follows
 Keep a Changelog; versions follow the owner's x.y.z scheme (the app stays on
 0.x until the owner approves 1.0.0).
 
+## 0.12.0 (2026-11-28)
+
+### Changed
+
+- **The island follows the taskbar to a top edge (design section 2).** A top
+  bar mirrors today's behaviour: the pill keeps the same slot in the free
+  left band and the card opens *downward*, hanging `FLY_TOP_GAP` (12 px, the
+  brief's) below the taskbar's bottom edge instead of `GAP_TASKBAR` above its
+  top. The island window's height is `t + FLY_TOP_GAP + FLY_H +
+  WINDOW_TOP_PAD` on **both** horizontal edges, so an edge flip is a
+  position-only move — the composition swapchain cannot resize at runtime and
+  must not need to. The flyout stays **400 x 192** (the owner rejected the
+  brief's 500 x 240) and `Island position` stays Auto-only.
+- **The paused notice card now carries the brief's copy (design section 3).**
+  Title `Island needs a top or bottom taskbar` (one line at 15 px semibold,
+  ~263 DIP of the 328 DIP inner width), body `Your taskbar is on the left. /
+  Move it to the top or bottom, or close the island.` and the primary button
+  `Open taskbar settings`. The body names the **real** edge — the design PDF
+  says "on the left" because that is the edge its screenshot shows, and the
+  island pauses on either side edge, so shipping that sentence verbatim would
+  be wrong on a right-hand bar. The renderer never word-wraps
+  (`WORD_WRAPPING_NO_WRAP` breaks only at a carriage return), so both body
+  lines are explicit and fit the inner width.
+- **Idle call card (design section 7).** The "No active call" state loses the
+  dimmed `Hold` / `End call` / `Mute` row and the `Phone Link calls show up
+  here` line. The `None` layout is a header row (60 DIP tile at green `#4ADE80`
+  18 %, 28 DIP phone glyph, `No active call` at 18 semibold) over a bottom box
+  (radius 6, white 6 %, `Phone Link` at 14 semibold beside a 132 x 44 green
+  16 % `Open` button). Live, incoming and dialing states are untouched, as are
+  the pill, the progress line and every other label and tooltip.
+
+### Added
+
+- **Top and bottom taskbar edges (design section 2).** The edge comes from
+  `SHAppBarMessage(ABM_GETTASKBARPOS)`'s `uEdge` with a rect fallback, and is
+  re-read on `LOCATIONCHANGE`, `WM_SETTINGCHANGE`, `TaskbarCreated` and a
+  display-DPI change behind a 150 ms debounce (`design::EDGE_DEBOUNCE_MS`).
+  Bottom keeps v0.11's behaviour exactly; top mirrors it.
+- **Left/right taskbars pause the island (design section 3).** A side edge
+  hides the pill and the card while clipboard capture and every timer keep
+  running, and raises **one** notice card per edge change (360 x 176,
+  `design::NOTICE_W` / `NOTICE_H`) with `Open taskbar settings`
+  (`ms-settings:taskbar`) and `Quit island`; Esc or an outside click drops the
+  card but keeps the island paused until the bar moves back to a horizontal
+  edge, which auto-resumes with no notice. The tray menu gains a paused row,
+  a `Timer finished` tray notification is raised while paused, and the whole
+  state lives on the primary monitor only.
+- **Coexistence with other taskbar tools (design section 4).** TranslucentTB,
+  Windhawk, ExplorerPatcher, StartAllBack, TaskbarX and RoundedTB are detected
+  at startup and through a process watcher; a hit puts `Auto` into **safe
+  mode**, where the card window draws the pill itself instead of handing the
+  bar a `WS_CHILD` another customizer may reject. A new **Taskbar mode**
+  tray setting — `Auto` / `Always embedded` / `Always separate` — is
+  remembered in `settings.json` (`taskbarMode`), `Always embedded` is the
+  owner's explicit override of the safety net, and a failed embed falls back
+  to the separate pill. `TaskbarCreated` re-attaches within a second.
+  Measured: TranslucentTB clear / blur / acrylic x both pill modes, all six
+  combinations open and close the card cleanly with no event 1000/1002 and no
+  new crash dumps. See `docs/compat.md`.
+- **`--simulate-edge top|bottom|left|right`.** Geometry is only in
+  `anchor.rs`, so a machine whose real bar never moves can still exercise all
+  four edges: a second launch posts the edge to the running island
+  (`anchor::WM_APP_EDGE_SIMULATE`) and exits, and the island applies it
+  through the same 150 ms debounce the real bar uses.
+- **Acceptance script `tools\tests\edge-smoke.ps1`.** Drives the §5/§6
+  checklist end to end on the installed copy: 20 open/close cycles per edge,
+  all four flips through the debounce, pause/notice/dismiss/resume, 20 clicks
+  on each of Start, the clock and quick settings with a pill-blink sampler,
+  Explorer restart re-attach, a fullscreen window, the material x mode
+  matrix, and Event Viewer / CrashDumps counters. It also detects the wedged
+  taskbar (`EnumWindows` missing `Shell_TrayWnd` while `FindWindowW` still
+  finds it) and restarts Explorer before the embed phase, because that is the
+  only thing proven to clear it.
+- **Docs**: `docs/compat.md` (§4, what each tool does to the bar and what we
+  do about it) and the Modes section of `docs/taskbar-modes.md`.
+
+### Fixed
+
+- **The taskbar edge was read from `SHAppBarMessage`'s return value.**
+  `ABM_GETTASKBARPOS` returns a success code, and `1` is `ABE_TOP`, so every
+  bar was reported as a top edge. The edge is `data.uEdge`
+  (`anchor::appbar_edge`), with the returned rect as the fallback when it is
+  out of range. Found by `edge-smoke.ps1`'s first check, which now asserts
+  `anchor.edge: raw=… uEdge=… rc=… -> Bottom`.
+- **A refused embed now says which half failed.** `pill.embed: refused` is
+  followed by `(parent=… setpos=… taskbar=… tray_visible=…)`, so "the pill
+  is not a child" and "the taskbar window could not be found" are no longer
+  the same log line.
+
 ## 0.11.0 (2026-11-22)
 
 ### Changed
