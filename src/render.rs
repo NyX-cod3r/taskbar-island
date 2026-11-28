@@ -138,6 +138,9 @@ pub struct RenderInput<'a> {
     /// §3: the paused notice card, window-local. Present exactly when
     /// `paused` and not yet dismissed.
     pub notice: Option<RectD>,
+    /// §3: which side edge raised `notice`, so its body copy names the real
+    /// edge ("on the left" / "on the right") instead of assuming one.
+    pub notice_edge: Option<crate::anchor::Edge>,
 }
 
 impl RenderInput<'_> {
@@ -226,11 +229,16 @@ const CALL_STACK_ICON: f32 = 16.0;
 /// Top padding above that glyph inside the button.
 const CALL_STACK_TOP: f32 = 6.0;
 
-/// §3 copy of the paused notice card's body. The brief's own wording was
-/// not checked into the repo, so this draft stands in for it — owner to
-/// confirm before release.
-const NOTICE_BODY: &str = "The taskbar sits on a side edge, where the island cannot live. \
-     Move it back to the top or bottom, or quit the island.";
+/// §3 copy of the paused notice card's body (design PDF p.1), naming the
+/// edge the bar is actually on: the brief's own sentence says "on the left"
+/// because that is the edge its screenshot shows, and the island pauses on
+/// either side edge. Nothing in this renderer word-wraps — the format is
+/// `WORD_WRAPPING_NO_WRAP`, which breaks only at a carriage return — so each
+/// line is explicit and both fit the 328 DIP inner width at `FONT_BUTTON`.
+const NOTICE_BODY_LEFT: &str =
+    "Your taskbar is on the left.\nMove it to the top or bottom, or close the island.";
+const NOTICE_BODY_RIGHT: &str =
+    "Your taskbar is on the right.\nMove it to the top or bottom, or close the island.";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct FormatKey {
@@ -1558,9 +1566,11 @@ impl Painter {
             inner_w,
             design::LINE_FLY_TITLE,
         );
+        // The brief's title: 35 chars ≈ 263 DIP at 15 px semibold, so it
+        // holds the single-line title slot without a wrap.
         self.text(
             rt,
-            "Island paused",
+            "Island needs a top or bottom taskbar",
             title,
             design::FONT_FLY_TITLE,
             600,
@@ -1578,9 +1588,16 @@ impl Painter {
             inner_w,
             (buttons_top - design::NOTICE_BODY_GAP - body_top).max(0.0),
         );
+        // Only a left/right edge ever raises this card, so `None` can only be
+        // the state machine having just reset — the left-hand copy stands in.
+        let body_text = if matches!(input.notice_edge, Some(crate::anchor::Edge::Right)) {
+            NOTICE_BODY_RIGHT
+        } else {
+            NOTICE_BODY_LEFT
+        };
         self.text(
             rt,
-            NOTICE_BODY,
+            body_text,
             body,
             design::FONT_BUTTON,
             400,
@@ -1614,7 +1631,7 @@ impl Painter {
             CallButton {
                 element: Element::NoticeSettings,
                 rect: settings,
-                label: "Taskbar settings",
+                label: "Open taskbar settings",
                 fill,
                 hover,
                 text: theme.open_call_text(design::CALL_GREEN),

@@ -43,17 +43,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
     GetForegroundWindow, GetMessageW, GetParent, GetSystemMetrics, GetWindow, GetWindowRect,
-    IsWindow, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW, SetParent,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, ShowWindow, TranslateMessage,
-    UnhookWindowsHookEx, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV,
-    HHOOK, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST, IDC_ARROW, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
-    SM_CXDRAG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-    SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_APP, WM_CLOSE,
-    WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_GETOBJECT, WM_HOTKEY, WM_KEYDOWN,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE,
-    WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN, WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER,
-    WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    IsWindow, IsWindowVisible, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage,
+    RegisterClassExW, SetParent, SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW,
+    ShowWindow, TranslateMessage, UnhookWindowsHookEx, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW,
+    GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, HHOOK, HTTRANSPARENT, HWND_TOP, HWND_TOPMOST, IDC_ARROW,
+    KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, SM_CXDRAG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WH_KEYBOARD_LL,
+    WH_MOUSE_LL, WM_APP, WM_CLOSE, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+    WM_GETOBJECT, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_RBUTTONDOWN,
+    WM_SETTINGCHANGE, WM_THEMECHANGED, WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_EX_NOACTIVATE,
+    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
 };
 
 use crate::activities::call::{self, AudioCommand, CallRuntime};
@@ -1214,7 +1214,14 @@ fn create_pill_window(card: HWND, instance: HINSTANCE) -> Option<HWND> {
     // SAFETY: a small linear sequence on this thread's own window.
     // `SetParent` only reports `Err` for a null previous parent, so the
     // `GetParent` check below — not its return value — is the ground truth.
-    let embedded = unsafe {
+    // The order matches the embed as it has always shipped: `SetParent`,
+    // then the styles, then `SetWindowPos`, and only then the parent check
+    // that decides. A refusal has two candidates — the reparent or the
+    // positioning call — so the log line below names which half failed; it
+    // also caught the shell itself rejecting the reparent (`SetParent` into
+    // a wedged `Shell_TrayWnd` fails with ERROR_INVALID_PARAMETER while the
+    // bar still looks fine to `FindWindowW`).
+    let (parent, setpos, embedded) = unsafe {
         let _ = SetParent(pill, Some(taskbar));
         SetWindowLongPtrW(pill, GWL_STYLE, (WS_CHILD | WS_VISIBLE).0 as isize);
         SetWindowLongPtrW(
@@ -1222,7 +1229,7 @@ fn create_pill_window(card: HWND, instance: HINSTANCE) -> Option<HWND> {
             GWL_EXSTYLE,
             (WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP).0 as isize,
         );
-        SetWindowPos(
+        let setpos = SetWindowPos(
             pill,
             Some(HWND_TOP),
             rect.left,
@@ -1230,12 +1237,26 @@ fn create_pill_window(card: HWND, instance: HINSTANCE) -> Option<HWND> {
             width,
             height,
             SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOACTIVATE,
-        )
-        .is_ok()
-            && GetParent(pill).unwrap_or_default() == taskbar
+        );
+        let parent = GetParent(pill).unwrap_or_default();
+        let embedded = setpos.is_ok() && parent == taskbar;
+        (parent, setpos, embedded)
     };
     if !embedded {
-        crate::log::log("pill.embed: refused; the card window keeps drawing the pill");
+        // Name the failing half. A refusal has two candidates — the reparent
+        // or the positioning call — and only one of them points at the shell.
+        crate::log::log(&format!(
+            "pill.embed: refused; the card window keeps drawing the pill \
+             (parent={:#x} setpos={} taskbar={:#x} tray_visible={})",
+            parent.0 as isize,
+            match &setpos {
+                Ok(_) => "ok".to_string(),
+                Err(error) => format!("{error:?}"),
+            },
+            taskbar.0 as isize,
+            // SAFETY: `taskbar` is live; it was rect-validated above.
+            unsafe { IsWindowVisible(taskbar) }.as_bool(),
+        ));
         // §4: one refusal ends the question for this Explorer session — the
         // z-order tick must not keep offering a child the bar rejects.
         EMBED_REFUSED.store(true, Ordering::Relaxed);
@@ -7987,6 +8008,7 @@ impl Surface {
                 // all once it has been dismissed).
                 paused: self.paused,
                 notice: self.notice,
+                notice_edge: self.notice_edge,
             };
             match self.painter.draw(&render_target, &input) {
                 Ok(hits) => self.hit_map = hits,
